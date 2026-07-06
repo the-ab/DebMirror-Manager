@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}Zeitpläne - {{ app_name }}{% endblock %}
+{% block content %}
+{% set editing = edit_schedule is not none %}
+{% set form = edit_schedule or {} %}
+{% set form_job_kind = form.job_kind or 'mirror' %}
+{% set form_script_selection = form.script_selection or 'single' %}
+{% set selected_scripts = (form.script_names or '').split(',') if form.script_names else [] %}
+{% set selected_days = (form.weekdays or '0,1,2,3,4,5,6').split(',') %}
+<div class="page-head compact-head">
+  <div>
+    <h1>Zeitpläne</h1>
+    <p>Flexible Job-Zeitpläne für Mirror-Profile, globale Mirror-Läufe oder Benutzerskripte.</p>
+  </div>
+  <a class="button" href="{{ url_for('jobs') }}">Jobs / Logs</a>
+</div>
+
+<section class="card compact-card">
+  <div class="section-head">
+    <h2>Aktuelle Regeln</h2>
+  </div>
+  <div class="stats-row compact">
+    <span><strong>{{ max_parallel_jobs }}</strong> parallele Jobs</span>
+    <span><strong>{{ job_retention_days }}</strong> Tage Aufbewahrung</span>
+    <span><strong>{{ job_list_limit }}</strong> Jobs in Listen</span>
+  </div>
+  {% if is_admin %}<p class="hint">Diese Werte änderst du unter <a href="{{ url_for('settings_page') }}">System → Einstellungen</a>.</p>{% else %}<p class="hint">Diese Werte sind globale Systemeinstellungen und können nur von Admin-Benutzern geändert werden.</p>{% endif %}
+</section>
+
+{% if is_admin %}
+<section class="card compact-card">
+  <div class="section-head">
+    <h2>{% if editing %}Zeitplan bearbeiten{% else %}Neuen Zeitplan anlegen{% endif %}</h2>
+    {% if editing %}<a class="button" href="{{ url_for('schedules_page') }}">Bearbeitung abbrechen</a>{% endif %}
+  </div>
+  <form method="post" class="grid-form schedule-form" id="schedule-form" action="{% if editing %}{{ url_for('schedule_edit', schedule_id=form.id) }}{% else %}{{ url_for('schedules_page') }}{% endif %}">
+    <input type="hidden" name="action" value="{% if editing %}update{% else %}create{% endif %}">
+    <label>Name
+      <input name="name" value="{{ form.name or '' }}" placeholder="z. B. Debian morgens und abends" required>
+    </label>
+
+    <label>Job-Typ
+      <select name="job_kind" id="job_kind">
+        <option value="mirror" {% if form_job_kind == 'mirror' %}selected{% endif %}>Mirror-Profil / global</option>
+        <option value="script" {% if form_job_kind == 'script' %}selected{% endif %}>Benutzerskript</option>
+      </select>
+    </label>
+
+    <label class="mirror-field">Mirror-Ziel
+      <select name="mirror_id" id="mirror_id">
+        <option value="" {% if not form.mirror_id %}selected{% endif %}>Global: alle aktiven Profile</option>
+        {% for m in mirrors %}<option value="{{ m.id }}" {% if form.mirror_id == m.id %}selected{% endif %}>{{ m.name }}</option>{% endfor %}
+      </select>
+      <small>Nur für Job-Typ Mirror. Leer bedeutet: alle aktiven Profile.</small>
+    </label>
+
+    <label class="script-field">Benutzerskript-Auswahl
+      <select name="script_selection" id="script_selection">
+        <option value="all" {% if form_script_selection == 'all' %}selected{% endif %}>Alle Benutzerskripte</option>
+        <option value="single" {% if form_script_selection == 'single' %}selected{% endif %}>Ein einzelnes Benutzerskript</option>
+        <option value="selected" {% if form_script_selection == 'selected' %}selected{% endif %}>Ausgewählte Benutzerskripte</option>
+      </select>
+      <small>Nur für Job-Typ Benutzerskript.</small>
+    </label>
+
+    <label class="script-field script-single-field">Benutzerskript einzeln
+      <select name="script_name" id="script_name">
+        <option value="">-- Script auswählen --</option>
+        {% for script in user_scripts %}<option value="{{ script.name }}" {% if form.script_name == script.name %}selected{% endif %}>{{ script.name }}</option>{% endfor %}
+      </select>
+      <small>Skripte liegen unter <code>/docker_data/debmirror-manager/user-scripts</code>.</small>
+    </label>
+
+    <label class="script-field script-selected-field">Benutzerskripte selektieren
+      <select name="script_names" id="script_names" multiple size="6">
+        {% for script in user_scripts %}<option value="{{ script.name }}" {% if script.name in selected_scripts %}selected{% endif %}>{{ script.name }}</option>{% endfor %}
+      </select>
+      <small>Mehrfachauswahl mit Strg/Shift. Jeder ausgewählte Eintrag wird als eigener Job in die Warteschlange gelegt.</small>
+    </label>
+
+    <label>Typ
+      <select name="schedule_type" id="schedule_type">
+        <option value="daily" {% if (form.schedule_type or 'daily') == 'daily' %}selected{% endif %}>Täglich / ausgewählte Wochentage</option>
+        <option value="weekly" {% if form.schedule_type == 'weekly' %}selected{% endif %}>Wöchentlich / ausgewählte Wochentage</option>
+        <option value="interval" {% if form.schedule_type == 'interval' %}selected{% endif %}>Intervall</option>
+      </select>
+    </label>
+    <label class="time-field">Uhrzeiten
+      <input name="times" value="{{ form.times or '22:00' }}" placeholder="z. B. 06:00,18:00">
+      <small>Mehrere Uhrzeiten mit Komma, Semikolon oder Leerzeichen trennen.</small>
+    </label>
+    <fieldset class="weekday-field">
+      <legend>Wochentage</legend>
+      {% for n,label in [(0,'Mo'),(1,'Di'),(2,'Mi'),(3,'Do'),(4,'Fr'),(5,'Sa'),(6,'So')] %}
+      <label class="inline-check"><input type="checkbox" name="weekdays" value="{{ n }}" {% if n|string in selected_days %}checked{% endif %}> {{ label }}</label>
+      {% endfor %}
+    </fieldset>
+    <label class="interval-field">Intervall in Stunden
+      <input type="number" name="interval_hours" min="1" value="{{ form.interval_hours or 24 }}">
+    </label>
+    <label class="inline-check"><input type="checkbox" name="enabled" {% if form.enabled is not defined or form.enabled %}checked{% endif %}> Aktiv</label>
+    <label class="inline-check mirror-field"><input type="checkbox" name="dry_run" {% if form.dry_run %}checked{% endif %}> Nur Dry-Run ausführen</label>
+    <div class="form-actions">
+      <button class="primary" type="submit">{% if editing %}Zeitplan aktualisieren{% else %}Zeitplan speichern{% endif %}</button>
+      {% if editing %}<a class="button" href="{{ url_for('schedules_page') }}">Zurück zur Liste</a>{% endif %}
+    </div>
+  </form>
+</section>
+{% endif %}
+
+<section class="card compact-card">
+  <h2>Job-Zeitplanliste</h2>
+  {% if schedules %}
+  <div class="table-scroll full-list-scroll">
+  <table class="compact-table">
+    <thead><tr><th>Name</th><th>Ziel</th><th>Zeittyp</th><th>Uhrzeiten</th><th>Tage</th><th>Status</th><th>Letzter Lauf-Key</th><th>Aktion</th></tr></thead>
+    <tbody>
+    {% for s in schedules %}
+      <tr>
+        <td><strong>{{ s.name }}</strong>{% if s.origin == 'profile' %}<br><span class="badge info">Profilzeitplan</span>{% endif %}{% if s.dry_run %}<br><small>Dry-Run</small>{% endif %}</td>
+        <td>
+          {% if s.job_kind == 'script' %}
+            <span class="badge info">script</span>
+            {% if (s.script_selection or 'single') == 'all' %}alle Benutzerskripte{% elif (s.script_selection or 'single') == 'selected' %}{{ s.script_names or '-' }}{% else %}{{ s.script_name or '-' }}{% endif %}
+          {% elif s.mirror_id %}
+            {{ s.mirror_name }}
+          {% else %}
+            <span class="badge info">global</span> alle aktiven Profile
+          {% endif %}
+        </td>
+        <td>{{ s.schedule_type }}{% if s.schedule_type == 'interval' %} · alle {{ s.interval_hours }}h{% endif %}</td>
+        <td>{{ s.times }}</td>
+        <td>{{ s.weekdays }}</td>
+        <td>{% if s.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
+        <td><small>{{ s.last_run_key or '-' }}</small></td>
+        <td>{% if is_admin %}
+          <div class="actions compact-actions">
+            <form method="post" action="{{ url_for('schedule_toggle', schedule_id=s.id) }}">
+              <button type="submit">{% if s.enabled %}Deaktivieren{% else %}Aktivieren{% endif %}</button>
+            </form>
+            <a class="button" href="{{ url_for('schedule_edit', schedule_id=s.id) }}">Bearbeiten</a>
+            <form method="post" action="{{ url_for('schedule_delete', schedule_id=s.id) }}" onsubmit="return confirm('{% if s.origin == 'profile' %}Profil-Zeitplan wirklich löschen? Das zugehörige Profil wird auf manuell gestellt.{% else %}Zeitplan wirklich löschen?{% endif %}');">
+              <button class="danger" type="submit">Löschen</button>
+            </form>
+          </div>
+        {% else %}<small>Nur Ansicht</small>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p>Noch keine Zeitpläne vorhanden.</p>
+  {% endif %}
+</section>
+
+{% if is_admin %}<section class="card compact-card">
+  <h2>Bereinigung</h2>
+  <p>Die automatische Bereinigung löscht abgeschlossene Jobs und deren Logdateien nach der eingestellten Aufbewahrungszeit.</p>
+  <form method="post" action="{{ url_for('schedules_page') }}">
+    <input type="hidden" name="action" value="cleanup_now">
+    <button type="submit">Jetzt bereinigen</button>
+  </form>
+</section>{% endif %}
+
+<script>
+(function () {
+  const form = document.getElementById('schedule-form');
+  if (!form) return;
+  const jobKind = document.getElementById('job_kind');
+  const scriptSelection = document.getElementById('script_selection');
+  const scheduleType = document.getElementById('schedule_type');
+  const setGroup = (selector, active) => {
+    document.querySelectorAll(selector).forEach((el) => {
+      el.classList.toggle('is-disabled', !active);
+      el.querySelectorAll('input, select, textarea').forEach((field) => { field.disabled = !active; });
+    });
+  };
+  const refresh = () => {
+    const isScript = jobKind.value === 'script';
+    setGroup('.mirror-field', !isScript);
+    setGroup('.script-field', isScript);
+    if (isScript) {
+      setGroup('.script-single-field', scriptSelection.value === 'single');
+      setGroup('.script-selected-field', scriptSelection.value === 'selected');
+    }
+    const isInterval = scheduleType.value === 'interval';
+    setGroup('.time-field', !isInterval);
+    setGroup('.weekday-field', !isInterval);
+    setGroup('.interval-field', isInterval);
+  };
+  jobKind.addEventListener('change', refresh);
+  scriptSelection.addEventListener('change', refresh);
+  scheduleType.addEventListener('change', refresh);
+  refresh();
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Konfiguration - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Export / Import der Konfiguration</h1><p>Sichert Mirror-Profile, Healthchecks und nicht-sensitive Einstellungen als JSON.</p></div>
+  <a class="button primary" href="{{ url_for('config_export_download') }}">Konfiguration herunterladen</a>
+</div>
+<div class="grid two">
+  <section class="card">
+    <h2>Import</h2>
+    <form method="post" enctype="multipart/form-data">
+      <label>JSON-Datei</label><input type="file" name="config_file" accept="application/json,.json">
+      <label>Oder JSON einfügen</label><textarea name="config_json" rows="10"></textarea>
+      <label class="check"><input type="checkbox" name="replace_existing"> Bestehende Einträge mit gleichem Namen ersetzen</label>
+      <button class="primary" type="submit">Importieren</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Export-Vorschau</h2>
+    <p class="hint">Benutzer, Passwörter und API-Tokens werden aus Sicherheitsgründen nicht exportiert.</p>
+    <pre class="code small-code">{{ export_preview }}</pre>
+  </section>
+</div>
+{% endblock %}

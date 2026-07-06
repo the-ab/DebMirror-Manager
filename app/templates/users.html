@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Benutzer - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Benutzerverwaltung</h1>
+    <p>Mehrere Benutzer für die WebUI. Admins können Benutzer, Tokens, Import/Export und Benachrichtigungen verwalten.</p>
+  </div>
+</div>
+<div class="grid two">
+  <section class="card">
+    <h2>{% if edit_user %}Benutzer bearbeiten{% else %}Benutzer anlegen{% endif %}</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="save">
+      <input type="hidden" name="user_id" value="{{ edit_user.id if edit_user else '' }}">
+      <label>Benutzername</label>
+      <input name="username" value="{{ edit_user.username if edit_user else '' }}" required>
+      <label>Passwort {% if edit_user %}<small>leer lassen = unverändert</small>{% endif %}</label>
+      <input type="password" name="password" minlength="8" {% if not edit_user %}required{% endif %}>
+      <label>Rolle</label>
+      <select name="role">
+        {% for role,label in [('admin','Admin'),('user','Benutzer')] %}
+        <option value="{{ role }}" {% if edit_user and edit_user.role == role %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <label class="check"><input type="checkbox" name="enabled" {% if not edit_user or edit_user.enabled %}checked{% endif %}> Aktiv</label>
+      <button class="primary" type="submit">Speichern</button>
+      {% if edit_user %}<a class="button" href="{{ url_for('users_page') }}">Abbrechen</a>{% endif %}
+    </form>
+  </section>
+  <section class="card">
+    <h2>Hinweis</h2>
+    <p>Die erste Anmeldung aus älteren Versionen wird automatisch in die Benutzerverwaltung übernommen.</p>
+    <p class="hint">Rolle <strong>Benutzer</strong> kann die WebUI verwenden. Kritische Verwaltungsseiten sind Admins vorbehalten.</p>
+  </section>
+</div>
+<section class="card">
+  <h2>Vorhandene Benutzer</h2>
+  {% if users %}
+  <table>
+    <thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Letzter Login</th><th>Aktion</th></tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u.username }}</td>
+        <td>{{ u.role }}</td>
+        <td><span class="badge {{ 'ok' if u.enabled else 'muted' }}">{{ 'aktiv' if u.enabled else 'inaktiv' }}</span></td>
+        <td>{{ u.last_login_at or '-' }}</td>
+        <td class="actions">
+          <a class="button" href="{{ url_for('users_page', edit=u.id) }}">Bearbeiten</a>
+          {% if current_user.id != u.id %}
+          <form method="post" class="inline" onsubmit="return confirm('Benutzer wirklich löschen?');">
+            <input type="hidden" name="action" value="delete"><input type="hidden" name="user_id" value="{{ u.id }}">
+            <button class="danger" type="submit">Löschen</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Noch keine Benutzer vorhanden.</p>{% endif %}
+</section>
+{% endblock %}

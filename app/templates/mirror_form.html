@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ title }}</h1>
+    <p>Mirror-Profil zentral verwalten. Kommalisten sind erlaubt, zum Beispiel <code>bookworm,bookworm-updates</code>.</p>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ return_url or url_for('mirrors_page') }}">{{ return_label or 'Zurück zu Profilen' }}</a>
+    {% if mirror.id %}<a class="button" href="{{ url_for('mirror_detail', mirror_id=mirror.id) }}">Profil anzeigen</a>{% endif %}
+  </div>
+</div>
+
+<form method="post" class="card form-grid">
+  <fieldset>
+    <legend>Basis</legend>
+    <label>Name</label>
+    <input name="name" value="{{ mirror.name or '' }}" required>
+
+    <label class="check"><input type="checkbox" name="enabled" {% if mirror.enabled %}checked{% endif %}> Aktiv</label>
+
+    <label>Methode</label>
+    <select name="method">
+      {% for method in ['rsync','http','https','ftp'] %}
+      <option value="{{ method }}" {% if mirror.method == method %}selected{% endif %}>{{ method }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Host</label>
+    <input name="host" value="{{ mirror.host or '' }}" placeholder="ftp.de.debian.org" required>
+
+    <label>Root-Pfad</label>
+    <input name="root_path" value="{{ mirror.root_path or '' }}" placeholder="debian" required>
+
+    <label>Zielverzeichnis im Container</label>
+    <input name="target_path" value="{{ mirror.target_path or '' }}" placeholder="/mirror/debian" required>
+  </fieldset>
+
+  <fieldset>
+    <legend>Repository-Inhalt</legend>
+    <label>Distributionen</label>
+    <input name="dists" value="{{ mirror.dists or '' }}" placeholder="bookworm,bookworm-updates" required>
+
+    <label>Komponenten / Sections</label>
+    <input name="sections" value="{{ mirror.sections or '' }}" placeholder="main,contrib,non-free,non-free-firmware" required>
+
+    <label>Architekturen</label>
+    <input name="archs" value="{{ mirror.archs or '' }}" placeholder="amd64" required>
+
+    <label>Quellpakete</label>
+    <select name="source_mode">
+      <option value="nosource" {% if mirror.source_mode != 'source' %}selected{% endif %}>Keine Sources spiegeln (--nosource)</option>
+      <option value="source" {% if mirror.source_mode == 'source' %}selected{% endif %}>Sources spiegeln (--source)</option>
+    </select>
+
+    <label>Keyring</label>
+    <select name="keyring">
+      <option value="">Kein zusätzlicher Keyring</option>
+      {% for keyring in keyrings %}
+      <option value="{{ keyring }}" {% if mirror.keyring == keyring %}selected{% endif %}>{{ keyring }}</option>
+      {% endfor %}
+    </select>
+    <small>Neue Keyrings kannst du im Bereich „Keyrings“ hochladen oder importieren.</small>
+
+    <label>Erwarteter Key-Fingerprint optional</label>
+    <input name="keyring_fingerprint" value="{{ mirror.keyring_fingerprint or '' }}" placeholder="Fingerprint ohne oder mit Leerzeichen">
+    <small>Wenn gesetzt, wird vor jedem Job geprüft, ob der ausgewählte Keyring diesen Fingerprint enthält.</small>
+  </fieldset>
+
+  <fieldset>
+    <legend>debmirror-Optionen</legend>
+    <label class="check"><input type="checkbox" name="postcleanup" {% if mirror.postcleanup %}checked{% endif %}> Post-Cleanup verwenden</label>
+    <label>Diff-Modus</label>
+    <select name="diff_mode">
+      {% for mode in ['use','mirror','none'] %}
+      <option value="{{ mode }}" {% if mirror.diff_mode == mode %}selected{% endif %}>{{ mode }}</option>
+      {% endfor %}
+    </select>
+    <label class="check"><input type="checkbox" name="progress" {% if mirror.progress %}checked{% endif %}> Fortschritt anzeigen</label>
+    <label class="check"><input type="checkbox" name="verbose" {% if mirror.verbose %}checked{% endif %}> Ausführliche Ausgabe</label>
+    <label class="check"><input type="checkbox" name="getcontents" {% if mirror.getcontents %}checked{% endif %}> Contents-Dateien spiegeln</label>
+    <label class="check"><input type="checkbox" name="i18n" {% if mirror.i18n %}checked{% endif %}> i18n-Dateien spiegeln</label>
+
+    <label>Timeout in Sekunden</label>
+    <input type="number" min="1" name="timeout_seconds" value="{{ mirror.timeout_seconds or '' }}" placeholder="leer = debmirror Standard">
+
+    <label>Rsync Extra</label>
+    <input name="rsync_extra" value="{{ mirror.rsync_extra or '' }}" placeholder="z. B. --bwlimit=50000">
+
+    <label>Zusätzliche debmirror-Flags</label>
+    <input name="extra_options" value="{{ mirror.extra_options or '' }}" placeholder="z. B. --passive --ignore-small-errors">
+    <small>Nur freigegebene Flags werden akzeptiert, z. B. <code>--passive</code>, <code>--checksums</code>, <code>--ignore-small-errors</code>.</small>
+
+    <label>Include-Patterns</label>
+    <input name="include_patterns" value="{{ mirror.include_patterns or '' }}" placeholder="optional, kommasepariert">
+
+    <label>Exclude-Patterns</label>
+    <input name="exclude_patterns" value="{{ mirror.exclude_patterns or '' }}" placeholder="optional, kommasepariert">
+  </fieldset>
+
+  <fieldset>
+    <legend>Zeitplan</legend>
+    <p class="hint">Wenn hier ein Zeitplan gesetzt wird, legt der DebMirror Manager automatisch einen Profilzeitplan in der Job-Zeitplanliste an. Wird dieser dort gelöscht, wird dieses Profil wieder auf „Manuell“ gestellt.</p>
+    <label>Modus</label>
+    <select name="schedule_mode">
+      {% for mode,label in [('manual','Manuell'),('daily','Täglich'),('weekly','Wöchentlich'),('interval','Intervall')] %}
+      <option value="{{ mode }}" {% if mirror.schedule_mode == mode %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Uhrzeit</label>
+    <input type="time" name="schedule_time" value="{{ mirror.schedule_time or '22:00' }}">
+
+    <label>Wochentag</label>
+    <select name="schedule_weekday">
+      {% for number,label in [(0,'Montag'),(1,'Dienstag'),(2,'Mittwoch'),(3,'Donnerstag'),(4,'Freitag'),(5,'Samstag'),(6,'Sonntag')] %}
+      <option value="{{ number }}" {% if mirror.schedule_weekday|int == number %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Intervall in Stunden</label>
+    <input type="number" min="1" name="interval_hours" value="{{ mirror.interval_hours or 24 }}">
+  </fieldset>
+
+  <div class="form-actions">
+    <a class="button" href="{{ return_url or url_for('mirrors_page') }}">Abbrechen / zurück</a>
+    <button type="submit" class="primary">Speichern</button>
+  </div>
+</form>
+{% endblock %}

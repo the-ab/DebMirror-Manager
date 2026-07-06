@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="de" data-theme="{{ appearance }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ersteinrichtung - {{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <h1>{{ app_name }}</h1>
+    <p>Version {{ app_version }} · Ersteinrichtung</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    <p class="hint">Es ist noch kein gültiger Admin-Zugang eingerichtet oder es wird noch das Standardpasswort verwendet.</p>
+    <form method="post">
+      <label>Benutzername</label>
+      <input type="text" name="username" value="admin" autofocus required>
+      <label>Neues Passwort</label>
+      <input type="password" name="password" minlength="8" required>
+      <label>Passwort wiederholen</label>
+      <input type="password" name="password2" minlength="8" required>
+      <button type="submit" class="primary full">Admin-Zugang speichern</button>
+    </form>
+  </div>
+</body>
+</html>

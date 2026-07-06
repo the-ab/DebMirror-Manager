@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Benutzerskripte - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Benutzerskripte</h1>
+    <p>Eigene Skripte jobbasiert ausführen und über Zeitpläne starten.</p>
+  </div>
+  <div class="actions"><a class="button" href="{{ url_for('schedules_page') }}">Zeitpläne</a><a class="button" href="{{ url_for('jobs') }}">Jobs / Logs</a></div>
+</div>
+
+<section class="card">
+  <h2>Skript-Verzeichnis</h2>
+  <p>Lege Skripte auf dem Host unter <code>/docker_data/debmirror-manager/user-scripts</code> ab. Im Container ist das <code>{{ user_script_dir }}</code>.</p>
+  <p class="hint">Skripte werden ohne Shell-Textfeld ausgeführt. Erlaubt sind nur Dateien direkt in diesem Verzeichnis, keine Unterordner oder Symlinks.</p>
+  <p class="hint">Das optionale Zielverzeichnis wird <strong>nicht</strong> an das Skript übergeben und verändert die Ausführung nicht. Es dient nur dazu, für Sync-/Mirror-Skripte die Größe des erzeugten Zielverzeichnisses anzeigen und neu berechnen zu können.</p>
+</section>
+
+{% if is_admin %}<section class="card">
+  <h2>Skript hochladen</h2>
+  <form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="action" value="upload">
+    <input type="file" name="script_file" required>
+    <button type="submit">Hochladen</button>
+  </form>
+</section>{% endif %}
+
+<section class="card">
+  <h2>Vorhandene Skripte</h2>
+  {% if scripts %}
+  <table>
+    <thead><tr><th>Name</th><th>Skriptgröße</th><th>Zielverzeichnis / Größe</th><th>Geändert</th><th>Ausführbar</th><th>Aktionen</th></tr></thead>
+    <tbody>
+    {% for script in scripts %}
+      <tr>
+        <td><strong>{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
+        <td>{{ script.size_h }}</td>
+        <td>
+          {% if script.target_path %}
+            <code class="target-path-inline">{{ script.target_path }}</code>
+            <div class="target-size-line">
+              <strong>{{ script.target_size_info.size_h }}</strong>
+              {% if script.target_size_info.status %}<span class="badge {{ script.target_size_info.status }}">{{ script.target_size_info.status }}</span>{% endif %}
+              {% if script.target_size_info.calculated_at %}<small>{{ script.target_size_info.calculated_at }}</small>{% endif %}
+              {% if is_admin %}
+              <form method="post" class="inline target-size-recalc-form" action="{{ url_for('user_scripts_page') }}">
+                <input type="hidden" name="action" value="recalculate_size">
+                <input type="hidden" name="script_name" value="{{ script.name }}">
+                <button type="submit">Größe neu berechnen</button>
+              </form>
+              {% endif %}
+            </div>
+            {% if script.target_size_info.error %}<small class="error-text">{{ script.target_size_info.error }}</small>{% endif %}
+          {% else %}
+            <small>kein Zielverzeichnis gesetzt</small>
+          {% endif %}
+          {% if is_admin %}
+          <div class="script-target-actions">
+            <form method="post" class="script-target-form" action="{{ url_for('user_scripts_page') }}">
+              <input type="hidden" name="action" value="save_target">
+              <input type="hidden" name="script_name" value="{{ script.name }}">
+              <input name="target_path" value="{{ script.target_path }}" placeholder="z. B. /mirror/esm/infra/ubuntu" aria-label="Zielverzeichnis nur für Größenberechnung">
+              <button type="submit">Speichern</button>
+            </form>
+          </div>
+          {% endif %}
+        </td>
+        <td>{{ script.modified_at }}</td>
+        <td>{% if script.executable %}<span class="badge ok">ja</span>{% else %}<span class="badge warning">bash fallback</span>{% endif %}</td>
+        <td>
+          {% if is_admin %}
+          <form method="post" class="inline" action="{{ url_for('user_scripts_page') }}">
+            <input type="hidden" name="action" value="run">
+            <input type="hidden" name="script_name" value="{{ script.name }}">
+            <button class="primary" type="submit">Als Job starten</button>
+          </form>
+          <form method="post" class="inline" action="{{ url_for('user_script_delete', script_name=script.name) }}" onsubmit="return confirm('Skript wirklich löschen?');">
+            <button class="danger" type="submit">Löschen</button>
+          </form>
+          {% else %}<small>Nur Ansicht</small>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>Noch keine Benutzerskripte vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

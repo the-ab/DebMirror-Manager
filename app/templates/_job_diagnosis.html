@@ -1,0 +1,58 @@
+{% if diagnosis.title %}
+<section class="card diagnosis {{ diagnosis.type }}">
+  <h2>Fehlerauswertung</h2>
+  <p><strong>{{ diagnosis.title }}</strong></p>
+  <p>{{ diagnosis.detail }}</p>
+  <p><strong>Empfohlene Aktion:</strong> {{ diagnosis.action }}</p>
+  {% if is_admin and diagnosis.type == 'gpg-key' and diagnosis.missing_keys %}
+  <div class="key-helper">
+    <h3>Erkannte fehlende Keys</h3>
+    {% if diagnosis.matching_keyrings %}
+    <div class="notice success">
+      <strong>Passende vorhandene Keyrings gefunden.</strong><br>
+      Die vorhandenen Keyring-Dateien wurden geprüft. Du kannst einen Treffer direkt dem betroffenen Mirror-Profil zuweisen, ohne den Key erneut zu importieren.
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Keyring</th><th>Passender Fingerprint</th><th>Aktion</th></tr></thead>
+        <tbody>
+        {% for match in diagnosis.matching_keyrings %}
+          <tr>
+            <td><code>{{ match.name }}</code></td>
+            <td><code>{{ match.fingerprint }}</code></td>
+            <td>
+              <form method="post" action="{{ url_for('keyrings') }}" class="inline-form">
+                <input type="hidden" name="action" value="assign_existing">
+                <input type="hidden" name="keyring" value="{{ match.path }}">
+                <input type="hidden" name="expected_fingerprint" value="{{ match.expected or match.fingerprint }}">
+                <input type="hidden" name="assign_mirror_id" value="{{ job.mirror_id }}">
+                <button type="submit">Vorhandenen Keyring zuweisen</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="notice warning">
+      <strong>Kein passender vorhandener Keyring gefunden.</strong><br>
+      Die vorhandenen Keyrings wurden geprüft. Du kannst den fehlenden Key jetzt direkt vom Keyserver importieren oder manuell als Datei/URL hinzufügen.
+    </div>
+    {% endif %}
+    {% for key in diagnosis.missing_keys %}
+      <form method="post" action="{{ url_for('keyrings') }}" class="inline-form">
+        <input type="hidden" name="action" value="keyserver">
+        <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+        <input type="hidden" name="assign_mirror_id" value="{{ job.mirror_id }}">
+        <span><code>{{ key.fingerprint }}</code>{% if key.has_full_fingerprint != '1' %} <span class="badge warning">nur Key-ID</span>{% endif %}</span>
+        <button type="submit">Vom Keyserver importieren + Profil zuweisen</button>
+        <a class="button" href="{{ url_for('keyrings', fingerprint=key.fingerprint, mirror_id=job.mirror_id) }}">Manuell importieren</a>
+      </form>
+    {% endfor %}
+    <p class="hint">Sicherer Weg: Fingerprint gegen Hersteller-/Projekt-Dokumentation prüfen und danach importieren.</p>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+

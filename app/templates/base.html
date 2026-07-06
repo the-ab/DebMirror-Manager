@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="de" data-theme="{{ appearance }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<header class="topbar app-topbar">
+  <div class="brand"><a href="{{ url_for('dashboard') }}">{{ app_name }}</a> <a class="version-link" href="{{ url_for('release_notes') }}" title="Release Notes öffnen">v{{ app_version }}</a></div>
+  <div class="top-actions">
+    <span class="top-user">{% if current_user.username %}{{ current_user.username }} · {{ current_user.role }}{% else %}Gast{% endif %}</span>
+    {% if is_admin %}
+    <form method="post" action="{{ url_for('toggle_theme') }}" class="inline">
+      <button class="linkbtn" type="submit" title="Darstellung umschalten">
+        {% if appearance == 'dark' %}☀ Light{% elif appearance == 'auto' %}◐ Auto{% else %}☾ Dark{% endif %}
+      </button>
+    </form>
+    {% endif %}
+    {% if auth_enabled %}
+    <form method="post" action="{{ url_for('logout') }}" class="inline"><button class="linkbtn" type="submit">Logout</button></form>
+    {% endif %}
+  </div>
+</header>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Hauptnavigation">
+    <nav class="side-nav">
+      {% set mirror_active = request.endpoint in ['mirrors_page','mirror_detail','mirror_edit','mirror_new','profile_generator','script_import','keyrings','profile_generator_settings'] %}
+      {% set ops_active = request.endpoint in ['jobs','job_detail','schedules_page','user_scripts_page','healthchecks_page','notifications_page'] %}
+      {% set system_active = request.endpoint in ['settings_page','backups_page','config_page','users_page','api_tokens_page'] %}
+      {% set help_active = request.endpoint in ['help_page','release_notes'] %}
+
+      <a class="side-link {% if request.endpoint == 'dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}"><span>Übersicht</span><small>Dashboard, Speicher, Status</small></a>
+
+      <details class="side-section" {% if mirror_active %}open{% endif %}>
+        <summary class="side-heading">Mirror</summary>
+        <div class="side-section-body">
+          <a class="side-link {% if request.endpoint in ['mirrors_page','mirror_detail','mirror_edit','mirror_new'] %}active{% endif %}" href="{{ url_for('mirrors_page') }}"><span>Profile</span><small>Alle Repository-Spiegel</small></a>
+          {% if is_admin %}
+          <a class="side-link {% if request.endpoint == 'profile_generator' %}active{% endif %}" href="{{ url_for('profile_generator') }}"><span>Profilgenerator</span><small>Debian/Ubuntu Profile erzeugen</small></a>
+          <a class="side-link {% if request.endpoint == 'script_import' %}active{% endif %}" href="{{ url_for('script_import') }}"><span>Skript-Import</span><small>Vorhandene debmirror-Skripte übernehmen</small></a>
+          <a class="side-link {% if request.endpoint == 'keyrings' %}active{% endif %}" href="{{ url_for('keyrings') }}"><span>Keyrings</span><small>GPG-Keys verwalten</small></a>
+          <a class="side-link {% if request.endpoint == 'profile_generator_settings' %}active{% endif %}" href="{{ url_for('profile_generator_settings') }}"><span>Generator-Einstellungen</span><small>Generator erweitern</small></a>
+          {% endif %}
+        </div>
+      </details>
+
+      <details class="side-section" {% if ops_active %}open{% endif %}>
+        <summary class="side-heading">Betrieb</summary>
+        <div class="side-section-body">
+          <a class="side-link {% if request.endpoint in ['jobs','job_detail'] %}active{% endif %}" href="{{ url_for('jobs') }}"><span>Jobs / Logs</span><small>Warteschlange und Ausgaben</small></a>
+          <a class="side-link {% if request.endpoint == 'schedules_page' %}active{% endif %}" href="{{ url_for('schedules_page') }}"><span>Zeitpläne</span><small>Globale und Profil-Zeitpläne</small></a>
+          <a class="side-link {% if request.endpoint == 'user_scripts_page' %}active{% endif %}" href="{{ url_for('user_scripts_page') }}"><span>Benutzerskripte</span><small>Eigene Skript-Jobs</small></a>
+          <a class="side-link {% if request.endpoint == 'healthchecks_page' %}active{% endif %}" href="{{ url_for('healthchecks_page') }}"><span>Healthchecks</span><small>Lokale Client-URLs prüfen</small></a>
+          {% if is_admin %}<a class="side-link {% if request.endpoint == 'notifications_page' %}active{% endif %}" href="{{ url_for('notifications_page') }}"><span>Benachrichtigung</span><small>Mail, Telegram, Discord</small></a>{% endif %}
+        </div>
+      </details>
+
+      {% if is_admin %}
+      <details class="side-section" {% if system_active %}open{% endif %}>
+        <summary class="side-heading">System</summary>
+        <div class="side-section-body">
+          <a class="side-link {% if request.endpoint == 'settings_page' %}active{% endif %}" href="{{ url_for('settings_page') }}"><span>Einstellungen</span><small>Queue, Speicher, Retention</small></a>
+          <a class="side-link {% if request.endpoint == 'backups_page' %}active{% endif %}" href="{{ url_for('backups_page') }}"><span>Backup / Wiederherstellen</span><small>Sichern und zurückspielen</small></a>
+          <a class="side-link {% if request.endpoint == 'config_page' %}active{% endif %}" href="{{ url_for('config_page') }}"><span>Konfig Export/Import</span><small>Profile und Einstellungen</small></a>
+          <a class="side-link {% if request.endpoint == 'users_page' %}active{% endif %}" href="{{ url_for('users_page') }}"><span>Benutzer</span><small>Admin und Ansicht-Benutzer</small></a>
+          <a class="side-link {% if request.endpoint == 'api_tokens_page' %}active{% endif %}" href="{{ url_for('api_tokens_page') }}"><span>API</span><small>Tokens und REST-Schnittstelle</small></a>
+        </div>
+      </details>
+      {% endif %}
+
+      <details class="side-section" {% if help_active %}open{% endif %}>
+        <summary class="side-heading">Hilfe</summary>
+        <div class="side-section-body">
+          <a class="side-link {% if request.endpoint == 'help_page' %}active{% endif %}" href="{{ url_for('help_page') }}"><span>Anleitung</span><small>Alle Funktionen erklärt</small></a>
+          <a class="side-link {% if request.endpoint == 'release_notes' %}active{% endif %}" href="{{ url_for('release_notes') }}"><span>Release Notes</span><small>Änderungen je Version</small></a>
+        </div>
+      </details>
+    </nav>
+  </aside>
+
+  <div class="content-shell">
+    <main class="container">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="messages">
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
+          {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">
+      <span>Mirror-Basis: {{ mirror_base }}</span> · <span>Zeit: {{ app_timezone }}</span> · <span>Auth: {{ auth_source }}</span>
+    </footer>
+  </div>
+</div>
+<script>
+(function () {
+  document.querySelectorAll('.side-nav details.side-section').forEach(function (item) {
+    item.addEventListener('toggle', function () {
+      if (!item.open) return;
+      document.querySelectorAll('.side-nav details.side-section[open]').forEach(function (other) {
+        if (other !== item) other.removeAttribute('open');
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head compact-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p>Kurzübersicht über Speicher, Warteschlange, Profile, Healthchecks und die letzten Aktivitäten.</p>
+  </div>
+  {% if is_admin %}<a class="button primary" href="{{ url_for('profile_generator') }}">Profil erzeugen</a>{% endif %}
+</div>
+
+<section class="summary-grid">
+  <article class="card summary-card storage-card">
+    <h2>Speicherplatz</h2>
+    <p class="summary-value">{{ storage.percent if not storage.error else '-' }}%</p>
+    <small>{{ storage.path }}</small>
+    {% if storage.error %}
+      <p class="error-text">{{ storage.error }}</p>
+    {% else %}
+      <div class="meter"><span style="width: {{ storage.percent }}%"></span></div>
+      <div class="stats-row compact"><span>{{ storage.used_h }} belegt</span><span>{{ storage.free_h }} frei</span><span>{{ storage.total_h }} gesamt</span></div>
+      {% if storage_guard.blocked %}<div class="notice danger"><strong>Sperre aktiv:</strong> {{ storage_guard.message }}</div>{% elif storage_guard.enabled %}<small>Sperre ab {{ storage_guard.threshold }}%</small>{% endif %}
+    {% endif %}
+  </article>
+  <article class="card summary-card">
+    <h2>Warteschlange</h2>
+    <p class="summary-value">{{ active_jobs_count }}/{{ max_parallel_jobs }}</p>
+    <small>aktive Jobs · {{ queue_count }} wartend</small>
+    {% if active_job %}<p><a href="{{ url_for('job_detail', job_id=active_job.id) }}">#{{ active_job.id }} {{ active_job.mirror_name }}</a> <span class="badge {{ active_job.status }}">{{ active_job.status }}</span></p>{% else %}<p>Keine aktiven Jobs.</p>{% endif %}
+  </article>
+  <article class="card summary-card">
+    <h2>Profile</h2>
+    <p class="summary-value">{{ mirrors|length }}</p>
+    <small>angelegte Mirror-Profile</small>
+    <p><a href="{{ url_for('mirrors_page') }}">Profile anzeigen</a>{% if is_admin %} · <a href="{{ url_for('mirror_new') }}">neu</a>{% endif %}</p>
+  </article>
+  <article class="card summary-card">
+    <h2>Healthchecks</h2>
+    <p class="summary-value">{{ healthchecks|length }}</p>
+    <small>konfigurierte Prüfungen</small>
+    <p><a href="{{ url_for('healthchecks_page') }}">Healthchecks öffnen</a></p>
+  </article>
+</section>
+
+<section class="card compact-card">
+  <div class="section-head">
+    <h2>Mirror-Profile</h2>
+    <a href="{{ url_for('mirrors_page') }}">Alle Profile</a>
+  </div>
+  {% if mirrors %}
+  <div class="table-scroll dashboard-table-scroll">
+    <table class="compact-table dashboard-entity-table">
+      <colgroup><col class="col-name"><col class="col-status"><col class="col-size"><col class="col-schedule"><col class="col-last"><col class="col-action"></colgroup>
+      <thead><tr><th>Name</th><th>Status</th><th>Größe</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktion</th></tr></thead>
+      <tbody>
+      {% for m in mirrors %}
+        <tr>
+          <td><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.host }}/{{ m.root_path }} → {{ m.target_path }}</small></td>
+          <td>{% if m.running_job %}<span class="badge {{ m.running_job.status }}">{{ m.running_job.status }} #{{ m.running_job.id }}</span>{% elif m.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
+          <td><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
+          <td>{{ m.schedule_display }}</td>
+          <td>{% if m.last_job %}<span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
+          <td>
+            {% if m.running_job %}
+            <a class="button" href="{{ url_for('job_detail', job_id=m.running_job.id) }}">Log</a>
+            {% elif is_admin %}
+            <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
+            {% else %}<small>Nur Ansicht</small>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>Noch keine Mirror-Profile vorhanden.</p>
+  {% endif %}
+</section>
+
+<section class="card compact-card">
+  <div class="section-head">
+    <h2>Benutzerskripte</h2>
+    <a href="{{ url_for('user_scripts_page') }}">Alle Benutzerskripte</a>
+  </div>
+  {% if user_scripts %}
+  <div class="table-scroll dashboard-table-scroll">
+    <table class="compact-table dashboard-entity-table">
+      <colgroup><col class="col-name"><col class="col-status"><col class="col-size"><col class="col-schedule"><col class="col-last"><col class="col-action"></colgroup>
+      <thead><tr><th>Name</th><th>Status</th><th>Größe</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktion</th></tr></thead>
+      <tbody>
+      {% for script in user_scripts %}
+        <tr>
+          <td><a href="{{ url_for('user_scripts_page') }}"><strong>{{ script.name }}</strong></a><br><small><code>{{ script.path }}</code></small></td>
+          <td>{% if script.running_job %}<span class="badge {{ script.running_job.status }}">{{ script.running_job.status }} #{{ script.running_job.id }}</span>{% elif script.executable %}<span class="badge ok">bereit</span>{% else %}<span class="badge warning">bash fallback</span>{% endif %}</td>
+          <td>
+            {% if script.target_path %}
+              <strong>{{ script.target_size_info.size_h }}</strong>{% if script.target_size_info.status %}<br><small>{{ script.target_size_info.status }}{% if script.target_size_info.calculated_at %} · {{ script.target_size_info.calculated_at }}{% endif %}</small>{% endif %}{% if script.target_size_info.error %}<br><small>{{ script.target_size_info.error }}</small>{% endif %}
+            {% else %}
+              <small>kein Ziel gesetzt</small>
+            {% endif %}
+          </td>
+          <td>{{ script.schedule_display }}</td>
+          <td>{% if script.last_job %}<span class="badge {{ script.last_job.status }}">{{ script.last_job.status }}</span><br><small>#{{ script.last_job.id }} {{ script.last_job.started_at }} · {{ script.last_job.duration_h }}<br>{{ script.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
+          <td>
+            {% if script.running_job %}
+              <a class="button" href="{{ url_for('job_detail', job_id=script.running_job.id) }}">Log</a>
+            {% elif is_admin %}
+              <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline">
+                <input type="hidden" name="action" value="run">
+                <input type="hidden" name="script_name" value="{{ script.name }}">
+                <button type="submit">Start</button>
+              </form>
+            {% else %}<small>Nur Ansicht</small>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p>Noch keine Benutzerskripte vorhanden.</p>
+  {% endif %}
+</section>
+
+<div class="grid two compact-grid">
+  <section class="card compact-card">
+    <div class="section-head"><h2>Letzte Jobs</h2><a href="{{ url_for('jobs') }}">Alle Jobs</a></div>
+    {% if recent_jobs %}
+    <div class="table-scroll dashboard-list-scroll">
+      <table class="compact-table">
+        <thead><tr><th>ID</th><th>Ziel</th><th>Status</th><th>Quelle</th><th>Start</th><th>Dauer</th><th>Exit</th></tr></thead>
+        <tbody>
+        {% for j in recent_jobs %}
+          <tr>
+            <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
+            <td>{{ j.mirror_name }}</td>
+            <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+            <td><small>{{ j.source_h }}</small></td>
+            <td><small>{{ j.started_at }}</small></td>
+            <td>{{ j.duration_h or '-' }}</td>
+            <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<p>Noch keine Jobs.</p>{% endif %}
+  </section>
+
+  <section class="card compact-card">
+    <div class="section-head"><h2>Ereignisse</h2><span class="muted-text">neueste Meldungen</span></div>
+    {% if events %}
+      <div class="event-scroll dashboard-list-scroll">
+        <ul class="event-list">
+        {% for e in events %}
+          <li><span class="badge {{ e.level }}">{{ e.level }}</span><div><small>{{ e.created_at }}</small><br>{{ e.message }}</div></li>
+        {% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <p>Noch keine Ereignisse.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card compact-card">
+  <div class="section-head"><h2>Healthchecks</h2><a href="{{ url_for('healthchecks_page') }}">Alle Healthchecks</a></div>
+  {% if healthchecks %}
+  <div class="table-scroll dashboard-table-scroll small">
+    <table class="compact-table">
+      <thead><tr><th>Name</th><th>Status</th><th>Letzte Prüfung</th><th>URL</th></tr></thead>
+      <tbody>
+      {% for c in healthchecks[:8] %}
+        <tr>
+          <td><a href="{{ url_for('healthchecks_page') }}"><strong>{{ c.name }}</strong></a></td>
+          <td>{% if c.last_ok is none %}<span class="badge muted">nie geprüft</span>{% elif c.last_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">Fehler</span>{% endif %}</td>
+          <td>{{ c.last_check_at or '-' }}</td>
+          <td><small>{{ c.url }}</small></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p>Noch keine Healthchecks eingerichtet.</p>{% endif %}
+</section>
+{% endblock %}

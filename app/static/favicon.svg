@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DebMirror Manager Penguin">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="8" x2="0" y2="56">
+      <stop offset="0" stop-color="#1f2937"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#bg)"/>
+  <ellipse cx="32" cy="34" rx="20" ry="25" fill="url(#body)"/>
+  <ellipse cx="32" cy="39" rx="13" ry="17" fill="#f8fafc"/>
+  <circle cx="24" cy="25" r="4.5" fill="#f8fafc"/>
+  <circle cx="40" cy="25" r="4.5" fill="#f8fafc"/>
+  <circle cx="25.2" cy="25.5" r="1.8" fill="#020617"/>
+  <circle cx="38.8" cy="25.5" r="1.8" fill="#020617"/>
+  <path d="M27 31h10l-5 5z" fill="#f59e0b"/>
+  <path d="M14 53c3-4 9-5 15-2-3 4-10 6-15 2z" fill="#f59e0b"/>
+  <path d="M50 53c-3-4-9-5-15-2 3 4 10 6 15 2z" fill="#f59e0b"/>
+  <path d="M15 35c-5 3-7 9-5 14 4-1 7-5 8-11z" fill="#111827" opacity=".95"/>
+  <path d="M49 35c5 3 7 9 5 14-4-1-7-5-8-11z" fill="#111827" opacity=".95"/>
+  <path d="M18 13c7-8 21-8 28 0" fill="none" stroke="#93c5fd" stroke-width="3" stroke-linecap="round" opacity=".75"/>
+</svg>

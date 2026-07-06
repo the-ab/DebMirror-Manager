@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Skript-Import - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Import bestehender debmirror-Skripte</h1>
+    <p>Importiert direkte <code>debmirror</code>-Befehle und einfache Variablen-Skripte. Unterstützt wird jetzt auch dein Stil mit <code>DEB_MIRROR_DIR</code>, <code>DEB_HOST</code>, <code>DEB_ROOT</code>, <code>DEB_DIST</code>, <code>DEB_SECT</code>, <code>DEB_ARCH</code>, <code>DEB_OPT</code> und <code>run_debmirror()</code>.</p>
+  </div>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Skript einfügen oder hochladen</h2>
+    <form method="post" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="preview">
+      <label>Skriptinhalt</label>
+      <textarea name="script_text" rows="14" placeholder="debmirror \
+  --method=rsync \
+  --host=ftp.de.debian.org \
+  --root=debian \
+  --dist=bookworm,bookworm-updates \
+  --section=main,contrib,non-free,non-free-firmware \
+  --arch=amd64 \
+  --nosource \
+  /mirror/debian">{{ script_text }}</textarea>
+      <label>Oder Skriptdatei hochladen</label>
+      <input type="file" name="script_file" accept=".sh,.bash,.txt,text/plain">
+      <div class="form-actions"><button class="primary" type="submit">Analysieren</button></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Import-Verzeichnis</h2>
+    <p>Optional kannst du vorhandene Skripte auf dem Host hier ablegen:</p>
+    <pre class="code">/docker_data/debmirror-manager/import-scripts</pre>
+    <p>Im Container wird daraus:</p>
+    <pre class="code">{{ import_dir }}</pre>
+    {% if import_files %}
+      <table>
+        <thead><tr><th>Datei</th><th>Größe</th><th>Aktion</th></tr></thead>
+        <tbody>
+        {% for f in import_files %}
+          <tr>
+            <td>{{ f.name }}</td>
+            <td>{{ f.size }} B</td>
+            <td>
+              <form method="post" class="inline">
+                <input type="hidden" name="action" value="load_file">
+                <input type="hidden" name="import_file" value="{{ f.name }}">
+                <button type="submit">Analysieren</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>Noch keine importierbaren Skripte gefunden.</p>
+    {% endif %}
+  </section>
+</div>
+
+{% if preview %}
+<section class="card">
+  <h2>Gefundener debmirror-Befehl</h2>
+  <pre class="code">{{ command_line }}</pre>
+</section>
+
+{% if warnings %}
+<section class="card diagnosis warning">
+  <h2>Prüfhinweise</h2>
+  <ul>
+    {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Import-Vorschau</h2>
+  <form method="post" class="form-grid" enctype="multipart/form-data">
+    <input type="hidden" name="action" value="create">
+    <input type="hidden" name="values_json" value='{{ preview | tojson }}'>
+    <fieldset>
+      <legend>Basis</legend>
+      <label>Name</label><input name="name" value="{{ preview.name }}" required>
+      <label>Methode</label><input name="method" value="{{ preview.method }}" required>
+      <label>Host</label><input name="host" value="{{ preview.host }}" required>
+      <label>Root-Pfad</label><input name="root_path" value="{{ preview.root_path }}" required>
+      <label>Zielverzeichnis</label><input name="target_path" value="{{ preview.target_path }}" required>
+    </fieldset>
+    <fieldset>
+      <legend>Repository</legend>
+      <label>Distributionen</label><input name="dists" value="{{ preview.dists }}" required>
+      <label>Komponenten</label><input name="sections" value="{{ preview.sections }}" required>
+      <label>Architekturen</label><input name="archs" value="{{ preview.archs }}" required>
+      <label>Sources</label><input value="{{ preview.source_mode }}" disabled>
+      <label>Zusatzoptionen</label><input value="{{ preview.extra_options or '-' }}" disabled>
+    </fieldset>
+    <fieldset>
+      <legend>Keyring direkt setzen</legend>
+      <p class="muted">Optional kannst du dem importierten Profil direkt einen vorhandenen Keyring zuweisen oder einen neuen Key während des Imports übernehmen.</p>
+      <label>Vorhandener Keyring</label>
+      <select name="keyring">
+        <option value="">Keinen Keyring setzen</option>
+        {% for k in keyrings %}
+          <option value="{{ k }}" {% if preview.keyring == k %}selected{% endif %}>{{ k }}</option>
+        {% endfor %}
+        {% if preview.keyring and preview.keyring not in keyrings %}
+          <option value="{{ preview.keyring }}" selected>{{ preview.keyring }} (aus Skript erkannt, bitte prüfen)</option>
+        {% endif %}
+      </select>
+      <label>Erwarteter Fingerprint</label>
+      <input name="keyring_fingerprint" value="{{ preview.keyring_fingerprint or '' }}" placeholder="z. B. 811CA850DB161B9BD803F90199BB41D37A182BAE">
+      <label>Oder Key vom Keyserver importieren</label>
+      <input name="keyserver_fingerprint" placeholder="Fingerprint/Key-ID für Keyserver-Import">
+      <label>Keyserver</label>
+      <input name="keyserver" value="hkps://keyserver.ubuntu.com">
+      <label>Oder Key aus URL importieren</label>
+      <input name="key_url" placeholder="https://.../archive-key.asc">
+      <label>Dateiname für URL-Key optional</label>
+      <input name="key_filename" placeholder="projekt-archive-key.gpg">
+      <label>Oder Key-Datei hochladen</label>
+      <input type="file" name="keyfile" accept=".gpg,.asc,.key,text/plain,application/octet-stream">
+    </fieldset>
+    <div class="form-actions">
+      <button class="primary" type="submit">Als Mirror-Profil speichern</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

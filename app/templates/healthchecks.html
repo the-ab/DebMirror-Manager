@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Healthchecks - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Healthchecks für lokale Clients</h1><p>Prüft, ob lokale Mirror-URLs für Clients erreichbar sind.</p></div></div>
+{% if is_admin %}<div class="grid two">
+  <section class="card">
+    <h2>{% if edit_check %}Healthcheck bearbeiten{% else %}Healthcheck anlegen{% endif %}</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="save"><input type="hidden" name="check_id" value="{{ edit_check.id if edit_check else '' }}">
+      <label>Name</label><input name="name" value="{{ edit_check.name if edit_check else '' }}" placeholder="Debian Bookworm Release" required>
+      <label>URL</label><input name="url" value="{{ edit_check.url if edit_check else '' }}" placeholder="http://SERVER-IP:8110/debian/dists/bookworm/Release" required>
+      <label>Erwarteter HTTP-Status</label><input type="number" name="expected_status" value="{{ edit_check.expected_status if edit_check else 200 }}">
+      <label>Methode</label><select name="method"><option value="GET" {% if edit_check and edit_check.method == 'GET' %}selected{% endif %}>GET</option><option value="HEAD" {% if edit_check and edit_check.method == 'HEAD' %}selected{% endif %}>HEAD</option></select>
+      <label>Timeout Sekunden</label><input type="number" min="1" name="timeout_seconds" value="{{ edit_check.timeout_seconds if edit_check else 10 }}">
+      <label>Intervall Minuten</label><input type="number" min="1" name="interval_minutes" value="{{ edit_check.interval_minutes if edit_check else 60 }}">
+      <label class="check"><input type="checkbox" name="enabled" {% if not edit_check or edit_check.enabled %}checked{% endif %}> Aktiv</label>
+      <button class="primary" type="submit">Speichern</button>{% if edit_check %}<a class="button" href="{{ url_for('healthchecks_page') }}">Abbrechen</a>{% endif %}
+    </form>
+  </section>
+  <section class="card">
+    <h2>Beispiele</h2>
+    <pre class="code">http://SERVER-IP:8110/debian/dists/bookworm/Release
+http://SERVER-IP:8110/ubuntu-noble/dists/noble/Release
+http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
+  </section>
+</div>{% endif %}
+<section class="card">
+  <h2>Vorhandene Healthchecks</h2>
+  {% if checks %}
+  <table><thead><tr><th>Name</th><th>URL</th><th>Status</th><th>Letzte Prüfung</th><th>Latenz</th><th>Aktion</th></tr></thead><tbody>
+  {% for c in checks %}
+    <tr><td><strong>{{ c.name }}</strong><br><small>{{ c.method }} erwartet {{ c.expected_status }}, alle {{ c.interval_minutes }} min</small></td><td><code>{{ c.url }}</code></td><td>{% if c.last_ok is none %}<span class="badge muted">nie geprüft</span>{% elif c.last_ok %}<span class="badge ok">OK {{ c.last_status_code }}</span>{% else %}<span class="badge error">Fehler {{ c.last_status_code or '-' }}</span><br><small>{{ c.last_error }}</small>{% endif %}</td><td>{{ c.last_check_at or '-' }}</td><td>{{ c.last_latency_ms if c.last_latency_ms is not none else '-' }} ms</td><td class="actions">{% if is_admin %}
+      <form method="post" class="inline"><input type="hidden" name="action" value="run"><input type="hidden" name="check_id" value="{{ c.id }}"><button type="submit">Jetzt prüfen</button></form>
+      <a class="button" href="{{ url_for('healthchecks_page', edit=c.id) }}">Bearbeiten</a>
+      <form method="post" class="inline" onsubmit="return confirm('Healthcheck löschen?');"><input type="hidden" name="action" value="delete"><input type="hidden" name="check_id" value="{{ c.id }}"><button class="danger" type="submit">Löschen</button></form>
+      {% else %}<small>Nur Ansicht</small>{% endif %}
+    </td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<p>Noch keine Healthchecks vorhanden.</p>{% endif %}
+</section>
+{% endblock %}

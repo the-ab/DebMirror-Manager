@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Profilgenerator - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Profilgenerator</h1>
+    <p>Erstellt ein Mirror-Profil aus Distribution, Release, Komponenten und Architekturen. Danach kannst du alle Details vor dem Speichern prüfen.</p>
+  </div>
+  <div class="actions">
+    {% if current_user.role == 'admin' %}<a class="button" href="{{ url_for('profile_generator_settings') }}">Generator-Einstellungen</a>{% endif %}
+  </div>
+</div>
+
+<section class="card">
+  <h2>Neues Standardprofil erzeugen</h2>
+  <form method="post" class="grid-form">
+    <label>Distribution
+      <select name="family" id="family-select">
+        {% for key, spec in generator.items() %}<option value="{{ key }}">{{ spec.label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Release
+      <select name="release">
+        <optgroup label="Debian">
+          {% for r in generator.debian.releases %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+        </optgroup>
+        <optgroup label="Ubuntu">
+          {% for r in generator.ubuntu.releases %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+        </optgroup>
+      </select>
+    </label>
+    <label>Profiltyp
+      <select name="repo_kind">
+        <option value="base">Basis/Updates</option>
+        <option value="security">nur Security</option>
+      </select>
+    </label>
+    <label class="inline-check"><input type="checkbox" name="include_updates" value="on" checked> Updates einschließen</label>
+    <label class="inline-check"><input type="checkbox" name="include_security" value="on"> Security zusätzlich einschließen</label>
+
+    <fieldset>
+      <legend>Debian-Komponenten</legend>
+      {% for c in generator.debian.components %}<label class="inline-check"><input type="checkbox" name="components" value="{{ c }}" {% if c == 'main' %}checked{% endif %}> {{ c }}</label>{% endfor %}
+    </fieldset>
+    <fieldset>
+      <legend>Ubuntu-Komponenten</legend>
+      {% for c in generator.ubuntu.components %}<label class="inline-check"><input type="checkbox" name="components" value="{{ c }}" {% if c == 'main' %}checked{% endif %}> {{ c }}</label>{% endfor %}
+    </fieldset>
+    <fieldset>
+      <legend>Architekturen</legend>
+      {% for a in ['amd64','arm64','i386','riscv64'] %}<label class="inline-check"><input type="checkbox" name="archs" value="{{ a }}" {% if a == 'amd64' %}checked{% endif %}> {{ a }}</label>{% endfor %}
+    </fieldset>
+    <div class="form-actions">
+      <button class="primary" type="submit">Profil vorbereiten</button>
+      <a class="button" href="{{ url_for('mirrors_page') }}">Zurück zu Profilen</a>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Hinweis</h2>
+  <p>Der Generator erzeugt Standardprofile aus seiner konfigurierbaren Generator-Datenbasis. Spezialfälle wie Proxmox, GitHub-Paketquellen oder eigene Komponenten lassen sich weiterhin über die normale Profilbearbeitung oder den Skript-Import anlegen.</p>
+</section>
+{% endblock %}

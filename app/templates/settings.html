@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Einstellungen - {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Einstellungen</h1>
+
+<div class="grid two settings-grid">
+  <section class="card settings-card">
+    <h2>Admin-Zugang</h2>
+    <dl>
+      <dt>Quelle</dt><dd>{{ auth_config.source }}</dd>
+      <dt>Benutzer</dt><dd>{{ auth_config.username }}</dd>
+      <dt>Settings-Datei</dt><dd><code>{{ settings_path }}</code></dd>
+    </dl>
+    <form method="post">
+      <input type="hidden" name="action" value="change_password">
+      <label>Aktuelles Passwort</label>
+      <input type="password" name="current_password" required>
+      <label>Benutzername</label>
+      <input name="username" value="{{ auth_config.username }}" required>
+      <label>Neues Passwort</label>
+      <input type="password" name="password" minlength="8" required>
+      <label>Neues Passwort wiederholen</label>
+      <input type="password" name="password2" minlength="8" required>
+      <button class="primary" type="submit">Zugang ändern</button>
+    </form>
+  </section>
+
+  <section class="card settings-card">
+    <h2>Ports</h2>
+    <dl>
+      <dt>WebUI Host-Port</dt><dd><code>{{ webui_port }}</code></dd>
+      <dt>Mirror Host-Port</dt><dd><code>{{ mirror_http_port }}</code></dd>
+      <dt>nginx-Container</dt><dd>{% if use_nginx_mirror_http %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">deaktiviert / eigener Webserver</span>{% endif %}</dd>
+      <dt>Interner App-Port</dt><dd><code>{{ internal_app_port }}</code></dd>
+    </dl>
+    <p>Ändere Host-Ports in der <code>.env</code> über <code>WEBUI_PORT</code> und <code>MIRROR_HTTP_PORT</code>. Danach reicht:</p>
+    <pre class="code">./update.sh --rebuild</pre>
+    <p class="hint">Der interne Container-Port bleibt normalerweise <code>8080</code>. Genau das verhindert Portmapping-Probleme.</p>
+  </section>
+
+
+  <section class="card settings-card">
+    <h2>Jobs / Warteschlange / Logs</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="save_system_settings">
+      <label>Maximal gleichzeitig laufende Jobs</label>
+      <input type="number" min="1" max="16" name="max_parallel_jobs" value="{{ max_parallel_jobs }}">
+      <small>Standard ist 1. Höhere Werte können sinnvoll sein, wenn getrennte Mirror-Ziele/Upstreams verwendet werden.</small>
+
+      <label>Job- und Log-Aufbewahrung in Tagen</label>
+      <input type="number" min="1" max="3660" name="job_retention_days" value="{{ job_retention_days }}">
+      <small>1 Monat entspricht ungefähr 31 Tagen. Ältere abgeschlossene Jobs und deren Logdateien werden automatisch gelöscht.</small>
+
+      <label>Anzahl Jobs in Listen</label>
+      <input type="number" min="10" max="5000" name="job_list_limit" value="{{ job_list_limit }}">
+      <small>Begrenzt die Anzeige in Jobs/Profil-Details, damit die WebUI nicht mit tausenden Einträgen überladen wird.</small>
+
+      <label>Anzahl „Letzte Jobs“ im Dashboard</label>
+      <input type="number" min="1" max="200" name="dashboard_recent_jobs_limit" value="{{ dashboard_recent_jobs_limit }}">
+      <small>Der Dashboard-Block bleibt gleich groß/scrollbar, nur die Anzahl geladener Einträge ändert sich.</small>
+
+      <label>Anzahl Ereignisse im Dashboard</label>
+      <input type="number" min="1" max="200" name="dashboard_events_limit" value="{{ dashboard_events_limit }}">
+      <small>Der Ereignisblock bleibt gleich groß/scrollbar, nur die Anzahl geladener Einträge ändert sich.</small>
+
+      <label>Mirror-Größen-Cache in Sekunden</label>
+      <input type="number" min="60" max="604800" name="size_cache_ttl_seconds" value="{{ size_cache_ttl_seconds }}">
+      <small>Standard 21600 = 6 Stunden. Seitenaufrufe berechnen große Mirrors dadurch nicht jedes Mal neu.</small>
+
+      <label>Timeout je Größenberechnung in Sekunden</label>
+      <input type="number" min="60" max="86400" name="size_calc_timeout_seconds" value="{{ size_calc_timeout_seconds }}">
+      <small>Standard 1800 = 30 Minuten. Die Berechnung läuft im Hintergrund und blockiert die WebUI nicht.</small>
+
+      <label>Maximal parallele Größenberechnungen</label>
+      <input type="number" min="1" max="8" name="size_calc_max_parallel" value="{{ size_calc_max_parallel }}">
+      <small>Bei vielen großen Mirrors niedrig halten, damit die Datenträger nicht unnötig belastet werden.</small>
+
+      <label class="check"><input type="checkbox" name="auto_size_recalc_enabled" {% if auto_size_recalc_enabled %}checked{% endif %}> Automatische Größenberechnung nach Job-Ruhefenster aktivieren</label>
+      <small>Wenn alle Jobs beendet sind und im eingestellten Zeitraum kein weiterer geplanter Job fällig ist, werden die Mirror-Größen im Hintergrund aktualisiert.</small>
+
+      <label>Ruhefenster ohne geplante Jobs in Minuten</label>
+      <input type="number" min="1" max="10080" name="auto_size_idle_minutes" value="{{ auto_size_idle_minutes }}">
+      <small>Standard 120 = 2 Stunden. Die Berechnung startet nur, wenn in diesem Zeitraum kein flexibler oder alter Profil-Zeitplan fällig ist.</small>
+
+      <h3>Zeitdarstellung</h3>
+      <label>Lokale Zeitzone</label>
+      <input name="app_timezone" value="{{ app_timezone }}" placeholder="Europe/Berlin">
+      <small>Standard ist <code>Europe/Berlin</code>. Die Einstellung wirkt auf neue Log-, Job- und WebUI-Zeitstempel. <code>install.sh</code> schreibt denselben Wert zusätzlich in die <code>.env</code>.</small>
+
+      <button class="primary" type="submit">Job-/System-Einstellungen speichern</button>
+    </form>
+  </section>
+  <section class="card settings-card settings-card-compact">
+    <div class="section-head"><h2>Mirror-Speicher</h2><span class="badge {% if storage_guard.blocked %}danger{% elif storage_guard.enabled %}ok{% else %}warning{% endif %}">{% if storage_guard.blocked %}Sperre aktiv{% elif storage_guard.enabled %}Sperre ab {{ storage_guard.threshold }}%{% else %}Sperre aus{% endif %}</span></div>
+    <p class="compact-path"><code>{{ mirror_base }}</code></p>
+    <div class="mini-stats">
+      <div><span>Belegt</span><strong>{{ storage.used_h }}</strong></div>
+      <div><span>Frei</span><strong>{{ storage.free_h }}</strong></div>
+      <div><span>Gesamt</span><strong>{{ storage.total_h }}</strong></div>
+      <div><span>Nutzung</span><strong>{{ storage.percent }}%</strong></div>
+    </div>
+    <div class="meter compact-meter"><span style="width: {{ storage.percent }}%"></span></div>
+    {% if storage_guard.blocked %}
+      <div class="notice danger compact-notice"><strong>Speicherplatz-Sperre:</strong> {{ storage_guard.message }}</div>
+    {% endif %}
+    <form method="post" class="compact-storage-form">
+      <input type="hidden" name="action" value="save_storage_guard">
+      <label class="check"><input type="checkbox" name="storage_guard_enabled" {% if storage_guard_enabled %}checked{% endif %}> Speicherplatz-Sperre für Mirror-Jobs aktivieren</label>
+      <small>Dry-Runs und Benutzerskripte werden nicht blockiert. Wartende echte Mirror-Jobs starten erst wieder, wenn der Grenzwert unterschritten ist.</small>
+
+      <label>Grenzwert Mirror-Speichernutzung in Prozent</label>
+      <div class="inline-setting-row">
+        <input type="number" min="1" max="100" name="storage_guard_threshold_percent" value="{{ storage_guard_threshold_percent }}">
+        <button class="primary" type="submit">Speicher-Sperre speichern</button>
+      </div>
+      <small>Standard 95%. Bezogen auf <code>{{ mirror_base }}</code>.</small>
+    </form>
+  </section>
+
+  <section class="card settings-card">
+    <h2>Container-Prüfung</h2>
+    <p>Diese Programme werden im App-Container geprüft. Fehlende Pflichtprogramme verhindern debmirror-Läufe.</p>
+    <table>
+      <thead><tr><th>Programm</th><th>Status</th><th>Pflicht</th><th>Beschreibung</th></tr></thead>
+      <tbody>
+      {% for item in dependency_checks %}
+        <tr>
+          <td><code>{{ item.name }}</code></td>
+          <td>{% if item.found %}<span class="badge ok">OK</span><br><small>{{ item.path }}</small>{% else %}<span class="badge error">fehlt</span>{% endif %}</td>
+          <td>{% if item.required %}Ja{% else %}Optional{% endif %}</td>
+          <td>{{ item.description }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="hint">Wenn hier <code>gpgv</code> fehlt, wurde das Image nicht korrekt neu gebaut. Dann im Projektordner <code>./update.sh --rebuild</code> ausführen.</p>
+  </section>
+
+  <section class="card settings-card">
+    <h2>Darstellung</h2>
+    <p>Aktueller Modus: <strong>{{ appearance }}</strong></p>
+    <form method="post">
+      <input type="hidden" name="action" value="set_appearance">
+      <label>Modus</label>
+      <select name="appearance">
+        <option value="light" {% if appearance == 'light' %}selected{% endif %}>Hell</option>
+        <option value="dark" {% if appearance == 'dark' %}selected{% endif %}>Dark Mode</option>
+        <option value="auto" {% if appearance == 'auto' %}selected{% endif %}>Automatisch nach Browser/System</option>
+      </select>
+      <button class="primary" type="submit">Darstellung speichern</button>
+    </form>
+    <p class="hint">Der Umschalter oben rechts wechselt schnell zwischen Hell und Dunkel.</p>
+  </section>
+</div>
+
+<section class="card settings-card">
+  <h2>Update-Prozess</h2>
+  <dl>
+    <dt>Aktuelle Version</dt><dd><code>{{ app_version }}</code></dd>
+    <dt>Projektordner</dt><dd><code>{{ project_root }}</code></dd>
+    <dt>Ordnername</dt><dd><code>{{ package_folder }}</code></dd>
+    <dt>Update-Verzeichnis</dt><dd><code>{{ update_dir }}/</code></dd>
+    <dt>Import-Skripte</dt><dd><code>{{ import_script_dir }}</code></dd>
+    <dt>Benutzerskripte</dt><dd><code>{{ user_script_dir }}</code></dd>
+    <dt>Import-Pfadmapping</dt><dd><code>{{ import_host_mirror_paths }}</code></dd>
+  </dl>
+  <p>Ab Version 0.1.3 werden neue Release-ZIPs nicht mehr manuell entpackt. Kopiere das ZIP in das lokale Update-Verzeichnis und starte danach nur noch <code>update.sh</code>.</p>
+  <pre class="code">cp debmirror-manager-vNEU.zip {{ update_dir }}/
+./update.sh</pre>
+  <p><code>update.sh</code> liest die Version aus dem ZIP, vergleicht sie mit der installierten Version, sichert Konfiguration und persistente Daten, ersetzt die Projektdateien, ergänzt fehlende <code>.env</code>-Werte und baut/startet die Container automatisch neu.</p>
+  <p class="hint">Wenn kein neueres ZIP in <code>{{ update_dir }}/</code> liegt, fragt <code>./update.sh</code> jetzt, ob trotzdem ein Backup/Rebuild durchgeführt werden soll. Mit <code>./update.sh --rebuild</code> wird dieser Rebuild direkt erzwungen.</p>
+</section>
+
+<section class="card settings-card">
+  <h2>Passwort über Shell zurücksetzen</h2>
+  <p>Falls du nicht mehr in die WebUI kommst, setze den Zugang direkt auf dem Server zurück:</p>
+  <pre class="code">cd debmirror-manager
+./set-admin-password.sh</pre>
+  <p>Die Änderung wird direkt in der SQLite-Benutzerverwaltung gespeichert. Dadurch funktioniert das Skript auch als Notlösung, wenn die WebUI-Anmeldung nicht mehr möglich ist.</p>
+</section>
+{% endblock %}

@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ mirror.name }} - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ mirror.name }}</h1>
+    <p>{{ mirror.host }}/{{ mirror.root_path }} → {{ mirror.target_path }}</p>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('mirrors_page') }}">Zurück zu Profilen</a>
+    {% if is_admin %}
+    <a class="button" href="{{ url_for('mirror_edit', mirror_id=mirror.id) }}">Bearbeiten</a>
+    <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><button class="primary" type="submit">Jetzt starten</button></form>
+    <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run starten</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid two">
+  <section class="card">
+    <h2>Konfiguration</h2>
+    <dl>
+      <dt>Aktiv</dt><dd>{{ 'Ja' if mirror.enabled else 'Nein' }}</dd>
+      <dt>Methode</dt><dd>{{ mirror.method }}</dd>
+      <dt>Distributionen</dt><dd>{{ mirror.dists }}</dd>
+      <dt>Komponenten</dt><dd>{{ mirror.sections }}</dd>
+      <dt>Architekturen</dt><dd>{{ mirror.archs }}</dd>
+      <dt>Sources</dt><dd>{{ 'Ja' if mirror.source_mode == 'source' else 'Nein' }}</dd>
+      <dt>Keyring</dt><dd>{{ mirror.keyring or '-' }}</dd>
+      <dt>Key-Fingerprint</dt><dd>{{ mirror.keyring_fingerprint or '-' }}</dd>
+      {% if is_admin %}<dt>Key-Aktion</dt><dd><a href="{{ url_for('keyrings', mirror_id=mirror.id) }}">Keyring hochladen/importieren</a></dd>{% endif %}
+      <dt>Zeitplan</dt><dd>{{ mirror.schedule_mode }} {{ mirror.schedule_time if mirror.schedule_mode in ['daily','weekly'] else '' }}{% if mirror.schedule_mode == 'interval' %}alle {{ mirror.interval_hours }} Stunden{% endif %}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h2>Speicher / Größe</h2>
+    <dl>
+      <dt>Mirror-Größe</dt><dd><strong>{{ stats.size_h }}</strong>{% if stats.status %}<br><small>Status: {{ stats.status }}{% if stats.calculated_at %} · Stand: {{ stats.calculated_at }}{% endif %}</small>{% endif %}{% if stats.error %}<br><small>{{ stats.error }}</small>{% endif %}{% if is_admin %}<form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=mirror.id) }}" class="inline"><button type="submit">Größe neu berechnen</button></form>{% endif %}</dd>
+      <dt>Ziel existiert</dt><dd>{{ 'Ja' if stats.exists else 'Nein' }}</dd>
+      <dt>Basis frei</dt><dd>{{ storage.free_h }} von {{ storage.total_h }}</dd>
+      <dt>Basis genutzt</dt><dd>{{ storage.percent }}%</dd>
+    </dl>
+    <div class="meter"><span style="width: {{ storage.percent }}%"></span></div>
+  </section>
+  <section class="card danger-zone">
+    <h2>Gefahrenzone</h2>
+    <p>Das Löschen entfernt nur das Profil und die Job-Historie, nicht die Mirror-Dateien im Zielverzeichnis.</p>
+    {% if is_admin %}<form method="post" action="{{ url_for('mirror_delete', mirror_id=mirror.id) }}" onsubmit="return confirm('Mirror-Profil wirklich löschen?');"><button class="danger" type="submit">Mirror-Profil löschen</button></form>{% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Generierter debmirror-Befehl</h2>
+  {% if command_error %}
+    <div class="notice danger">
+      <strong>Profilprüfung:</strong> {{ command_error }}<br>
+      Der Befehl wird zur Kontrolle trotzdem angezeigt. Ein Job-Start bleibt blockiert, bis die Profil-/Keyring-Konfiguration korrigiert wurde.
+      {% if is_admin %}<br><a href="{{ url_for('mirror_edit', mirror_id=mirror.id) }}">Profil bearbeiten</a> · <a href="{{ url_for('keyrings', mirror_id=mirror.id) }}">Keyring prüfen/importieren</a>{% endif %}
+    </div>
+  {% endif %}
+  <pre class="code">{{ command }}</pre>
+  <details><summary>Dry-Run-Befehl anzeigen</summary><pre class="code">{{ dry_command }}</pre></details>
+</section>
+
+
+<section class="card">
+  <h2>Zeitpläne für dieses Profil</h2>
+  {% if schedules %}
+  <table>
+    <thead><tr><th>Name</th><th>Typ</th><th>Uhrzeiten</th><th>Tage</th><th>Status</th><th>Aktion</th></tr></thead>
+    <tbody>
+    {% for s in schedules %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td>{{ s.schedule_type }}{% if s.schedule_type == 'interval' %} · alle {{ s.interval_hours }}h{% endif %}</td>
+        <td>{{ s.times }}</td>
+        <td>{{ s.weekdays }}</td>
+        <td>{% if s.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
+        <td><a class="button" href="{{ url_for('schedules_page') }}">Zeitpläne anzeigen</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>Für dieses Profil gibt es noch keinen flexiblen Zeitplaneintrag.</p>
+    {% if is_admin %}<p><a class="button" href="{{ url_for('schedules_page') }}">Zeitplan anlegen</a></p>{% endif %}
+  {% endif %}
+</section>
+<section class="card">
+  <h2>Job-Historie</h2>
+  {% if jobs %}
+  <table>
+    <thead><tr><th>ID</th><th>Status</th><th>Dry-Run</th><th>Start</th><th>Ende</th><th>Dauer</th><th>Exit</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
+        <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+        <td>{{ 'Ja' if j.dry_run else 'Nein' }}</td>
+        <td>{{ j.started_at }}</td>
+        <td>{{ j.finished_at or '-' }}</td>
+        <td>{{ j.duration_h or '-' }}</td>
+        <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Noch keine Jobs.</p>{% endif %}
+</section>
+{% endblock %}

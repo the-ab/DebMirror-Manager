@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ title }}</h1>
+    <p>Projektinformationen und Dokumentation zu {{ app_name }}.</p>
+  </div>
+</div>
+<section class="card doc-page">
+  {{ content_html | safe }}
+</section>
+{% endblock %}

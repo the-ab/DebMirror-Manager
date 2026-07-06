@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Jobs - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Jobs</h1>
+    <p>Anzeige der letzten {{ job_list_limit }} Jobs. Abgeschlossene Jobs/Logs werden nach {{ job_retention_days }} Tagen bereinigt.</p>
+  </div>
+  <div class="actions"><a class="button" href="{{ url_for('schedules_page') }}">Zeitpläne</a></div>
+</div>
+<section class="card">
+  <p>Alle Startanforderungen laufen über eine globale Warteschlange. Aktuell dürfen {{ max_parallel_jobs }} Jobs parallel laufen; aktiv sind {{ active_jobs_count }}.</p>
+{% if jobs %}
+  <div class="table-scroll full-list-scroll">
+  <table class="compact-table">
+    <thead><tr><th>ID</th><th>Ziel</th><th>Typ</th><th>Status</th><th>Dry-Run</th><th>Start</th><th>Ende</th><th>Dauer</th><th>Exit</th></tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
+        <td>{{ j.mirror_name }}</td>
+        <td>{{ j.job_type or 'mirror' }}</td>
+        <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+        <td>{{ 'Ja' if j.dry_run else 'Nein' }}</td>
+        <td>{{ j.started_at }}</td>
+        <td>{{ j.finished_at or '-' }}</td>
+        <td>{{ j.duration_h or '-' }}</td>
+        <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p>Noch keine Jobs vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

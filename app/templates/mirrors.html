@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Profile - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Mirror-Profile</h1>
+    <p>Alle angelegten Repository-Spiegel an einer Stelle. Von hier aus kannst du Profile öffnen, bearbeiten, starten oder einen Dry-Run ausführen.</p>
+  </div>
+  <div class="actions">
+    {% if is_admin %}
+    <a class="button" href="{{ url_for('script_import') }}">Skript importieren</a>
+    <a class="button" href="{{ url_for('profile_generator') }}">Profilgenerator</a>
+    <a class="button primary" href="{{ url_for('mirror_new') }}">Profil anlegen</a>
+    {% endif %}
+  </div>
+</div>
+
+<section class="card storage-card">
+  <h2>Speicherplatz {{ storage.path }}</h2>
+  {% if storage.error %}
+    <p class="error-text">{{ storage.error }}</p>
+  {% else %}
+    <div class="meter"><span style="width: {{ storage.percent }}%"></span></div>
+    <div class="stats-row">
+      <span><strong>{{ storage.used_h }}</strong> belegt</span>
+      <span><strong>{{ storage.free_h }}</strong> frei</span>
+      <span><strong>{{ storage.total_h }}</strong> gesamt</span>
+      <span><strong>{{ storage.percent }}%</strong> genutzt</span>
+    </div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Warteschlange</h2>
+  {% if active_job %}
+    <p>Aktiver oder nächster Job: <a href="{{ url_for('job_detail', job_id=active_job.id) }}">#{{ active_job.id }}</a> · <strong>{{ active_job.status }}</strong> · {{ active_job.mirror_name }}</p>
+  {% else %}
+    <p>Aktuell ist kein Job aktiv oder vorgemerkt.</p>
+  {% endif %}
+  <p><strong>{{ queue_count }}</strong> Job(s) warten aktuell in der Queue. <a href="{{ url_for('schedules_page') }}">Zeitpläne verwalten</a></p>
+</section>
+
+<section class="card">
+  <h2>Profile</h2>
+  {% if mirrors %}
+  <table>
+    <thead><tr><th>Name</th><th>Status</th><th>Mirror-Größe</th><th>Repository</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktionen</th></tr></thead>
+    <tbody>
+    {% for m in mirrors %}
+      <tr>
+        <td><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
+        <td>{% if m.running_job %}<span class="badge {{ m.running_job.status }}">{{ m.running_job.status }} #{{ m.running_job.id }}</span>{% elif m.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
+        <td><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
+        <td><small>{{ m.method }}://{{ m.host }}/{{ m.root_path }}<br>{{ m.dists }} · {{ m.sections }} · {{ m.archs }}</small></td>
+        <td>{{ m.schedule_display }}</td>
+        <td>{% if m.last_job %}<a href="{{ url_for('job_detail', job_id=m.last_job.id) }}"><span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span></a><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
+        <td class="actions compact-actions">
+          <a class="button" href="{{ url_for('mirror_detail', mirror_id=m.id) }}">Öffnen</a>
+          {% if is_admin %}<a class="button" href="{{ url_for('mirror_edit', mirror_id=m.id) }}">Bearbeiten</a>{% endif %}
+          {% if m.running_job %}
+            <a class="button" href="{{ url_for('job_detail', job_id=m.running_job.id) }}">Log</a>
+          {% elif is_admin %}
+            <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
+            <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>
+          {% else %}<small>Nur Ansicht</small>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>Noch keine Mirror-Profile vorhanden.</p>
+    {% if is_admin %}<p><a class="button primary" href="{{ url_for('mirror_new') }}">Erstes Profil anlegen</a></p>{% endif %}
+  {% endif %}
+</section>
+{% endblock %}

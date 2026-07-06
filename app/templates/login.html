@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="de" data-theme="{{ appearance }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login - {{ app_name }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <h1>{{ app_name }}</h1>
+    <p>Version {{ app_version }}</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    <form method="post">
+      <label>Benutzername</label>
+      <input type="text" name="username" autofocus required>
+      <label>Passwort</label>
+      <input type="password" name="password" required>
+      <button type="submit" class="primary full">Einloggen</button>
+    </form>
+  </div>
+</body>
+</html>

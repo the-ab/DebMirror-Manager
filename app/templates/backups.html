@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Backup / Wiederherstellen - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head compact-head">
+  <div>
+    <h1>Backup / Wiederherstellen</h1>
+    <p>Vollbackup für Serverwechsel oder Totalausfall. Gesichert werden Konfiguration, Datenbank, Benutzer/API-Tokens, Keyrings und Skripte; Mirror-Daten selbst bleiben außen vor.</p>
+  </div>
+</div>
+
+<div class="grid two backup-compact-grid">
+  <section class="card compact-card">
+    <h2>Backup erstellen</h2>
+    <form method="post" class="grid-form compact-form">
+      <input type="hidden" name="action" value="create">
+      <label>Bezeichnung
+        <input name="label" placeholder="z. B. vor-update oder serverwechsel">
+      </label>
+      <div class="form-actions"><button class="primary" type="submit">Backup erstellen</button></div>
+    </form>
+    <small>Backup-Verzeichnis im Container: <code>{{ backup_dir }}</code></small>
+  </section>
+
+  <section class="card compact-card">
+    <h2>Backup hochladen und wiederherstellen</h2>
+    <form method="post" enctype="multipart/form-data" class="grid-form compact-form" onsubmit="return confirm('Backup wirklich wiederherstellen?');">
+      <input type="hidden" name="action" value="restore_upload">
+      <label>Backup-ZIP
+        <input type="file" name="backup_file" accept=".zip" required>
+      </label>
+      <label class="inline-check"><input type="checkbox" name="replace" value="on"> vorhandene Profile/Benutzer/Healthchecks vorher ersetzen</label>
+      <label class="inline-check"><input type="checkbox" name="include_users" value="on" checked> Benutzer und API-Tokens mit wiederherstellen</label>
+      <div class="form-actions"><button class="warning" type="submit">Wiederherstellen</button></div>
+    </form>
+    <small>Mirror-Daten unter <code>{{ mirror_base }}</code> werden nicht gesichert, weil Repository-Spiegel sehr groß sein können.</small>
+  </section>
+</div>
+
+<section class="card compact-card">
+  <div class="section-head"><h2>Vorhandene Backups</h2><span class="muted-text">herunterladen, wiederherstellen oder löschen</span></div>
+  {% if backups %}
+  <div class="table-scroll">
+    <table class="compact-table">
+      <thead><tr><th>Datei</th><th>Version</th><th>Datum</th><th>Größe</th><th>Aktionen</th></tr></thead>
+      <tbody>
+      {% for b in backups %}
+        <tr>
+          <td><strong>{{ b.name }}</strong>{% if b.manifest.label %}<br><small>{{ b.manifest.label }}</small>{% endif %}</td>
+          <td>{{ b.manifest.app_version or '-' }}</td>
+          <td><small>{{ b.mtime }}</small></td>
+          <td>{{ b.size_h }}</td>
+          <td class="backup-actions">
+            <div class="backup-actions-row">
+              <a class="button" href="{{ url_for('backup_download', name=b.name) }}">Download</a>
+              <form method="post" class="inline backup-restore-inline" onsubmit="return confirm('Backup wirklich wiederherstellen? Aktuelle Daten können überschrieben werden.');">
+                <input type="hidden" name="action" value="restore_existing">
+                <input type="hidden" name="backup_name" value="{{ b.name }}">
+                <input type="hidden" name="include_users" value="on">
+                <label class="inline-check small-check"><input type="checkbox" name="replace" value="on"> ersetzen</label>
+                <button type="submit">Wiederherstellen</button>
+              </form>
+              <form method="post" class="inline" onsubmit="return confirm('Backup löschen?');">
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="backup_name" value="{{ b.name }}">
+                <button class="danger" type="submit">Löschen</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">Hinweis: „Wiederherstellen“ übernimmt standardmäßig Benutzer und API-Tokens. Nutze den Upload-Bereich, wenn du weitere Optionen setzen möchtest.</p>
+  {% else %}
+    <p>Noch keine Backups vorhanden.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Job #{{ job.id }} - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Job #{{ job.id }} - {{ job.mirror_name }}</h1>
+    <p>Typ: <strong>{{ job.job_type or 'mirror' }}</strong>{% if job.script_name %} · Script: <code>{{ job.script_name }}</code>{% endif %}</p>
+    <p>Status: <span id="status" class="badge {{ job.status }}">{{ job.status }}</span> | Start: {{ job.started_at }} | Ende: <span id="finished-at">{{ job.finished_at or '-' }}</span> | Dauer: <strong id="duration">{{ job.duration_h or '-' }}</strong></p>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('jobs') }}">Zurück zu Jobs</a>
+    {% if job.mirror_id %}<a class="button" href="{{ url_for('mirror_detail', mirror_id=job.mirror_id) }}">Zum Profil</a>{% endif %}
+    {% if job.job_type == 'script' %}<a class="button" href="{{ url_for('user_scripts_page') }}">Zu Benutzerskripten</a>{% endif %}
+    <a class="button" href="{{ url_for('job_log', job_id=job.id) }}" target="_blank">Log als Text</a>
+    {% if is_admin and job.status in ['queued','running','stopping'] %}
+    <form method="post" action="{{ url_for('job_stop', job_id=job.id) }}" class="inline"><button class="danger" type="submit">Stoppen</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<section class="card">
+  <h2>Befehl</h2>
+  <pre class="code">{{ job.command }}</pre>
+  {% if job.error_message %}<p class="error-text">{{ job.error_message }}</p>{% endif %}
+</section>
+
+<div id="diagnosis-wrapper">
+{% include "_job_diagnosis.html" %}
+</div>
+
+<section class="card">
+  <h2>Live-Log</h2>
+  <pre id="log" class="logbox">{{ log_tail }}</pre>
+</section>
+
+{% if job.status in ['queued','running','stopping'] %}
+<script>
+(function() {
+  const log = document.getElementById('log');
+  const status = document.getElementById('status');
+  const finishedAt = document.getElementById('finished-at');
+  const duration = document.getElementById('duration');
+  let userPinnedBottom = true;
+
+  log.addEventListener('scroll', function() {
+    userPinnedBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 24;
+  });
+
+  const source = new EventSource("{{ url_for('job_stream', job_id=job.id, offset=log_size|default(0)) }}");
+  source.addEventListener('log', function(event) {
+    const data = JSON.parse(event.data);
+    log.textContent += data.chunk;
+    if (userPinnedBottom) log.scrollTop = log.scrollHeight;
+    if (data.status) status.textContent = data.status;
+  });
+  source.addEventListener('status', function(event) {
+    const data = JSON.parse(event.data);
+    status.textContent = data.status;
+    status.className = 'badge ' + data.status;
+  });
+  function setDiagnosisHtml(html) {
+    const wrapper = document.getElementById('diagnosis-wrapper');
+    if (wrapper && typeof html === 'string') wrapper.innerHTML = html;
+  }
+
+  function refreshDiagnosis(attempt) {
+    fetch("{{ url_for('job_diagnosis_fragment', job_id=job.id) }}?t=" + Date.now(), {
+      headers: {'X-Requested-With': 'fetch'},
+      cache: 'no-store'
+    })
+      .then(response => response.ok ? response.text() : '')
+      .then(html => {
+        if (html) setDiagnosisHtml(html);
+        if ((!html || !html.trim()) && attempt < 5) {
+          setTimeout(function() { refreshDiagnosis(attempt + 1); }, 1000);
+        }
+      })
+      .catch(() => {
+        if (attempt < 5) setTimeout(function() { refreshDiagnosis(attempt + 1); }, 1000);
+      });
+  }
+
+  source.addEventListener('diagnosis', function(event) {
+    const data = JSON.parse(event.data);
+    if (data.html) setDiagnosisHtml(data.html);
+  });
+
+  source.addEventListener('done', function(event) {
+    const data = JSON.parse(event.data);
+    status.textContent = data.status;
+    status.className = 'badge ' + data.status;
+    if (data.finished_at) finishedAt.textContent = data.finished_at;
+    if (data.duration_h) duration.textContent = data.duration_h;
+    if (data.diagnosis_html) setDiagnosisHtml(data.diagnosis_html);
+    source.close();
+    setTimeout(function() { refreshDiagnosis(1); }, 500);
+    const note = document.createElement('div');
+    note.className = 'notice success';
+    note.textContent = 'Job ist beendet. Fehlerauswertung und Key-Hilfe wurden aktualisiert, ohne die Seite neu zu laden.';
+    log.parentElement.appendChild(note);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

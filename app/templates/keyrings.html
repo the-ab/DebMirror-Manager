@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Keyrings - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Keyrings</h1>
+    <p>Archiv-Keys verwalten. Für debmirror werden importierte ASCII-Keys automatisch nach <code>.gpg</code> konvertiert.</p>
+  </div>
+</div>
+{% if prefill_fp %}
+<section class="card diagnosis gpg-key">
+  <h2>Fehlender Key aus Job erkannt</h2>
+  <p>Fingerprint / Key-ID: <code>{{ prefill_fp }}</code></p>
+  {% if assign_mirror_id %}<p>Nach erfolgreichem Import wird der Keyring automatisch im betroffenen Mirror-Profil hinterlegt.</p>{% endif %}
+</section>
+{% endif %}
+<div class="grid two">
+  <section class="card">
+    <h2>Key-Datei hochladen</h2>
+    <form method="post" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="upload">
+      <label>Key-Datei</label>
+      <input type="file" name="keyfile" required>
+      <label>Erwarteter Fingerprint optional</label>
+      <input name="expected_fingerprint" value="{{ prefill_fp or '' }}" placeholder="ohne Leerzeichen oder mit Leerzeichen möglich">
+      <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
+      <button class="primary" type="submit">Hochladen</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Key aus URL importieren</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="url">
+      <label>URL</label>
+      <input name="url" placeholder="https://..." required>
+      <label>Dateiname</label>
+      <input name="filename" placeholder="debian-archive-keyring.gpg">
+      <label>Erwarteter Fingerprint optional</label>
+      <input name="expected_fingerprint" value="{{ prefill_fp or '' }}">
+      <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
+      <button class="primary" type="submit">Importieren</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>Key vom Keyserver importieren</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="keyserver">
+      <label>Fingerprint / Key-ID</label>
+      <input name="fingerprint" value="{{ prefill_fp or '' }}" placeholder="z. B. 811CA850DB161B9BD803F90199BB41D37A182BAE" required>
+      <label>Keyserver</label>
+      <input name="keyserver" value="hkps://keyserver.ubuntu.com">
+      <label>Dateiname optional</label>
+      <input name="filename" placeholder="automatisch aus Key-ID">
+      <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
+      <button class="primary" type="submit">Vom Keyserver importieren</button>
+      <p class="hint">Nur verwenden, wenn der Fingerprint aus einer vertrauenswürdigen Quelle geprüft wurde.</p>
+    </form>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Vorhandene Keyrings</h2>
+  {% if keyrings %}
+  <table>
+    <thead><tr><th>Name</th><th>Pfad</th><th>Fingerprints</th><th>Aktion</th></tr></thead>
+    <tbody>
+    {% for k in keyrings %}
+      <tr>
+        <td>{{ k.name }}</td>
+        <td><code>{{ k.path }}</code></td>
+        <td>{% if k.fingerprints %}{% for fp in k.fingerprints %}<code>{{ fp }}</code><br>{% endfor %}{% else %}<span class="badge warning">kein Fingerprint erkannt</span>{% endif %}</td>
+        <td><form method="post" action="{{ url_for('keyring_delete', filename=k.name) }}" onsubmit="return confirm('Keyring löschen?');"><button class="danger" type="submit">Löschen</button></form></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>Noch keine Keyrings vorhanden.</p>{% endif %}
+</section>
+{% endblock %}

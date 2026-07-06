@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}API - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>API & Tokens</h1><p>REST-API für Statusabfragen, Job-Starts, Stopps und Healthchecks.</p></div></div>
+{% if new_token %}
+<section class="card diagnosis warning">
+  <h2>Neuer API-Token</h2>
+  <p>Kopiere diesen Token jetzt. Er wird später nicht erneut angezeigt.</p>
+  <pre class="code">{{ new_token }}</pre>
+</section>
+{% endif %}
+<div class="grid two">
+  <section class="card">
+    <h2>Token erstellen</h2>
+    <form method="post">
+      <input type="hidden" name="action" value="create">
+      <label>Name</label><input name="name" placeholder="z. B. Monitoring" required>
+      <button class="primary" type="submit">Token erstellen</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>API-Beispiele</h2>
+    <pre class="code">curl -H "Authorization: Bearer TOKEN" http://SERVER-IP:8111/api/v1/status
+curl -H "Authorization: Bearer TOKEN" http://SERVER-IP:8111/api/v1/mirrors
+curl -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json" \
+  -d '{"dry_run":true}' http://SERVER-IP:8111/api/v1/mirrors/1/run</pre>
+  </section>
+</div>
+<section class="card">
+  <h2>Vorhandene Tokens</h2>
+  {% if tokens %}
+  <table><thead><tr><th>Name</th><th>Status</th><th>Erstellt</th><th>Letzte Nutzung</th><th>Aktion</th></tr></thead><tbody>
+  {% for t in tokens %}
+    <tr><td>{{ t.name }}</td><td><span class="badge {{ 'ok' if t.enabled else 'muted' }}">{{ 'aktiv' if t.enabled else 'inaktiv' }}</span></td><td>{{ t.created_at }}</td><td>{{ t.last_used_at or '-' }}</td><td class="actions">
+      <form method="post" class="inline"><input type="hidden" name="action" value="toggle"><input type="hidden" name="token_id" value="{{ t.id }}"><button type="submit">{{ 'Deaktivieren' if t.enabled else 'Aktivieren' }}</button></form>
+      <form method="post" class="inline" onsubmit="return confirm('Token löschen?');"><input type="hidden" name="action" value="delete"><input type="hidden" name="token_id" value="{{ t.id }}"><button class="danger" type="submit">Löschen</button></form>
+    </td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<p>Noch keine API-Tokens vorhanden.</p>{% endif %}
+</section>
+{% endblock %}

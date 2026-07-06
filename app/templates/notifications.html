@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Benachrichtigungen - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Benachrichtigungen</h1><p>Mail, Telegram und Discord für Job-Ergebnisse und Healthcheck-Fehler.</p><p class="hint">Geheimwerte werden nicht mehr im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten vorhandene Werte.</p>{% if not notify.encryption_available %}<p class="alert alert-warning">Hinweis: Verschlüsselungsbibliothek nicht verfügbar. Prüfe das Container-Image und führe das Update erneut aus.</p>{% endif %}</div></div>
+{% if test_results %}<section class="card"><h2>Testergebnis</h2><ul>{% for r in test_results %}<li>{{ r }}</li>{% endfor %}</ul></section>{% endif %}
+<form method="post" class="card form-grid">
+  <fieldset>
+    <legend>Allgemein</legend>
+    <label class="check"><input type="checkbox" name="enabled" {% if notify.enabled %}checked{% endif %}> Benachrichtigungen aktivieren</label>
+    <label class="check"><input type="checkbox" name="on_error" {% if notify.on_error %}checked{% endif %}> Bei Job-Fehlern senden</label>
+    <label class="check"><input type="checkbox" name="on_success" {% if notify.on_success %}checked{% endif %}> Bei erfolgreichen Jobs senden</label>
+    <label class="check"><input type="checkbox" name="on_healthcheck_error" {% if notify.on_healthcheck_error %}checked{% endif %}> Bei Healthcheck-Fehlern senden</label>
+  </fieldset>
+  <fieldset>
+    <legend>SMTP Mail</legend>
+    <label class="check"><input type="checkbox" name="smtp_enabled" {% if notify.smtp_enabled %}checked{% endif %}> SMTP aktivieren</label>
+    <label>SMTP Host</label><input name="smtp_host" value="{{ notify.smtp_host }}">
+    <label>SMTP Port</label><input type="number" name="smtp_port" value="{{ notify.smtp_port }}">
+    <label class="check"><input type="checkbox" name="smtp_tls" {% if notify.smtp_tls %}checked{% endif %}> STARTTLS verwenden</label>
+    <label>SMTP Benutzer</label><input name="smtp_username" value="{{ notify.smtp_username }}">
+    <label>SMTP Passwort <small>{% if notify.smtp_password_set %}gesetzt, leer lassen = unverändert{% else %}nicht gesetzt{% endif %}</small></label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="{% if notify.smtp_password_set %}********{% endif %}">
+    <label>Von</label><input name="smtp_from" value="{{ notify.smtp_from }}">
+    <label>An</label><input name="smtp_to" value="{{ notify.smtp_to }}" placeholder="admin@example.local">
+  </fieldset>
+  <fieldset>
+    <legend>Telegram</legend>
+    <label class="check"><input type="checkbox" name="telegram_enabled" {% if notify.telegram_enabled %}checked{% endif %}> Telegram aktivieren</label>
+    <label>Bot Token <small>{% if notify.telegram_bot_token_set %}gesetzt, leer lassen = unverändert{% else %}nicht gesetzt{% endif %}</small></label><input type="password" name="telegram_bot_token" autocomplete="new-password" placeholder="{% if notify.telegram_bot_token_set %}********{% endif %}">
+    <label>Chat ID</label><input name="telegram_chat_id" value="{{ notify.telegram_chat_id }}">
+  </fieldset>
+  <fieldset>
+    <legend>Discord</legend>
+    <label class="check"><input type="checkbox" name="discord_enabled" {% if notify.discord_enabled %}checked{% endif %}> Discord aktivieren</label>
+    <label>Webhook URL <small>{% if notify.discord_webhook_url_set %}gesetzt, leer lassen = unverändert{% else %}nicht gesetzt{% endif %}</small></label><input type="password" name="discord_webhook_url" autocomplete="new-password" placeholder="{% if notify.discord_webhook_url_set %}********{% endif %}">
+  </fieldset>
+  <div class="form-actions">
+    <button class="primary" type="submit" name="action" value="save">Speichern</button>
+    <button type="submit" name="action" value="test">Speichern & Test senden</button>
+  </div>
+</form>
+{% endblock %}

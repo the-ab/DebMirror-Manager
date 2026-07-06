@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Beispielprofile - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Beispielprofile</h1>
+    <p>Kompakte Übersicht fertiger Vorlagen. Für Standard-Debian/Ubuntu-Mirrors ist der Profilgenerator meist übersichtlicher.</p>
+  </div>
+  <div class="actions"><a class="button primary" href="{{ url_for('profile_generator') }}">Profilgenerator öffnen</a></div>
+</div>
+
+<section class="card">
+  <table>
+    <thead><tr><th>Vorlage</th><th>Repository</th><th>Inhalt</th><th>Ziel</th><th>Aktion</th></tr></thead>
+    <tbody>
+    {% for ex in examples %}
+      <tr>
+        <td><strong>{{ ex.title }}</strong><br><small>{{ ex.description }}</small></td>
+        <td><small>{{ ex.values.method }}://{{ ex.values.host }}/{{ ex.values.root_path }}</small></td>
+        <td><small>{{ ex.values.dists }}<br>{{ ex.values.sections }} · {{ ex.values.archs }}</small></td>
+        <td><small>{{ ex.values.target_path }}</small></td>
+        <td><a class="button" href="{{ url_for('mirror_new', template=ex.key) }}">Laden</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
