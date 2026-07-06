@@ -115,6 +115,15 @@ SIZE_CALC_RUNNING: set[str] = set()
 SIZE_CALC_LOCK = threading.Lock()
 
 
+def _normalized_size_path(path_value: str) -> str:
+    return str(Path((path_value or "").strip())) if (path_value or "").strip() else ""
+
+
+def is_scheduled_job_source(source: str) -> bool:
+    value = (source or "").strip()
+    return value.startswith("schedule:") or value == "legacy-scheduler"
+
+
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
@@ -1389,6 +1398,18 @@ def _size_worker(path_value: str) -> None:
     started = now_iso()
     _write_size_cache(path_value, status="calculating", exists_flag=1 if Path(path_value).exists() else 0, started_at=started)
     try:
+        if queued_or_active_jobs_count() > 0:
+            old = _size_cache_row(path_value) or {}
+            _write_size_cache(
+                path_value,
+                status="queued",
+                exists_flag=1 if Path(path_value).exists() else 0,
+                bytes_value=old.get("bytes"),
+                error="Größenberechnung wartet, weil noch ein Job läuft oder in der Warteschlange steht.",
+                started_at=old.get("started_at") or "",
+                calculated_at=old.get("calculated_at") or "",
+            )
+            return
         info = direct_path_size_info(path_value, size_calc_timeout_seconds())
         _write_size_cache(
             path_value,
@@ -1410,11 +1431,28 @@ def _size_worker(path_value: str) -> None:
             SIZE_CALC_RUNNING.discard(path_value)
 
 
-def request_size_calculation(path_value: str, force: bool = False) -> bool:
+def request_size_calculation(path_value: str, force: bool = False, *, queue_when_blocked: bool = True) -> bool:
     raw_path = (path_value or "").strip()
     if not raw_path:
         return False
     path_value = str(Path(raw_path))
+    try:
+        if queued_or_active_jobs_count() > 0:
+            if queue_when_blocked:
+                old = _size_cache_row(path_value) or {}
+                _write_size_cache(
+                    path_value,
+                    status="queued",
+                    exists_flag=1 if Path(path_value).exists() else 0,
+                    bytes_value=old.get("bytes"),
+                    error="Größenberechnung wartet, weil noch ein Job läuft oder in der Warteschlange steht.",
+                    started_at=old.get("started_at") or "",
+                    calculated_at=old.get("calculated_at") or "",
+                )
+            return False
+    except Exception as exc:
+        log_webui_exception("size_calc_job_guard", exc)
+        return False
     try:
         max_parallel = size_calc_max_parallel()
     except Exception as exc:
@@ -1446,7 +1484,6 @@ def request_size_calculation(path_value: str, force: bool = False) -> bool:
         _write_size_cache(path_value, status="error", exists_flag=1 if Path(path_value).exists() else 0, error=str(exc), calculated_at=now_iso())
         log_webui_exception("request_size_calculation", exc)
         return False
-
 
 def cached_path_size_info(path_value: str, *, force_refresh: bool = False, auto_refresh: bool = False) -> Dict[str, Any]:
     raw_path = (path_value or "").strip()
@@ -1492,6 +1529,9 @@ def cached_path_size_info(path_value: str, *, force_refresh: bool = False, auto_
         }
     if row and str(row.get("status") or "") == "calculating":
         return {"exists": True, "bytes": None, "size_h": "Berechnung läuft", "files": None, "dirs": None, "error": "Die Größe wird im Hintergrund berechnet.", "status": "calculating", "calculated_at": row.get("calculated_at") or "", "started_at": row.get("started_at") or ""}
+    if row and str(row.get("status") or "") in {"queued", "pending"}:
+        label = "wartet" if str(row.get("status") or "") == "queued" else "vorgemerkt"
+        return {"exists": True, "bytes": row.get("bytes"), "size_h": format_bytes(int(row["bytes"])) if row.get("bytes") is not None else "Wartet", "files": None, "dirs": None, "error": row.get("error") or "Größenberechnung wartet.", "status": label, "calculated_at": row.get("calculated_at") or "", "started_at": row.get("started_at") or ""}
     if row and str(row.get("status") or "") in {"timeout", "error"}:
         return {"exists": True, "bytes": None, "size_h": "Unbekannt", "files": None, "dirs": None, "error": row.get("error") or "Größenberechnung fehlgeschlagen.", "status": row.get("status") or "error", "calculated_at": row.get("calculated_at") or "", "started_at": row.get("started_at") or ""}
     return {"exists": True, "bytes": None, "size_h": "Unbekannt", "files": None, "dirs": None, "error": "Noch kein Größenwert vorhanden. Starte die Berechnung im Profil manuell oder nutze die automatische Berechnung nach Job-Ruhefenster.", "status": "unknown", "calculated_at": "", "started_at": ""}
@@ -2155,16 +2195,13 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
                     "UPDATE jobs SET status=?, finished_at=?, exit_code=?, error_message=? WHERE id=?",
                     (status, finished_time, exit_code, error_message, job_id),
                 )
-                job_row = con.execute("SELECT mirror_name, log_path FROM jobs WHERE id=?", (job_id,)).fetchone()
+                job_row = con.execute("SELECT mirror_id, mirror_name, job_type, script_name, dry_run, source, log_path FROM jobs WHERE id=?", (job_id,)).fetchone()
             add_event("info" if status == "success" else "warning", f"Job #{job_id} beendet: {status}")
             try:
-                if job_type == "script" and script_name:
-                    target_path = get_user_script_target(script_name)
-                    if target_path and status == "success":
-                        request_size_calculation(target_path, force=True)
-                        add_event("info", f"Größenberechnung für Benutzerskript-Ziel gestartet: {script_name}")
+                if job_row:
+                    mark_pending_auto_size_calculation_after_job(job_id, job_type, script_name, row_to_dict(job_row), status, finished_time)
             except Exception as exc:
-                add_event("warning", f"Größenberechnung für Benutzerskript {script_name} konnte nicht gestartet werden: {exc}")
+                add_event("warning", f"Automatische Größenberechnung für Job #{job_id} konnte nicht vorgemerkt werden: {exc}")
             try:
                 if job_row:
                     notify_job_finished(job_id, status, exit_code, job_row["mirror_name"], job_row["log_path"], error_message)
@@ -2687,9 +2724,151 @@ def size_cache_calculated_after(path_value: str, ts: dt.datetime) -> bool:
 
 
 
-def process_queued_size_calculations() -> None:
-    """Startet zwischengespeicherte Größenberechnungen, sobald Kapazität frei ist."""
+def pending_auto_size_calculations() -> List[Dict[str, Any]]:
+    raw_items = load_settings().get("pending_auto_size_calculations") or []
+    if not isinstance(raw_items, list):
+        return []
+    result: List[Dict[str, Any]] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        path_value = _normalized_size_path(str(item.get("path") or ""))
+        if not path_value:
+            continue
+        cleaned = dict(item)
+        cleaned["path"] = path_value
+        result.append(cleaned)
+    return result
+
+
+def save_pending_auto_size_calculations(items: List[Dict[str, Any]]) -> None:
+    settings = load_settings()
+    cleaned: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items[-200:]:
+        path_value = _normalized_size_path(str(item.get("path") or ""))
+        if not path_value:
+            continue
+        key = f"{item.get('target_type') or 'path'}:{item.get('target_id') or path_value}:{path_value}"
+        if key in seen:
+            continue
+        seen.add(key)
+        new_item = dict(item)
+        new_item["path"] = path_value
+        cleaned.append(new_item)
+    settings["pending_auto_size_calculations"] = cleaned
+    settings["pending_auto_size_calculations_updated_at"] = now_iso()
+    save_settings(settings)
+
+
+def add_pending_auto_size_calculation(*, target_type: str, target_id: str, target_name: str, path_value: str, job_id: int, finished_at: str, source: str) -> None:
+    path_value = _normalized_size_path(path_value)
+    if not path_value:
+        return
+    items = pending_auto_size_calculations()
+    # Für dasselbe Ziel reicht der neueste Marker. So kann ein Profil nicht mehrfach
+    # unnötig in der automatischen Größenwarteschlange landen.
+    dedupe_key = (target_type, str(target_id), path_value)
+    items = [item for item in items if (item.get("target_type"), str(item.get("target_id") or ""), item.get("path")) != dedupe_key]
+    item = {
+        "target_type": target_type,
+        "target_id": str(target_id),
+        "target_name": target_name,
+        "path": path_value,
+        "job_id": int(job_id),
+        "finished_at": finished_at,
+        "source": source,
+        "created_at": now_iso(),
+    }
+    items.append(item)
+    save_pending_auto_size_calculations(items)
+    old = _size_cache_row(path_value) or {}
+    _write_size_cache(
+        path_value,
+        status="pending",
+        exists_flag=1 if Path(path_value).exists() else 0,
+        bytes_value=old.get("bytes"),
+        error=f"Automatische Größenberechnung nach Zeitplan-Job #{job_id} vorgemerkt; wartet auf Ruhefenster und freie Job-Warteschlange.",
+        started_at=old.get("started_at") or "",
+        calculated_at=old.get("calculated_at") or "",
+    )
+
+
+def mark_pending_auto_size_calculation_after_job(job_id: int, job_type: str, script_name: str, job_row: Dict[str, Any], status: str, finished_at: str) -> None:
+    if status not in {"success", "error"} or not auto_size_recalc_enabled():
+        return
+    source = str(job_row.get("source") or "")
+    if not is_scheduled_job_source(source):
+        return
+    if job_type == "mirror":
+        if int(job_row.get("dry_run") or 0):
+            return
+        mirror_id = job_row.get("mirror_id")
+        if mirror_id is None:
+            return
+        mirror = get_mirror(int(mirror_id))
+        if not mirror:
+            return
+        path_value = mirror.get("target_path") or ""
+        if not path_value:
+            return
+        add_pending_auto_size_calculation(
+            target_type="mirror",
+            target_id=str(mirror_id),
+            target_name=mirror.get("name") or job_row.get("mirror_name") or f"Mirror {mirror_id}",
+            path_value=path_value,
+            job_id=job_id,
+            finished_at=finished_at,
+            source=source,
+        )
+        add_event("info", f"Automatische Größenberechnung für Mirror '{mirror.get('name')}' vorgemerkt.")
+        return
+    if job_type == "script" and script_name:
+        target_path = get_user_script_target(script_name)
+        if not target_path:
+            return
+        add_pending_auto_size_calculation(
+            target_type="script",
+            target_id=script_name,
+            target_name=script_name,
+            path_value=target_path,
+            job_id=job_id,
+            finished_at=finished_at,
+            source=source,
+        )
+        add_event("info", f"Automatische Größenberechnung für Benutzerskript '{script_name}' vorgemerkt.")
+
+
+def running_size_calculations_count() -> int:
+    with SIZE_CALC_LOCK:
+        return len(SIZE_CALC_RUNNING)
+
+
+def size_calculation_queue_state() -> Dict[str, Any]:
     try:
+        with SIZE_CALC_LOCK:
+            running_paths = sorted(SIZE_CALC_RUNNING)
+        with db() as con:
+            queued_rows = [row_to_dict(r) for r in con.execute("SELECT path, status, error, updated_at FROM mirror_size_cache WHERE status='queued' ORDER BY updated_at ASC").fetchall()]
+        pending_items = pending_auto_size_calculations()
+        return {
+            "running_count": len(running_paths),
+            "running_paths": running_paths,
+            "queued_count": len(queued_rows),
+            "queued_items": queued_rows,
+            "pending_count": len(pending_items),
+            "pending_items": pending_items,
+            "total_waiting": len(queued_rows) + len(pending_items),
+        }
+    except Exception as exc:
+        log_webui_exception("size_calculation_queue_state", exc)
+        return {"running_count": 0, "running_paths": [], "queued_count": 0, "queued_items": [], "pending_count": 0, "pending_items": [], "total_waiting": 0}
+
+def process_queued_size_calculations() -> None:
+    """Startet manuell/kapazitätsbedingt wartende Größenberechnungen nur ohne aktive Jobs."""
+    try:
+        if queued_or_active_jobs_count() > 0:
+            return
         with SIZE_CALC_LOCK:
             free_capacity = max(0, size_calc_max_parallel() - len(SIZE_CALC_RUNNING))
         if free_capacity <= 0:
@@ -2706,14 +2885,12 @@ def process_queued_size_calculations() -> None:
 
 
 def auto_size_recalculation_scan() -> None:
-    """Startet nach einem ruhigen Job-Fenster automatisch Größenberechnungen.
+    """Startet vorgemerkte Größenberechnungen nach Zeitplan-Jobs.
 
-    Logik:
-    - nur aktiv, wenn die Einstellung eingeschaltet ist
-    - keine queued/running/stopping Jobs
-    - es existiert ein echter, nicht-Dry-Run Mirror-Job seit dem letzten automatischen Größenlauf
-    - in den nächsten AUTO_SIZE_IDLE_MINUTES ist kein geplanter Job fällig
-    - Größenberechnungen laufen im bestehenden Hintergrund-/Cache-System
+    Automatik gibt es bewusst nur für Marker, die beim Abschluss eines
+    Zeitplan-Jobs gesetzt wurden. Manuelle Jobs lösen keine automatische
+    Größenberechnung aus. Es wird nur das konkrete Profil oder Benutzerskript
+    berechnet, zu dem der beendete Zeitplan-Job gehört.
     """
     if not auto_size_recalc_enabled():
         return
@@ -2725,30 +2902,39 @@ def auto_size_recalculation_scan() -> None:
         next_due = next_scheduled_job_time(now)
         if next_due and next_due <= now + idle_window:
             return
-        last_finished = last_finished_real_mirror_job_time()
-        if not last_finished:
+        with SIZE_CALC_LOCK:
+            free_capacity = max(0, size_calc_max_parallel() - len(SIZE_CALC_RUNNING))
+        if free_capacity <= 0:
             return
-        settings = load_settings()
-        last_auto = parse_dt_value(str(settings.get("last_auto_size_recalc_after_job_finished_at") or ""))
-        if last_auto and last_auto >= last_finished:
-            return
-        mirrors = [m for m in list_mirrors() if int(m.get("enabled") or 0) == 1 and (m.get("target_path") or "").strip()]
-        pending = [m for m in mirrors if not size_cache_calculated_after(m.get("target_path") or "", last_finished)]
+        pending = pending_auto_size_calculations()
         if not pending:
-            settings["last_auto_size_recalc_after_job_finished_at"] = last_finished.isoformat(sep=" ")
-            settings["last_auto_size_recalc_at"] = now_iso()
-            save_settings(settings)
             return
+        remaining: List[Dict[str, Any]] = []
         started = 0
-        for mirror in pending:
-            if request_size_calculation(mirror.get("target_path") or "", force=True):
+        skipped_current = 0
+        for item in pending:
+            path_value = _normalized_size_path(str(item.get("path") or ""))
+            if not path_value:
+                continue
+            finished_at = parse_dt_value(str(item.get("finished_at") or ""))
+            if finished_at and size_cache_calculated_after(path_value, finished_at):
+                skipped_current += 1
+                continue
+            if started >= free_capacity:
+                remaining.append(item)
+                continue
+            if request_size_calculation(path_value, force=True, queue_when_blocked=False):
                 started += 1
+            else:
+                remaining.append(item)
+        save_pending_auto_size_calculations(remaining)
         if started:
-            add_event("info", f"Automatische Größenberechnung gestartet: {started} Mirror, Ruhefenster {auto_size_idle_minutes()} Minuten.")
+            add_event("info", f"Automatische Größenberechnung gestartet: {started} Ziel(e), Ruhefenster {auto_size_idle_minutes()} Minuten.")
+        if skipped_current:
+            add_event("info", f"Automatische Größenberechnung übersprungen: {skipped_current} Ziel(e) bereits aktuell.")
     except Exception as exc:
         log_webui_exception("auto_size_recalculation_scan", exc)
         add_event("warning", f"Automatische Größenberechnung konnte nicht geprüft werden: {exc}")
-
 
 def scheduler_scan() -> None:
     if not SCHEDULER_LOCK.acquire(blocking=False):
@@ -2988,11 +3174,13 @@ def dashboard():
         queue_count_value = queued_jobs_count()
         active_job_value = get_active_job()
         active_jobs_count_value = active_jobs_count()
+        size_queue_state_value = size_calculation_queue_state()
     except Exception as exc:
         log_webui_exception("dashboard queue state", exc)
         queue_count_value = 0
         active_job_value = None
         active_jobs_count_value = 0
+        size_queue_state_value = {"running_count": 0, "queued_count": 0, "pending_count": 0, "total_waiting": 0, "running_paths": [], "queued_items": [], "pending_items": []}
     try:
         user_scripts = enrich_user_script_runtime_info(list_user_scripts())
     except Exception as exc:
@@ -3013,6 +3201,7 @@ def dashboard():
         active_job=active_job_value,
         max_parallel_jobs=max_parallel_jobs(),
         active_jobs_count=active_jobs_count_value,
+        size_queue_state=size_queue_state_value,
     )
 
 
@@ -3261,7 +3450,7 @@ def mirror_size_recalculate(mirror_id: int):
         if started:
             flash("Größenberechnung wurde im Hintergrund gestartet.", "success")
         else:
-            flash("Größenberechnung läuft bereits oder wartet auf freie Kapazität.", "info")
+            flash("Größenberechnung läuft bereits oder wartet, bis keine Jobs mehr laufen und Kapazität frei ist.", "info")
     except Exception as exc:
         log_webui_exception(f"mirror_size_recalculate mirror_id={mirror_id}", exc)
         flash(f"Größenberechnung konnte nicht gestartet werden: {exc}", "danger")
@@ -3456,7 +3645,7 @@ def user_scripts_page():
                 if started:
                     flash("Größenberechnung für dieses Benutzerskript-Ziel wurde gestartet.", "success")
                 else:
-                    flash("Größenberechnung läuft bereits oder wartet auf freie Kapazität.", "info")
+                    flash("Größenberechnung läuft bereits oder wartet, bis keine Jobs mehr laufen und Kapazität frei ist.", "info")
                 return redirect(url_for("user_scripts_page"))
             raise ValueError("Unbekannte Aktion.")
         except Exception as exc:
@@ -5581,7 +5770,7 @@ def help_page():
     return render_template("markdown_page.html", title="Anleitung", content_html=render_markdown_light(content))
 
 
-BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.32\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
+BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.33\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
 
 # ---------------------------------------------------------------------------
 # Startup

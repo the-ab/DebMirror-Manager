@@ -25,14 +25,24 @@
   <article class="card summary-card">
     <h2>Warteschlange</h2>
     <p class="summary-value">{{ active_jobs_count }}/{{ max_parallel_jobs }}</p>
-    <small>aktive Jobs · {{ queue_count }} wartend</small>
+    <small>Jobs: {{ queue_count }} wartend</small>
+    <small class="queue-size-line">Größen: {{ size_queue_state.running_count }} laufend · {{ size_queue_state.total_waiting }} wartend</small>
     {% if active_job %}<p><a href="{{ url_for('job_detail', job_id=active_job.id) }}">#{{ active_job.id }} {{ active_job.mirror_name }}</a> <span class="badge {{ active_job.status }}">{{ active_job.status }}</span></p>{% else %}<p>Keine aktiven Jobs.</p>{% endif %}
+    {% if size_queue_state.running_count or size_queue_state.total_waiting %}
+      <p class="queue-size-detail">
+        {% if size_queue_state.running_paths %}<small>Läuft: {{ size_queue_state.running_paths[0] }}{% if size_queue_state.running_count > 1 %} +{{ size_queue_state.running_count - 1 }}{% endif %}</small><br>{% endif %}
+        {% if size_queue_state.pending_items %}<small>Vorgemerkt: {{ size_queue_state.pending_items[0].target_name }}{% if size_queue_state.pending_count > 1 %} +{{ size_queue_state.pending_count - 1 }}{% endif %}</small>{% endif %}
+        {% if size_queue_state.queued_items %}<small>{% if size_queue_state.pending_items %}<br>{% endif %}Wartet: {{ size_queue_state.queued_items[0].path }}{% if size_queue_state.queued_count > 1 %} +{{ size_queue_state.queued_count - 1 }}{% endif %}</small>{% endif %}
+      </p>
+    {% endif %}
   </article>
   <article class="card summary-card">
-    <h2>Profile</h2>
-    <p class="summary-value">{{ mirrors|length }}</p>
-    <small>angelegte Mirror-Profile</small>
-    <p><a href="{{ url_for('mirrors_page') }}">Profile anzeigen</a>{% if is_admin %} · <a href="{{ url_for('mirror_new') }}">neu</a>{% endif %}</p>
+    <h2>Profile / Benutzerskripte</h2>
+    <div class="summary-split">
+      <div><p class="summary-value">{{ mirrors|length }}</p><small>Mirror-Profile</small></div>
+      <div><p class="summary-value">{{ user_scripts|length }}</p><small>Benutzerskripte</small></div>
+    </div>
+    <p><a href="{{ url_for('mirrors_page') }}">Profile</a> · <a href="{{ url_for('user_scripts_page') }}">Benutzerskripte</a>{% if is_admin %} · <a href="{{ url_for('mirror_new') }}">Profil neu</a>{% endif %}</p>
   </article>
   <article class="card summary-card">
     <h2>Healthchecks</h2>

@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`, zusätzlich können eigene Benutzerskripte wie `lftp`- oder `rsync`-Synchronisationen als Jobs ausgeführt und geplant werden.
 
-Aktuelle Version: **0.1.32**
+Aktuelle Version: **0.1.33**
 
 ## Grundprinzip
 
@@ -31,7 +31,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.32.zip
+unzip debmirror-manager-v0.1.33.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -73,7 +73,7 @@ cp /pfad/zur/debmirror-manager-vNEU.zip updates/
 
 ### Übersicht -> Dashboard
 
-Zeigt Speicherplatz, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks. Mirror-Profile und Benutzerskripte sind optisch gleich aufgebaut und zeigen Status, Größe, Zeitplan, letzten Job und Aktion. Die Bereiche **Letzte Jobs** und **Ereignisse** bleiben in Scrollboxen; die Anzahl der geladenen Einträge ist unter `System -> Einstellungen` konfigurierbar.
+Zeigt Speicherplatz, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks. Das Feld **Warteschlange** zeigt neben laufenden/wartenden Jobs auch laufende, wartende und vorgemerkte Größenberechnungen. Die frühere Profil-Kachel ist in **Mirror-Profile** und **Benutzerskripte** geteilt. Mirror-Profile und Benutzerskripte sind optisch gleich aufgebaut und zeigen Status, Größe, Zeitplan, letzten Job und Aktion. Die Bereiche **Letzte Jobs** und **Ereignisse** bleiben in Scrollboxen; die Anzahl der geladenen Einträge ist unter `System -> Einstellungen` konfigurierbar.
 
 ### Mirror -> Profile
 
@@ -114,7 +114,7 @@ Flexible Jobplanung für Mirror-Profile und Benutzerskripte. Unterstützt:
 
 Eigene Skripte werden aus `/docker_data/debmirror-manager/user-scripts` geladen. Die WebUI führt nur Dateien direkt in diesem Verzeichnis aus, keine freie Shell-Eingabe.
 
-Pro Skript kann ein **Zielverzeichnis nur für Größenberechnung** gesetzt werden. Dieses Ziel wird nicht an das Skript übergeben und verändert die Skriptausführung nicht. Es dient ausschließlich dazu, die Größe eines durch das Skript erzeugten Sync-/Mirror-Verzeichnisses anzuzeigen. Größe, Status, Berechnungszeit und der Button **Größe neu berechnen** werden in einer kompakten Zeile dargestellt. Nach erfolgreichem Script-Job wird die Größenberechnung für dieses Ziel automatisch angestoßen.
+Pro Skript kann ein **Zielverzeichnis nur für Größenberechnung** gesetzt werden. Dieses Ziel wird nicht an das Skript übergeben und verändert die Skriptausführung nicht. Es dient ausschließlich dazu, die Größe eines durch das Skript erzeugten Sync-/Mirror-Verzeichnisses anzuzeigen. Größe, Status, Berechnungszeit und der Button **Größe neu berechnen** werden in einer kompakten Zeile dargestellt. Eine manuelle Größenberechnung betrifft nur dieses eine Skriptziel. Nach beendeten Zeitplan-Skript-Jobs wird die automatische Größenberechnung nur vorgemerkt und erst nach Ruhefenster sowie ohne aktive/wartende Jobs gestartet.
 
 ### Betrieb -> Healthchecks
 
@@ -169,7 +169,9 @@ Alle Mirror- und Benutzerskript-Jobs laufen über dieselbe Warteschlange. `MAX_P
 
 ## Größenberechnung
 
-Die Größe wird über einen Cache verwaltet. Dashboard und Listen starten keine Massenberechnung. Eine manuelle Berechnung auf einer Profil- oder Skriptseite betrifft nur dieses konkrete Ziel. Automatische Berechnungen laufen nach Job-Ende, wenn das eingestellte Ruhefenster erreicht ist und keine neuen Jobs fällig sind.
+Die Größe wird über einen Cache verwaltet. Dashboard und Listen starten keine Massenberechnung. Eine manuelle Berechnung auf einer Profil- oder Skriptseite betrifft nur dieses konkrete Ziel. Manuell gestartete Mirror- oder Benutzerskript-Jobs lösen keine automatische Größenberechnung mehr aus.
+
+Automatische Größenberechnungen entstehen ausschließlich durch Marker nach beendeten Zeitplan-Jobs. Dabei wird nur das Ziel vorgemerkt, das zu diesem beendeten Zeitplan-Job gehört: das Mirror-Profil oder das Benutzerskript-Zielverzeichnis. Die Berechnung startet erst, wenn keine Jobs laufen oder warten und innerhalb des eingestellten Ruhefensters kein weiterer geplanter Job fällig ist. Während laufender oder wartender Jobs wird keine Größenberechnung gestartet; sie bleibt sichtbar als wartend/vorgemerkt.
 
 Wichtige Einstellungen:
 

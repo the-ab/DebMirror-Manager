@@ -347,3 +347,9 @@ details.side-section > summary.side-heading:hover { background: var(--button-hov
 .inline-setting-row input { max-width: 120px; margin-bottom: 0; }
 .inline-setting-row button { white-space: nowrap; }
 @media (max-width: 720px) { .target-size-line { flex-wrap: wrap; white-space: normal; } .inline-setting-row { flex-wrap: wrap; } .inline-setting-row input { max-width: 100%; } }
+
+.summary-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; align-items: start; }
+.summary-split > div { border: 1px solid var(--line); border-radius: 8px; padding: .35rem .45rem; background: var(--inline-code-bg); }
+.summary-split .summary-value { margin-top: 0; }
+.queue-size-line { display: block; margin-top: .15rem; }
+.queue-size-detail { line-height: 1.35; overflow-wrap: anywhere; }

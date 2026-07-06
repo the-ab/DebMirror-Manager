@@ -1,5 +1,18 @@
 # Release Notes
 
+## v0.1.33
+
+- Größenberechnung nach Jobs neu aufgebaut: Manuell gestartete Jobs lösen keine automatische Größenberechnung mehr aus.
+- Automatische Größenberechnungen werden nur noch nach beendeten Zeitplan-Jobs vorgemerkt.
+- Pro beendetem Zeitplan-Job wird nur das konkrete Ziel markiert: genau dieses Mirror-Profil oder genau dieses Benutzerskript-Zielverzeichnis.
+- Die automatische Berechnung startet erst, wenn keine Jobs laufen oder warten und innerhalb des eingestellten Ruhefensters kein weiterer geplanter Job fällig ist.
+- Während laufender oder wartender Jobs startet keine Größenberechnung; manuelle Berechnungen werden für genau das gewählte Ziel wartend eingetragen.
+- Die frühere Sammellogik über den letzten Mirror-Job wurde entfernt, damit nicht mehr alle Profile berechnet werden.
+- Dashboard-Kachel **Warteschlange** zeigt jetzt zusätzlich laufende, wartende und vorgemerkte Größenberechnungen.
+- Dashboard-Kachel **Profile** wurde in **Profile / Benutzerskripte** zweigeteilt.
+- Anleitung und Release Notes auf die neue Marker-/Ruhefenster-Logik aktualisiert.
+- `VERSION` geprüft: 0.1.33.
+
 ## v0.1.32
 
 - **Benutzerskripte -> Vorhandene Skripte**: Button **Größe neu berechnen** steht jetzt direkt rechts neben Status/Stand der letzten Größenberechnung.
