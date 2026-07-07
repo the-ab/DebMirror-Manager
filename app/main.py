@@ -23,6 +23,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -113,6 +114,10 @@ JOB_WORKER_STARTED = False
 JOB_WORKER_LOCK = threading.Lock()
 SIZE_CALC_RUNNING: set[str] = set()
 SIZE_CALC_LOCK = threading.Lock()
+PROFILE_SCAN_JOBS: Dict[str, Dict[str, Any]] = {}
+PROFILE_SCAN_JOBS_LOCK = threading.Lock()
+PROFILE_SCAN_JOB_TTL_SECONDS = 3600
+PROFILE_SCAN_JOB_MAX_ENTRIES = 40
 
 
 def _normalized_size_path(path_value: str) -> str:
@@ -515,6 +520,114 @@ def save_settings(settings: Dict[str, Any]) -> None:
         pass
 
 
+def default_dashboard_layout() -> Dict[str, Any]:
+    return {
+        "zones": {
+            "summary": {
+                "order": ["storage", "queue", "profile-script-summary", "health-summary"],
+                "sizes": {},
+                "widths": {},
+                "heights": {},
+            },
+            "main": {
+                "order": ["mirror-script-list", "recent-jobs", "events", "healthchecks"],
+                "sizes": {},
+                "widths": {},
+                "heights": {},
+            },
+        }
+    }
+
+
+def sanitize_dashboard_layout(value: Any) -> Dict[str, Any]:
+    default = default_dashboard_layout()
+    if not isinstance(value, dict):
+        return default
+    raw_zones = value.get("zones") if isinstance(value.get("zones"), dict) else {}
+    cleaned = {"zones": {}}
+    allowed_sizes = {"normal", "wide", "full"}
+    default_zone_for_block: Dict[str, str] = {}
+    for z_name, z_data in default["zones"].items():
+        for block_id in z_data.get("order", []):
+            default_zone_for_block[block_id] = z_name
+
+    global_seen = set()
+    raw_seen = set()
+    for zone_name in default["zones"]:
+        raw_zone = raw_zones.get(zone_name) if isinstance(raw_zones.get(zone_name), dict) else {}
+        raw_order = raw_zone.get("order") if isinstance(raw_zone.get("order"), list) else []
+        for item in raw_order:
+            ident = str(item or "").strip()
+            if ident:
+                raw_seen.add(ident)
+
+    for zone_name, default_zone in default["zones"].items():
+        raw_zone = raw_zones.get(zone_name) if isinstance(raw_zones.get(zone_name), dict) else {}
+        raw_order = raw_zone.get("order") if isinstance(raw_zone.get("order"), list) else []
+        order: List[str] = []
+        for item in raw_order:
+            ident = str(item or "").strip()
+            if not ident or ident in global_seen:
+                continue
+            order.append(ident)
+            global_seen.add(ident)
+
+        # Neue oder bisher nicht gespeicherte Standardblöcke in ihrer ursprünglichen Zone ergänzen,
+        # aber Blöcke, die bewusst in eine andere Zone gezogen wurden, nicht zurückverschieben.
+        for item in default_zone.get("order", []):
+            if item not in global_seen and item not in raw_seen and default_zone_for_block.get(item) == zone_name:
+                order.append(item)
+                global_seen.add(item)
+
+        raw_sizes = raw_zone.get("sizes") if isinstance(raw_zone.get("sizes"), dict) else {}
+        sizes: Dict[str, str] = {}
+        for key, val in raw_sizes.items():
+            block = str(key or "").strip()
+            size = str(val or "").strip().lower()
+            if block and size in allowed_sizes:
+                sizes[block] = size
+
+        raw_widths = raw_zone.get("widths") if isinstance(raw_zone.get("widths"), dict) else {}
+        widths: Dict[str, int] = {}
+        for key, val in raw_widths.items():
+            block = str(key or "").strip()
+            if not block:
+                continue
+            try:
+                width = int(val)
+            except Exception:
+                continue
+            if 3 <= width <= 12:
+                widths[block] = width
+
+        raw_heights = raw_zone.get("heights") if isinstance(raw_zone.get("heights"), dict) else {}
+        heights: Dict[str, int] = {}
+        for key, val in raw_heights.items():
+            block = str(key or "").strip()
+            if not block:
+                continue
+            try:
+                height = int(val)
+            except Exception:
+                continue
+            if 120 <= height <= 1400:
+                heights[block] = height
+
+        cleaned["zones"][zone_name] = {"order": order, "sizes": sizes, "widths": widths, "heights": heights}
+    return cleaned
+
+
+def dashboard_layout_settings() -> Dict[str, Any]:
+    return sanitize_dashboard_layout(load_settings().get("dashboard_layout"))
+
+
+def save_dashboard_layout_settings(layout: Any) -> Dict[str, Any]:
+    cleaned = sanitize_dashboard_layout(layout)
+    settings = load_settings()
+    settings["dashboard_layout"] = cleaned
+    settings["dashboard_layout_updated_at"] = now_iso()
+    save_settings(settings)
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -1274,11 +1387,17 @@ def enrich_user_script_runtime_info(scripts: List[Dict[str, Any]]) -> List[Dict[
             script["last_job"] = last_job
             script["running_job"] = running_job
             script["schedule_display"] = schedule_display_for_script(script.get("name") or "")
+            script["dashboard_status"] = dashboard_entity_status("script", script)
+            script["start_block_reason"] = script_start_block_reason_from_item(script)
         except Exception as exc:
             log_webui_exception(f"user_script_runtime_info {script.get('name')}", exc)
             script["last_job"] = None
             script["running_job"] = None
             script["schedule_display"] = "-"
+            script["dashboard_status"] = {"label": "error", "class": "error", "title": "Status konnte nicht ermittelt werden"}
+            script["start_block_reason"] = "Status konnte nicht ermittelt werden"
+        if "start_block_reason" not in script:
+            script["start_block_reason"] = script_start_block_reason_from_item(script)
     return scripts
 
 
@@ -1289,6 +1408,73 @@ def get_active_job() -> Optional[Dict[str, Any]]:
             "SELECT * FROM jobs WHERE status IN ('queued','starting','running','stopping') ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'stopping' THEN 1 ELSE 2 END, id ASC LIMIT 1"
         ).fetchone()
         return row_to_dict(row) if row else None
+
+
+def dashboard_job_badge(job: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    if not job:
+        return None
+    status = str(job.get("status") or "").strip().lower()
+    job_id = job.get("id") or "-"
+    if status == "queued":
+        return {"label": f"queue #{job_id}", "class": "queued", "title": "Job wartet in der Warteschlange", "job_id": str(job_id)}
+    if status in {"starting", "running", "stopping"}:
+        return {"label": f"aktiv #{job_id}", "class": "running", "title": "Job läuft oder wird gerade gestartet/gestoppt", "job_id": str(job_id)}
+    if status == "error":
+        return {"label": f"error #{job_id}", "class": "error", "title": "Job wurde mit Fehler beendet", "job_id": str(job_id)}
+    return {"label": f"{status or 'job'} #{job_id}", "class": status or "muted", "title": "Jobstatus", "job_id": str(job_id)}
+
+
+def mirror_dashboard_issue(mirror: Dict[str, Any]) -> str:
+    issues: List[str] = []
+    if str(mirror.get("method") or "").strip() not in {"rsync", "http", "https", "ftp"}:
+        issues.append("Methode")
+    for field, label in (("host", "Host"), ("target_path", "Ziel"), ("dists", "Dist"), ("sections", "Sektion"), ("archs", "Arch")):
+        if not str(mirror.get(field) or "").strip():
+            issues.append(label)
+    try:
+        if str(mirror.get("target_path") or "").strip():
+            normalize_target_path(str(mirror.get("target_path") or ""))
+    except Exception:
+        issues.append("Zielpfad")
+    if issues:
+        return "Profil prüfen: " + ", ".join(dict.fromkeys(issues))
+    return ""
+
+
+def mirror_start_block_reason(mirror: Dict[str, Any], *, dry_run: bool = False) -> str:
+    issue = mirror_dashboard_issue(mirror)
+    if issue:
+        return issue
+    if not dry_run and int(mirror.get("enabled") or 0) != 1:
+        return "Mirror-Profil ist deaktiviert."
+    return ""
+
+
+def script_start_block_reason_from_item(script: Dict[str, Any]) -> str:
+    if not script.get("enabled"):
+        return "Benutzerskript ist deaktiviert."
+    if not script.get("executable"):
+        return "Benutzerskript ist nicht ausführbar."
+    return ""
+
+
+def dashboard_entity_status(kind: str, item: Dict[str, Any]) -> Dict[str, str]:
+    job_badge = dashboard_job_badge(item.get("running_job"))
+    if job_badge:
+        return job_badge
+    if kind == "mirror":
+        issue = mirror_dashboard_issue(item)
+        if issue:
+            return {"label": "error", "class": "error", "title": issue}
+        if int(item.get("enabled") or 0) != 1:
+            return {"label": "inaktiv", "class": "muted", "title": "Mirror-Profil ist deaktiviert"}
+        return {"label": "idle", "class": "idle", "title": "Kein Job läuft und kein Job wartet"}
+    if kind == "script":
+        reason = script_start_block_reason_from_item(item)
+        if reason:
+            return {"label": "error", "class": "error", "title": reason}
+        return {"label": "idle", "class": "idle", "title": "Kein Job läuft und kein Job wartet"}
+    return {"label": "idle", "class": "idle", "title": "Kein Job läuft und kein Job wartet"}
 
 
 def queued_jobs_count() -> int:
@@ -1831,6 +2017,37 @@ def set_user_script_target(script_name: str, target_path: str) -> None:
     save_settings(settings)
 
 
+def user_script_enabled_map() -> Dict[str, bool]:
+    raw = load_settings().get("user_script_enabled") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): bool(value) for name, value in raw.items()}
+
+
+def is_user_script_enabled(script_name: str) -> bool:
+    script_name = (script_name or "").strip()
+    if not script_name:
+        return False
+    enabled_map = user_script_enabled_map()
+    return bool(enabled_map.get(script_name, True))
+
+
+def set_user_script_enabled(script_name: str, enabled: bool, *, require_existing: bool = True) -> None:
+    if require_existing:
+        safe_user_script_path(script_name)
+    script_name = (script_name or "").strip()
+    if not script_name or not SCRIPT_NAME_RE.match(script_name):
+        raise ValueError("Ungültiger Skriptname.")
+    settings = load_settings()
+    enabled_map = settings.get("user_script_enabled") or {}
+    if not isinstance(enabled_map, dict):
+        enabled_map = {}
+    enabled_map[script_name] = 1 if enabled else 0
+    settings["user_script_enabled"] = enabled_map
+    settings["user_script_enabled_updated_at"] = now_iso()
+    save_settings(settings)
+
+
 def list_user_scripts() -> List[Dict[str, Any]]:
     USER_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     items: List[Dict[str, Any]] = []
@@ -1848,6 +2065,7 @@ def list_user_scripts() -> List[Dict[str, Any]]:
             "size_h": human_size(stat_info.st_size),
             "modified_at": dt.datetime.fromtimestamp(stat_info.st_mtime).replace(microsecond=0).isoformat(sep=" "),
             "executable": executable,
+            "enabled": is_user_script_enabled(path.name),
             "target_path": target_path,
             "target_size_info": size_info,
         })
@@ -1867,18 +2085,32 @@ def safe_user_script_path(script_name: str) -> Path:
     return path
 
 
+def user_script_start_block_reason(script_name: str) -> str:
+    path = safe_user_script_path(script_name)
+    if not is_user_script_enabled(path.name):
+        return "Benutzerskript ist deaktiviert."
+    if not os.access(path, os.X_OK):
+        return "Benutzerskript ist nicht ausführbar. Bitte chmod +x setzen oder das Skript aktiv korrigieren."
+    return ""
+
+
 def build_user_script_command(script_name: str) -> List[str]:
     path = safe_user_script_path(script_name)
-    if path.suffix.lower() == ".sh":
-        return ["/bin/bash", str(path)]
-    if os.access(path, os.X_OK):
-        return [str(path)]
-    return ["/bin/bash", str(path)]
+    reason = user_script_start_block_reason(path.name)
+    if reason:
+        raise RuntimeError(reason)
+    return [str(path)]
 
 
 def start_script_job(script_name: str, source: str = "manual") -> int:
     path = safe_user_script_path(script_name)
-    cmd = build_user_script_command(script_name)
+    reason = user_script_start_block_reason(path.name)
+    if reason:
+        raise RuntimeError(reason)
+    active_for_script = get_running_job_for_script(path.name)
+    if active_for_script:
+        raise RuntimeError(f"Für dieses Benutzerskript ist bereits Job #{active_for_script['id']} im Zustand {active_for_script['status']} vorhanden.")
+    cmd = build_user_script_command(path.name)
     queued_at = now_iso()
     safe_name = secure_filename(path.name) or "user-script"
     log_path = APP_LOG_DIR / f"{local_now().strftime('%Y%m%d-%H%M%S')}-script-{safe_name}.log"
@@ -1998,6 +2230,9 @@ def start_job(mirror_id: int, dry_run: bool = False, source: str = "manual") -> 
     mirror = get_mirror(mirror_id)
     if not mirror:
         raise ValueError("Mirror nicht gefunden.")
+    reason = mirror_start_block_reason(mirror, dry_run=dry_run)
+    if reason:
+        raise RuntimeError(reason)
     active_for_mirror = get_running_job_for_mirror(mirror_id)
     if active_for_mirror:
         raise RuntimeError(f"Für diesen Mirror ist bereits Job #{active_for_mirror['id']} im Zustand {active_for_mirror['status']} vorhanden.")
@@ -2539,12 +2774,16 @@ def split_script_names(value: str) -> List[str]:
 
 def script_targets_for_schedule(schedule: Dict[str, Any]) -> List[str]:
     selection = str(schedule.get("script_selection") or "single").strip()
+    scripts_by_name = {item["name"]: item for item in list_user_scripts()}
+    def allowed(name: str) -> bool:
+        item = scripts_by_name.get((name or "").strip())
+        return bool(item and item.get("enabled") and item.get("executable"))
     if selection == "all":
-        return [item["name"] for item in list_user_scripts()]
+        return [item["name"] for item in scripts_by_name.values() if item.get("enabled") and item.get("executable")]
     if selection == "selected":
-        return split_script_names(str(schedule.get("script_names") or ""))
+        return [name for name in split_script_names(str(schedule.get("script_names") or "")) if allowed(name)]
     script_name = str(schedule.get("script_name") or "").strip()
-    return [script_name] if script_name else []
+    return [script_name] if script_name and allowed(script_name) else []
 
 
 def script_target_for_schedule(schedule: Dict[str, Any]) -> str:
@@ -3158,11 +3397,17 @@ def dashboard():
             m["running_job"] = get_running_job_for_mirror(m["id"])
             if m["running_job"]:
                 enrich_job_duration(m["running_job"])
+            m["dashboard_status"] = dashboard_entity_status("mirror", m)
+            m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
         except Exception as exc:
             log_webui_exception(f"dashboard mirror job state {m.get('name')}", exc)
             m["last_job"] = None
             m["running_job"] = None
             m["schedule_display"] = schedule_display_for_mirror(m) if m.get("id") else "-"
+            m["dashboard_status"] = {"label": "error", "class": "error", "title": "Status konnte nicht ermittelt werden"}
+            m["start_block_reason"] = "Status konnte nicht ermittelt werden"
+        if "start_block_reason" not in m:
+            m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
         m["size_info"] = mirror_stats(m)
     storage = disk_usage_info(MIRROR_BASE)
     try:
@@ -3202,7 +3447,31 @@ def dashboard():
         max_parallel_jobs=max_parallel_jobs(),
         active_jobs_count=active_jobs_count_value,
         size_queue_state=size_queue_state_value,
+        dashboard_layout=dashboard_layout_settings(),
     )
+
+
+@app.route("/dashboard/layout", methods=["GET"])
+@require_auth
+def dashboard_layout_get():
+    return jsonify(dashboard_layout_settings())
+
+
+@app.route("/dashboard/layout", methods=["POST"])
+@require_admin
+def dashboard_layout_save():
+    data = request.get_json(silent=True) or {}
+    return jsonify({"ok": True, "layout": save_dashboard_layout_settings(data)})
+
+
+@app.route("/dashboard/layout/reset", methods=["POST"])
+@require_admin
+def dashboard_layout_reset():
+    settings = load_settings()
+    settings.pop("dashboard_layout", None)
+    settings["dashboard_layout_updated_at"] = now_iso()
+    save_settings(settings)
+    return jsonify({"ok": True, "layout": dashboard_layout_settings()})
 
 
 @app.route("/mirrors")
@@ -3219,11 +3488,17 @@ def mirrors_page():
             m["running_job"] = get_running_job_for_mirror(m["id"])
             if m["running_job"]:
                 enrich_job_duration(m["running_job"])
+            m["dashboard_status"] = dashboard_entity_status("mirror", m)
+            m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
         except Exception as exc:
             log_webui_exception(f"mirrors_page job state {m.get('name')}", exc)
             m["last_job"] = None
             m["running_job"] = None
             m["schedule_display"] = schedule_display_for_mirror(m) if m.get("id") else "-"
+            m["dashboard_status"] = {"label": "error", "class": "error", "title": "Status konnte nicht ermittelt werden"}
+            m["start_block_reason"] = "Status konnte nicht ermittelt werden"
+        if "start_block_reason" not in m:
+            m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
         m["size_info"] = mirror_stats(m)
     storage = disk_usage_info(MIRROR_BASE)
     try:
@@ -3313,6 +3588,19 @@ def profile_generator_settings():
                 save_settings(settings)
                 flash("Generator-Konfiguration wurde auf Standard zurückgesetzt.", "success")
                 return redirect(url_for("profile_generator_settings"))
+            if action == "reset_scan_paths":
+                settings = load_settings()
+                settings.pop("profile_scan_path_variables", None)
+                save_settings(settings)
+                flash("Suchpfad-Variablen wurden auf Standard zurückgesetzt.", "success")
+                return redirect(url_for("profile_generator_settings"))
+            if action == "save_scan_paths":
+                paths = profile_scan_clean_path_variables(request.form.get("scan_path_variables", ""))
+                if not paths:
+                    raise ValueError("Bitte mindestens eine Suchpfad-Variable eintragen.")
+                save_app_setting_values({"profile_scan_path_variables": paths})
+                flash("Suchpfad-Variablen wurden gespeichert.", "success")
+                return redirect(url_for("profile_generator_settings"))
             raw = request.form.get("generator_json", "")
             data = json.loads(raw)
             if not isinstance(data, dict):
@@ -3329,8 +3617,967 @@ def profile_generator_settings():
         except Exception as exc:
             flash(str(exc), "danger")
     cfg = get_profile_generator_config()
-    return render_template("profile_generator_settings.html", generator_json=json.dumps(cfg, indent=2, ensure_ascii=False))
+    scan_paths = get_profile_scan_path_variables()
+    return render_template(
+        "profile_generator_settings.html",
+        generator_json=json.dumps(cfg, indent=2, ensure_ascii=False),
+        scan_path_variables="\n".join(scan_paths),
+        default_scan_path_variables=PROFILE_SCAN_DEFAULT_PATH_VARIABLES,
+        max_scan_path_variables=PROFILE_SCAN_MAX_PATH_VARIABLES,
+    )
 
+
+
+PROFILE_SCAN_TIMEOUT_SECONDS = 8
+PROFILE_SCAN_MAX_BYTES = 512 * 1024
+PROFILE_SCAN_USER_AGENT = f"DebMirror-Manager/{APP_VERSION} profile-generator"
+PROFILE_SCAN_KEY_NAMES = [
+    "Release.key",
+    "repo.gpg",
+    "repository.gpg",
+    "archive-keyring.gpg",
+    "keyring.gpg",
+    "key.gpg",
+    "public.key",
+    "public.gpg",
+    "signing-key.asc",
+    "signing-key.gpg",
+    "gpg.key",
+    "GPG-KEY",
+    "key.asc",
+]
+PROFILE_SCAN_KEY_DIRS = ["", "keys", "keyrings", "apt", "gpg"]
+PROFILE_SCAN_DEFAULT_DEPTH = 5
+PROFILE_SCAN_MAX_DEPTH = 10
+PROFILE_SCAN_MAX_DIRECTORY_PAGES = 80
+PROFILE_SCAN_MAX_LINKS_PER_PAGE = 120
+PROFILE_SCAN_MAX_REPOSITORY_ROOTS = 60
+PROFILE_SCAN_MAX_KEY_CANDIDATES = 160
+PROFILE_SCAN_PACKAGE_PATH_RE = re.compile(
+    r"(?:^|\s)(?P<component>[^/\s]+)/(?:(?:debian-installer/)?binary-(?P<arch>[^/\s]+)/Packages(?:\.(?:gz|xz|bz2|lzma|zst))?|source/Sources(?:\.(?:gz|xz|bz2|lzma|zst))?)(?:\s|$)"
+)
+PROFILE_SCAN_PROBE_SUITES = [
+    "stable",
+    "testing",
+    "unstable",
+    "oldstable",
+    "sid",
+    "latest",
+    "current",
+    "main",
+]
+PROFILE_SCAN_DEFAULT_PATH_VARIABLES = [
+    "deb",
+    "debian",
+    "repo",
+    "repos",
+    "repository",
+    "repositories",
+    "apt",
+    "packages",
+    "package",
+    "mirror",
+    "linux",
+    "download",
+    "downloads",
+    "pub",
+    "public",
+]
+PROFILE_SCAN_MAX_PATH_VARIABLES = 80
+
+
+class ProfileScanCancelled(Exception):
+    pass
+
+
+def profile_scan_unique(values: Iterable[str]) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for value in values:
+        item = str(value or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def profile_scan_slug(value: str, fallback: str = "repo") -> str:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", (value or "").strip()).strip("-._")
+    return slug[:80] or fallback
+
+
+def profile_scan_parse_depth(value: Any) -> int:
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        depth = PROFILE_SCAN_DEFAULT_DEPTH
+    return max(0, min(PROFILE_SCAN_MAX_DEPTH, depth))
+
+
+def profile_scan_clean_path_variables(values: Any) -> List[str]:
+    if isinstance(values, str):
+        raw_items = re.split(r"[\r\n,]+", values)
+    elif isinstance(values, list):
+        raw_items = values
+    else:
+        raw_items = []
+    cleaned: List[str] = []
+    for raw in raw_items:
+        item = str(raw or "").strip().strip("/")
+        if not item or item.startswith(("http://", "https://", "rsync://")):
+            continue
+        # Nur relative Suchpfade zulassen. Dadurch bleibt der Scan innerhalb der eingegebenen Basisadresse.
+        parts = []
+        for part in item.split("/"):
+            part = part.strip()
+            if not part or part in {".", ".."}:
+                continue
+            safe = re.sub(r"[^A-Za-z0-9_.+-]", "", part)
+            if safe:
+                parts.append(safe)
+        if not parts:
+            continue
+        cleaned.append("/".join(parts))
+    return profile_scan_unique(cleaned)[:PROFILE_SCAN_MAX_PATH_VARIABLES]
+
+
+def get_profile_scan_path_variables() -> List[str]:
+    settings = load_settings()
+    stored = settings.get("profile_scan_path_variables")
+    if stored:
+        merged = profile_scan_clean_path_variables(stored)
+        if merged:
+            return merged
+    return list(PROFILE_SCAN_DEFAULT_PATH_VARIABLES)
+
+
+def profile_scan_check_cancel(result: Dict[str, Any]) -> None:
+    token = result.get("_job_token")
+    if not token:
+        return
+    with PROFILE_SCAN_JOBS_LOCK:
+        job = PROFILE_SCAN_JOBS.get(str(token))
+        cancelled = bool(job and job.get("cancel_requested"))
+    if cancelled:
+        profile_scan_status(result, "Prüfung wurde gestoppt.", "warning")
+        raise ProfileScanCancelled("Prüfung wurde gestoppt.")
+
+
+def profile_scan_status(result: Dict[str, Any], message: str, level: str = "info") -> None:
+    line = {
+        "level": level if level in {"info", "ok", "warning", "error"} else "info",
+        "message": str(message),
+        "timestamp": now_iso(),
+    }
+    result.setdefault("status_lines", []).append(line)
+    token = result.get("_job_token")
+    if token:
+        with PROFILE_SCAN_JOBS_LOCK:
+            job = PROFILE_SCAN_JOBS.get(str(token))
+            if job is not None:
+                job.setdefault("status_lines", []).append(line)
+                job["updated_at"] = time.time()
+
+
+def profile_scan_jobs_cleanup() -> None:
+    now_ts = time.time()
+    with PROFILE_SCAN_JOBS_LOCK:
+        old_tokens = [
+            token for token, job in PROFILE_SCAN_JOBS.items()
+            if now_ts - float(job.get("updated_at") or job.get("created_at") or now_ts) > PROFILE_SCAN_JOB_TTL_SECONDS
+        ]
+        for token in old_tokens:
+            PROFILE_SCAN_JOBS.pop(token, None)
+        if len(PROFILE_SCAN_JOBS) > PROFILE_SCAN_JOB_MAX_ENTRIES:
+            ordered = sorted(PROFILE_SCAN_JOBS.items(), key=lambda item: float(item[1].get("updated_at") or item[1].get("created_at") or 0))
+            for token, _job in ordered[: max(0, len(PROFILE_SCAN_JOBS) - PROFILE_SCAN_JOB_MAX_ENTRIES)]:
+                PROFILE_SCAN_JOBS.pop(token, None)
+
+
+def profile_scan_directory_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path or "/"
+    if not path.endswith("/"):
+        path += "/"
+    return urllib.parse.urlunparse((parsed.scheme.lower(), parsed.netloc, path, "", "", ""))
+
+
+def profile_scan_same_scope(base_url: str, candidate_url: str) -> bool:
+    base = urllib.parse.urlparse(profile_scan_directory_url(base_url))
+    candidate = urllib.parse.urlparse(profile_scan_directory_url(candidate_url))
+    if candidate.scheme != base.scheme or candidate.netloc != base.netloc:
+        return False
+    base_path = base.path or "/"
+    cand_path = candidate.path or "/"
+    return cand_path == base_path or cand_path.startswith(base_path)
+
+
+def profile_scan_link_looks_like_directory(link: str, absolute_url: str) -> bool:
+    raw = (link or "").split("#", 1)[0].split("?", 1)[0].strip()
+    if not raw or raw.startswith(("mailto:", "javascript:")):
+        return False
+    if raw.endswith("/"):
+        return True
+    name = Path(urllib.parse.urlparse(absolute_url).path).name
+    if not name or name in {"Release", "InRelease"} or name.startswith("Packages") or name.startswith("Sources"):
+        return False
+    return "." not in name
+
+
+def profile_scan_collect_directory_pages(base_url: str, max_depth: int, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    start_url = profile_scan_directory_url(base_url)
+    queue: List[Tuple[str, int]] = [(start_url, 0)]
+    queued = {start_url}
+    visited = set()
+    pages: List[Dict[str, Any]] = []
+    while queue and len(pages) < PROFILE_SCAN_MAX_DIRECTORY_PAGES:
+        profile_scan_check_cancel(result)
+        current_url, depth = queue.pop(0)
+        if current_url in visited:
+            continue
+        visited.add(current_url)
+        ok, detail, data, content_type = profile_scan_fetch(current_url)
+        if not ok:
+            profile_scan_status(result, f"Tiefe {depth}: Verzeichnis nicht lesbar: {current_url.rstrip('/')} ({detail})", "warning")
+            continue
+        text = profile_scan_decode(data)
+        pages.append({
+            "url": current_url,
+            "depth": depth,
+            "html": text,
+            "content_type": content_type,
+            "detail": detail,
+        })
+        profile_scan_status(result, f"Tiefe {depth}: Verzeichnis gelesen: {current_url.rstrip('/')} ({detail})", "ok")
+        if depth >= max_depth:
+            continue
+        for link in profile_scan_extract_links(text)[:PROFILE_SCAN_MAX_LINKS_PER_PAGE]:
+            profile_scan_check_cancel(result)
+            absolute = urllib.parse.urljoin(current_url, link)
+            if not profile_scan_link_looks_like_directory(link, absolute):
+                continue
+            directory_url = profile_scan_directory_url(absolute)
+            if directory_url in queued or directory_url in visited:
+                continue
+            if not profile_scan_same_scope(start_url, directory_url):
+                continue
+            queue.append((directory_url, depth + 1))
+            queued.add(directory_url)
+    if queue:
+        profile_scan_status(result, f"Scan-Limit erreicht: maximal {PROFILE_SCAN_MAX_DIRECTORY_PAGES} Verzeichnisse geprüft. Weitere Verzeichnisse wurden übersprungen.", "warning")
+    return pages
+
+
+def normalize_profile_scan_url(raw_url: str) -> str:
+    raw = (raw_url or "").strip()
+    if not raw:
+        raise ValueError("Bitte eine Repository-Adresse eingeben.")
+    if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw):
+        raw = "https://" + raw
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https", "rsync"}:
+        raise ValueError("Für die Prüfung sind aktuell http, https und rsync vorgesehen.")
+    if not parsed.netloc:
+        raise ValueError("Die Repository-Adresse enthält keinen Host.")
+    path = parsed.path or "/"
+    if parsed.scheme in {"http", "https"} and not path.endswith("/"):
+        path += "/"
+    return urllib.parse.urlunparse((parsed.scheme.lower(), parsed.netloc, path, "", "", ""))
+
+
+def profile_scan_root_path_from_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    root = (parsed.path or "").strip("/")
+    return root or "."
+
+
+def profile_scan_url_join(base_url: str, *parts: str) -> str:
+    url = base_url if base_url.endswith("/") else base_url + "/"
+    for part in parts:
+        if not part:
+            continue
+        clean = str(part).strip("/")
+        if str(part).endswith("/"):
+            clean += "/"
+        url = urllib.parse.urljoin(url, clean)
+    return url
+
+
+def profile_scan_resolve_path_variables(variables: Any = None) -> List[str]:
+    if variables is None:
+        active_variables = get_profile_scan_path_variables()
+    else:
+        active_variables = profile_scan_clean_path_variables(variables)
+    if not active_variables:
+        active_variables = list(PROFILE_SCAN_DEFAULT_PATH_VARIABLES)
+    return active_variables
+
+
+def profile_scan_variable_candidate_roots(start_url: str, result: Dict[str, Any], variables: Any = None) -> List[str]:
+    base_url = profile_scan_directory_url(start_url)
+    active_variables = profile_scan_resolve_path_variables(variables)
+    candidates: List[str] = []
+    for variable in active_variables:
+        candidate_url = profile_scan_url_join(base_url, variable + "/")
+        candidates.append(candidate_url)
+        profile_scan_status(result, f"Suchpfad-Variable '{variable}' wird relativ zur Eingabe geprüft: {candidate_url.rstrip('/')}", "info")
+    candidates = profile_scan_unique(candidates)[:PROFILE_SCAN_MAX_REPOSITORY_ROOTS]
+    if candidates:
+        profile_scan_status(result, f"Suchpfad-Variablen aktiv: {len(candidates)} zusätzliche Pfade unterhalb von {base_url.rstrip('/')}.", "info")
+    return candidates
+
+
+def profile_scan_variable_dists_candidate_roots(start_url: str, result: Dict[str, Any], variables: Any = None) -> List[str]:
+    base_url = profile_scan_directory_url(start_url)
+    active_variables = profile_scan_resolve_path_variables(variables)
+    candidates: List[str] = []
+    for variable in active_variables:
+        candidate_url = profile_scan_url_join(base_url, variable + "/", "dists/")
+        candidates.append(candidate_url)
+        profile_scan_status(result, f"Suchpfad-Variable '{variable}' mit angehängtem dists/ wird geprüft: {candidate_url.rstrip('/')}", "info")
+    candidates = profile_scan_unique(candidates)[:PROFILE_SCAN_MAX_REPOSITORY_ROOTS]
+    if candidates:
+        profile_scan_status(result, f"Zusatzprüfung aktiv: {len(candidates)} Suchpfad-dists/-Pfade werden geprüft.", "info")
+    return candidates
+
+
+def profile_scan_fetch(url: str, max_bytes: int = PROFILE_SCAN_MAX_BYTES) -> Tuple[bool, str, bytes, str]:
+    request_obj = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": PROFILE_SCAN_USER_AGENT,
+            "Accept": "text/plain,text/html,application/octet-stream,*/*",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request_obj, timeout=PROFILE_SCAN_TIMEOUT_SECONDS) as response:
+            status = getattr(response, "status", 200)
+            content_type = response.headers.get("Content-Type", "")
+            data = response.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                data = data[:max_bytes]
+            return 200 <= int(status) < 400, f"HTTP {status}", data, content_type
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}", b"", exc.headers.get("Content-Type", "") if exc.headers else ""
+    except urllib.error.URLError as exc:
+        return False, str(exc.reason), b"", ""
+    except Exception as exc:
+        return False, str(exc), b"", ""
+
+
+def profile_scan_decode(data: bytes) -> str:
+    if not data:
+        return ""
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def profile_scan_extract_links(html_text: str) -> List[str]:
+    links: List[str] = []
+    for match in re.finditer(r"href\s*=\s*[\"']([^\"']+)[\"']", html_text or "", re.IGNORECASE):
+        href = html.unescape(match.group(1)).strip()
+        if not href or href.startswith(("?", "#", "mailto:", "javascript:")):
+            continue
+        clean = href.split("#", 1)[0].split("?", 1)[0].strip()
+        if clean in {"/", "../", "./", "..", "."}:
+            continue
+        links.append(clean)
+    return profile_scan_unique(links)
+
+
+def profile_scan_parse_release(text: str, fallback_suite: str = "") -> Dict[str, Any]:
+    fields: Dict[str, str] = {}
+    current_key = ""
+    for raw_line in (text or "").splitlines():
+        line = raw_line.rstrip("\n")
+        if not line:
+            current_key = ""
+            continue
+        match = re.match(r"^([A-Za-z][A-Za-z0-9-]*):\s*(.*)$", line)
+        if match:
+            current_key = match.group(1)
+            fields[current_key] = match.group(2).strip()
+        elif current_key and line.startswith(" "):
+            fields[current_key] = (fields[current_key] + " " + line.strip()).strip()
+    components: List[str] = csv_to_list((fields.get("Components") or "").replace(" ", ","))
+    archs: List[str] = csv_to_list((fields.get("Architectures") or "").replace(" ", ","))
+    inferred_components: List[str] = []
+    inferred_archs: List[str] = []
+    for match in PROFILE_SCAN_PACKAGE_PATH_RE.finditer(text or ""):
+        component = match.group("component")
+        arch = match.group("arch")
+        if component:
+            inferred_components.append(component)
+        if arch:
+            inferred_archs.append(arch)
+    components = profile_scan_unique(components + inferred_components)
+    archs = profile_scan_unique(archs + inferred_archs)
+    return {
+        "suite": fields.get("Suite") or fallback_suite,
+        "codename": fields.get("Codename") or "",
+        "origin": fields.get("Origin") or "",
+        "label": fields.get("Label") or "",
+        "version": fields.get("Version") or "",
+        "components": components,
+        "archs": archs,
+    }
+
+
+def profile_scan_check_http_transfer(base_url: str, method: str) -> Dict[str, Any]:
+    parsed = urllib.parse.urlparse(base_url)
+    candidate = urllib.parse.urlunparse((method, parsed.netloc, parsed.path or "/", "", "", ""))
+    ok, detail, _data, _ctype = profile_scan_fetch(candidate, max_bytes=2048)
+    return {
+        "method": method,
+        "url": candidate.rstrip("/"),
+        "available": ok,
+        "status": "available" if ok else "missing",
+        "detail": detail,
+        "status_class": "ok" if ok else "warning",
+    }
+
+
+def profile_scan_check_rsync_transfer(base_url: str) -> Dict[str, Any]:
+    parsed = urllib.parse.urlparse(base_url)
+    root_path = profile_scan_root_path_from_url(base_url)
+    rsync_target = base_url if parsed.scheme == "rsync" else f"rsync://{parsed.netloc}/{'' if root_path == '.' else root_path}"
+    if not rsync_target.endswith("/"):
+        rsync_target += "/"
+    if not shutil.which("rsync"):
+        return {
+            "method": "rsync",
+            "url": rsync_target,
+            "available": False,
+            "status": "unknown",
+            "detail": "rsync ist im WebUI-Container nicht verfügbar; Transferart wurde nicht geprüft.",
+            "status_class": "warning",
+        }
+    try:
+        completed = subprocess.run(
+            ["rsync", "--list-only", "--timeout=5", rsync_target],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=PROFILE_SCAN_TIMEOUT_SECONDS,
+            check=False,
+        )
+        ok = completed.returncode == 0
+        detail = "OK" if ok else (completed.stderr or completed.stdout or f"Exit-Code {completed.returncode}").strip().splitlines()[0][:180]
+        return {
+            "method": "rsync",
+            "url": rsync_target,
+            "available": ok,
+            "status": "available" if ok else "missing",
+            "detail": detail,
+            "status_class": "ok" if ok else "warning",
+        }
+    except Exception as exc:
+        return {
+            "method": "rsync",
+            "url": rsync_target,
+            "available": False,
+            "status": "unknown",
+            "detail": str(exc),
+            "status_class": "warning",
+        }
+
+
+def profile_scan_key_candidate_name(value: str) -> bool:
+    name = Path(urllib.parse.urlparse(value).path).name.lower()
+    return bool(
+        name.endswith((".gpg", ".asc", ".key"))
+        or "gpg" in name
+        or "key" in name
+        or "keyring" in name
+    )
+
+
+def profile_scan_find_gpg_keys(base_url: str, base_html: str = "", directory_pages: Optional[List[Dict[str, Any]]] = None, result: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    pages = directory_pages or []
+    candidate_dirs = profile_scan_unique([base_url] + [page.get("url", "") for page in pages])[:12]
+    candidates: List[str] = []
+    for directory_url in candidate_dirs:
+        for key_dir in PROFILE_SCAN_KEY_DIRS:
+            for name in PROFILE_SCAN_KEY_NAMES:
+                if key_dir:
+                    candidates.append(profile_scan_url_join(directory_url, key_dir + "/", name))
+                else:
+                    candidates.append(profile_scan_url_join(directory_url, name))
+    html_sources = [base_html] + [page.get("html", "") for page in pages]
+    base_for_links = [base_url] + [page.get("url", base_url) for page in pages]
+    for html_text, page_url in zip(html_sources, base_for_links):
+        for link in profile_scan_extract_links(html_text):
+            if profile_scan_key_candidate_name(link):
+                candidates.append(urllib.parse.urljoin(page_url, link))
+    result_items: List[Dict[str, Any]] = []
+    unique_candidates = profile_scan_unique(candidates)[:PROFILE_SCAN_MAX_KEY_CANDIDATES]
+    if result is not None:
+        profile_scan_status(result, f"GPG-Key-Prüfung: {len(unique_candidates)} mögliche Key-Pfade werden geprüft.", "info")
+    for url in unique_candidates:
+        profile_scan_check_cancel(result)
+        ok, detail, data, content_type = profile_scan_fetch(url, max_bytes=65536)
+        if not ok:
+            continue
+        text_sample = profile_scan_decode(data[:4096])
+        likely_key = profile_scan_key_candidate_name(url) or "BEGIN PGP PUBLIC KEY BLOCK" in text_sample
+        if not likely_key:
+            continue
+        item = {
+            "url": url.rstrip("/"),
+            "name": Path(urllib.parse.urlparse(url).path).name or url.rstrip("/").rsplit("/", 1)[-1],
+            "content_type": content_type or "unbekannt",
+            "detail": detail,
+        }
+        result_items.append(item)
+        if result is not None:
+            profile_scan_status(result, f"GPG-Key gefunden: {item['url']}", "ok")
+    return result_items
+
+
+def profile_scan_suite_names_from_listing(dists_url: str, html_text: str) -> List[str]:
+    names: List[str] = []
+    for link in profile_scan_extract_links(html_text):
+        path = urllib.parse.urlparse(urllib.parse.urljoin(dists_url, link)).path.rstrip("/")
+        name = path.rsplit("/", 1)[-1]
+        if not name or name in {"by-hash", "Release", "InRelease"}:
+            continue
+        if re.search(r"[A-Za-z0-9_.+-]", name):
+            names.append(name)
+    return profile_scan_unique(names)
+
+
+def profile_scan_release_suite_from_url(root_url: str, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    directory_url = profile_scan_directory_url(root_url)
+    parsed = urllib.parse.urlparse(directory_url)
+    path_parts = [part for part in (parsed.path or "/").strip("/").split("/") if part]
+    if len(path_parts) < 2 or path_parts[-2] != "dists":
+        return None
+    suite_name = path_parts[-1]
+    repo_path = "/" + "/".join(path_parts[:-2]) + "/" if len(path_parts) > 2 else "/"
+    repo_base_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, repo_path, "", "", ""))
+    release_text = ""
+    release_url = ""
+    signed = False
+    for release_name in ("InRelease", "Release"):
+        candidate_url = urllib.parse.urljoin(directory_url, release_name)
+        ok, detail, data, _ctype = profile_scan_fetch(candidate_url)
+        if ok and data:
+            release_text = profile_scan_decode(data)
+            release_url = candidate_url
+            signed = release_name == "InRelease"
+            profile_scan_status(result, f"Direkte Suite erkannt: {suite_name} unter {directory_url.rstrip('/')} ({release_name}, {detail})", "ok")
+            break
+    if not release_text:
+        return None
+    meta = profile_scan_parse_release(release_text, fallback_suite=suite_name)
+    return {
+        "name": suite_name,
+        "suite": meta.get("suite") or suite_name,
+        "codename": meta.get("codename") or "",
+        "origin": meta.get("origin") or "",
+        "label": meta.get("label") or "",
+        "version": meta.get("version") or "",
+        "components": meta.get("components") or [],
+        "archs": meta.get("archs") or [],
+        "release_url": release_url,
+        "signed": signed,
+        "repo_base_url": repo_base_url.rstrip("/"),
+        "repo_root_path": profile_scan_root_path_from_url(repo_base_url),
+    }
+
+
+def profile_scan_suite_from_dists_probe(root_url: str, suite_name: str, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    repo_base_url = profile_scan_directory_url(root_url)
+    suite_url = profile_scan_url_join(repo_base_url, "dists/", suite_name + "/")
+    release_text = ""
+    release_url = ""
+    signed = False
+    for release_name in ("InRelease", "Release"):
+        candidate_url = urllib.parse.urljoin(suite_url, release_name)
+        ok, detail, data, _ctype = profile_scan_fetch(candidate_url)
+        if ok and data:
+            release_text = profile_scan_decode(data)
+            release_url = candidate_url
+            signed = release_name == "InRelease"
+            profile_scan_status(result, f"Suite per Direktprüfung gefunden: {suite_name} ({release_name}, {detail})", "ok")
+            break
+    if not release_text:
+        return None
+    meta = profile_scan_parse_release(release_text, fallback_suite=suite_name)
+    return {
+        "name": suite_name,
+        "suite": meta.get("suite") or suite_name,
+        "codename": meta.get("codename") or "",
+        "origin": meta.get("origin") or "",
+        "label": meta.get("label") or "",
+        "version": meta.get("version") or "",
+        "components": meta.get("components") or [],
+        "archs": meta.get("archs") or [],
+        "release_url": release_url,
+        "signed": signed,
+        "repo_base_url": repo_base_url.rstrip("/"),
+        "repo_root_path": profile_scan_root_path_from_url(repo_base_url),
+    }
+
+
+def profile_scan_is_dists_directory_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(profile_scan_directory_url(url))
+    path_parts = [part for part in (parsed.path or "/").strip("/").split("/") if part]
+    return bool(path_parts and path_parts[-1] == "dists")
+
+
+def profile_scan_repo_base_from_dists_url(dists_url: str) -> str:
+    parsed = urllib.parse.urlparse(profile_scan_directory_url(dists_url))
+    path_parts = [part for part in (parsed.path or "/").strip("/").split("/") if part]
+    if path_parts and path_parts[-1] == "dists":
+        path_parts = path_parts[:-1]
+    repo_path = "/" + "/".join(path_parts) + "/" if path_parts else "/"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, repo_path, "", "", ""))
+
+
+def profile_scan_scan_dists_directory(dists_url: str, result: Dict[str, Any], source_label: str = "dists/") -> List[Dict[str, Any]]:
+    dists_url = profile_scan_directory_url(dists_url)
+    repo_base_url = profile_scan_repo_base_from_dists_url(dists_url)
+    dists_ok, dists_detail, dists_data, _dists_content_type = profile_scan_fetch(dists_url)
+    if not dists_ok:
+        profile_scan_status(result, f"Kein lesbares dists/-Verzeichnis für {source_label}: {dists_url.rstrip('/')} ({dists_detail})", "info")
+        return []
+    suite_names = profile_scan_suite_names_from_listing(dists_url, profile_scan_decode(dists_data))
+    if not suite_names:
+        profile_scan_status(result, f"dists/ gefunden, aber keine Suites im Listing erkannt: {dists_url.rstrip('/')}. Prüfe Standard-Suiten direkt.", "warning")
+        suite_names = PROFILE_SCAN_PROBE_SUITES
+    else:
+        profile_scan_status(result, f"dists/ gefunden: {dists_url.rstrip('/')} | Suites: {', '.join(suite_names[:12])}{' ...' if len(suite_names) > 12 else ''}", "ok")
+    suites: List[Dict[str, Any]] = []
+    for suite_name in suite_names[:80]:
+        profile_scan_check_cancel(result)
+        suite_url = profile_scan_url_join(dists_url, suite_name + "/")
+        release_text = ""
+        release_url = ""
+        signed = False
+        for release_name in ("InRelease", "Release"):
+            candidate_url = urllib.parse.urljoin(suite_url, release_name)
+            ok, detail, data, _ctype = profile_scan_fetch(candidate_url)
+            if ok and data:
+                release_text = profile_scan_decode(data)
+                release_url = candidate_url
+                signed = release_name == "InRelease"
+                profile_scan_status(result, f"Suite {suite_name}: {release_name} gelesen ({detail})", "ok")
+                break
+        if not release_text:
+            profile_scan_status(result, f"Suite {suite_name}: keine Release/InRelease-Datei gefunden.", "warning")
+            continue
+        meta = profile_scan_parse_release(release_text, fallback_suite=suite_name)
+        suites.append({
+            "name": suite_name,
+            "suite": meta.get("suite") or suite_name,
+            "codename": meta.get("codename") or "",
+            "origin": meta.get("origin") or "",
+            "label": meta.get("label") or "",
+            "version": meta.get("version") or "",
+            "components": meta.get("components") or [],
+            "archs": meta.get("archs") or [],
+            "release_url": release_url,
+            "signed": signed,
+            "repo_base_url": repo_base_url.rstrip("/"),
+            "repo_root_path": profile_scan_root_path_from_url(repo_base_url),
+        })
+    return suites
+
+
+def profile_scan_scan_dists_root(root_url: str, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    root_url = profile_scan_directory_url(root_url)
+    dists_url = root_url if profile_scan_is_dists_directory_url(root_url) else profile_scan_url_join(root_url, "dists/")
+    suites = profile_scan_scan_dists_directory(dists_url, result, "Repository-Basis")
+    if not suites and not profile_scan_is_dists_directory_url(root_url):
+        profile_scan_status(result, f"Kein dists/ an dieser Basis: {root_url.rstrip('/')}", "info")
+    return suites
+
+
+def profile_scan_scan_flat_root(root_url: str, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    flat_release_text = ""
+    flat_release_url = ""
+    for release_name in ("InRelease", "Release"):
+        candidate_url = urllib.parse.urljoin(profile_scan_directory_url(root_url), release_name)
+        ok, detail, data, _ctype = profile_scan_fetch(candidate_url)
+        if ok and data:
+            flat_release_text = profile_scan_decode(data)
+            flat_release_url = candidate_url
+            profile_scan_status(result, f"Flache Release-Datei gefunden: {candidate_url} ({detail})", "ok")
+            break
+    package_candidates = [
+        "Packages.gz",
+        "Packages.xz",
+        "Packages.bz2",
+        "Packages",
+        "binary-amd64/Packages.gz",
+        "binary-arm64/Packages.gz",
+        "binary-all/Packages.gz",
+    ]
+    package_hits = []
+    for package_name in package_candidates:
+        profile_scan_check_cancel(result)
+        package_url = profile_scan_url_join(root_url, package_name)
+        ok, detail, _data, _ctype = profile_scan_fetch(package_url, max_bytes=2048)
+        if ok:
+            package_hits.append({"path": package_name, "url": package_url, "detail": detail})
+            profile_scan_status(result, f"Flache Packages-Datei gefunden: {package_url} ({detail})", "ok")
+    if not flat_release_text and not package_hits:
+        return None
+    meta = profile_scan_parse_release(flat_release_text, fallback_suite=".") if flat_release_text else {"components": [], "archs": [], "suite": ".", "codename": ""}
+    return {
+        "release_url": flat_release_url,
+        "components": meta.get("components") or [],
+        "archs": meta.get("archs") or [],
+        "packages": package_hits,
+        "repo_base_url": root_url.rstrip("/"),
+        "repo_root_path": profile_scan_root_path_from_url(root_url),
+    }
+
+
+def profile_scan_same_url_with_scheme(url: str, scheme: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    return urllib.parse.urlunparse((scheme, parsed.netloc, parsed.path or "/", "", "", ""))
+
+
+def profile_scan_consolidate_roots(suites: List[Dict[str, Any]], fallback_url: str) -> List[Dict[str, Any]]:
+    consolidated_roots: List[Dict[str, Any]] = []
+    for suite in suites:
+        root_base_url = profile_scan_directory_url(suite.get("repo_base_url") or fallback_url)
+        existing = next((item for item in consolidated_roots if profile_scan_directory_url(item.get("base_url", "")) == root_base_url), None)
+        if existing is None:
+            existing = {
+                "base_url": root_base_url.rstrip("/"),
+                "root_path": profile_scan_root_path_from_url(root_base_url),
+                "suite_count": 0,
+                "components": [],
+                "archs": [],
+            }
+            consolidated_roots.append(existing)
+        existing["suite_count"] = int(existing.get("suite_count") or 0) + 1
+        existing["components"] = profile_scan_unique(list(existing.get("components") or []) + list(suite.get("components") or []))
+        existing["archs"] = profile_scan_unique(list(existing.get("archs") or []) + list(suite.get("archs") or []))
+    return consolidated_roots
+
+
+def scan_apt_repository_url(raw_url: str, max_depth: Any = PROFILE_SCAN_DEFAULT_DEPTH, live_token: str = "", scan_path_variables: Any = None) -> Dict[str, Any]:
+    depth = profile_scan_parse_depth(max_depth)
+    input_has_scheme = bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", (raw_url or "").strip()))
+    start_url = normalize_profile_scan_url(raw_url)
+    start_parsed = urllib.parse.urlparse(start_url)
+    active_scan_path_variables = profile_scan_clean_path_variables(scan_path_variables) if scan_path_variables is not None else get_profile_scan_path_variables()
+    if not active_scan_path_variables:
+        active_scan_path_variables = list(PROFILE_SCAN_DEFAULT_PATH_VARIABLES)
+    result: Dict[str, Any] = {
+        "input_url": raw_url,
+        "scan_start_url": start_url.rstrip("/"),
+        "base_url": start_url.rstrip("/"),
+        "method": start_parsed.scheme,
+        "host": start_parsed.netloc,
+        "root_path": profile_scan_root_path_from_url(start_url),
+        "scan_depth": depth,
+        "transfers": [],
+        "suites": [],
+        "repository_roots": [],
+        "components": [],
+        "archs": [],
+        "gpg_keys": [],
+        "warnings": [],
+        "flat_repo": None,
+        "usable": False,
+        "status_lines": [],
+        "scan_path_variables": active_scan_path_variables,
+        "_job_token": live_token,
+    }
+    profile_scan_status(result, f"Scan gestartet: {start_url.rstrip('/')} | Verzeichnistiefe: {depth}", "info")
+    profile_scan_status(result, f"Aktive Suchpfad-Variablen aus den Generator-Einstellungen: {', '.join(active_scan_path_variables[:12])}{' ...' if len(active_scan_path_variables) > 12 else ''}", "info")
+
+    if start_parsed.scheme not in {"http", "https"}:
+        result["transfers"].append(profile_scan_check_rsync_transfer(start_url))
+        result["warnings"].append("Repository-Inhalte werden im ersten Schritt nur über HTTP/HTTPS ausgelesen. Für rsync wurde nur die Transferart geprüft.")
+        profile_scan_status(result, "Inhaltsprüfung übersprungen, weil die Adresse kein HTTP/HTTPS-Ziel ist.", "warning")
+        return result
+
+    content_start_urls = [start_url]
+    if not input_has_scheme and start_parsed.scheme == "https":
+        # Ohne Protokoll wurde bisher https angenommen. Falls HTTPS nicht funktioniert,
+        # muss die Repository-Struktur anschließend auch über HTTP geprüft werden.
+        http_start_url = profile_scan_same_url_with_scheme(start_url, "http")
+        if http_start_url not in content_start_urls:
+            content_start_urls.append(http_start_url)
+            profile_scan_status(result, f"Keine Protokollangabe erkannt. Falls HTTPS nichts liefert, wird zusätzlich HTTP geprüft: {http_start_url.rstrip('/')}", "info")
+
+    all_suites: List[Dict[str, Any]] = []
+    all_candidate_roots: List[str] = []
+    all_directory_pages: List[Dict[str, Any]] = []
+    selected_base_url = start_url
+
+    def scan_candidate_roots(roots: List[str], source_label: str) -> List[Dict[str, Any]]:
+        found_suites: List[Dict[str, Any]] = []
+        for root_url in roots:
+            profile_scan_check_cancel(result)
+            direct_suite = profile_scan_release_suite_from_url(root_url, result)
+            if direct_suite:
+                suites = [direct_suite]
+            elif profile_scan_is_dists_directory_url(root_url):
+                # Wenn das Verzeichnislisting oder eine Suchpfad-Zusatzprüfung direkt auf .../dists/ zeigt,
+                # ist die Repository-Basis die Ebene oberhalb von dists/.
+                suites = profile_scan_scan_dists_directory(root_url, result, source_label)
+            else:
+                suites = profile_scan_scan_dists_root(root_url, result)
+            if suites:
+                profile_scan_status(result, f"Repository über {source_label} gefunden: {profile_scan_directory_url(suites[0].get('repo_base_url') or root_url).rstrip('/')}", "ok")
+                found_suites.extend(suites)
+        return found_suites
+
+    for index, content_start_url in enumerate(content_start_urls):
+        profile_scan_check_cancel(result)
+        if index > 0:
+            profile_scan_status(result, f"Starte Fallback-Inhaltsprüfung mit anderem Protokoll: {content_start_url.rstrip('/')}", "warning")
+        directory_pages = profile_scan_collect_directory_pages(content_start_url, depth, result)
+        all_directory_pages.extend(directory_pages)
+        if not directory_pages:
+            result["warnings"].append(f"Basisadresse konnte nicht als Verzeichnislisting gelesen werden: {content_start_url.rstrip('/')}. Direkte Standardpfade wie dists/ werden trotzdem geprüft.")
+            profile_scan_status(result, f"Kein lesbares Verzeichnislisting gefunden; prüfe direkte Standardpfade an dieser Basis: {content_start_url.rstrip('/')}", "warning")
+            candidate_roots = [profile_scan_directory_url(content_start_url)]
+        else:
+            candidate_roots = profile_scan_unique([page.get("url", "") for page in directory_pages])[:PROFILE_SCAN_MAX_REPOSITORY_ROOTS]
+        all_candidate_roots.extend(candidate_roots)
+        profile_scan_status(result, f"Repository-Basisprüfung ({urllib.parse.urlparse(content_start_url).scheme}): {len(candidate_roots)} mögliche Verzeichnisse werden geprüft.", "info")
+        suites = scan_candidate_roots(candidate_roots, "Hauptprüfung")
+        if not suites:
+            profile_scan_status(result, "Hauptverzeichnis ohne verwendbares dists/-Repository. Prüfe konfigurierte Suchpfad-Variablen.", "warning")
+            variable_roots = [root for root in profile_scan_variable_candidate_roots(content_start_url, result, active_scan_path_variables) if root not in candidate_roots]
+            all_candidate_roots.extend(variable_roots)
+            if variable_roots:
+                suites = scan_candidate_roots(variable_roots, "Suchpfad-Variable")
+        if not suites:
+            profile_scan_status(result, "Auch die Suchpfad-Variablen lieferten kein Repository. Prüfe zusätzlich Suchpfad-Variable + dists/.", "warning")
+            variable_dists_roots = [
+                root for root in profile_scan_variable_dists_candidate_roots(content_start_url, result, active_scan_path_variables)
+                if root not in candidate_roots and root not in all_candidate_roots
+            ]
+            all_candidate_roots.extend(variable_dists_roots)
+            if variable_dists_roots:
+                suites = scan_candidate_roots(variable_dists_roots, "Suchpfad-Variable + dists/")
+        if suites:
+            all_suites.extend(suites)
+            selected_base_url = profile_scan_directory_url(suites[0].get("repo_base_url") or content_start_url)
+            if index > 0:
+                profile_scan_status(result, f"Repository wurde über Fallback-Protokoll gefunden. Aktive Basis: {selected_base_url.rstrip('/')}", "ok")
+            break
+
+    all_candidate_roots = profile_scan_unique(all_candidate_roots)[:PROFILE_SCAN_MAX_REPOSITORY_ROOTS]
+
+    if all_suites:
+        unique_suites: List[Dict[str, Any]] = []
+        seen_suite_keys = set()
+        for suite in all_suites:
+            suite_key = (profile_scan_directory_url(suite.get("repo_base_url", "")), suite.get("name", ""))
+            if suite_key in seen_suite_keys:
+                continue
+            seen_suite_keys.add(suite_key)
+            unique_suites.append(suite)
+        all_suites = unique_suites
+        result["repository_roots"] = profile_scan_consolidate_roots(all_suites, selected_base_url)
+        selected_base_url = profile_scan_directory_url(all_suites[0].get("repo_base_url") or selected_base_url)
+        result["suites"] = [suite for suite in all_suites if profile_scan_directory_url(suite.get("repo_base_url", "")) == selected_base_url]
+        if profile_scan_directory_url(start_url) != selected_base_url:
+            profile_scan_status(result, f"Aktive Repository-Basis auf gefundenen Pfad gesetzt: {selected_base_url.rstrip('/')}", "ok")
+        if len(result["repository_roots"]) > 1:
+            result["warnings"].append("Mehrere Repository-Basen gefunden. Für die Profilerzeugung wird zunächst die erste gefundene verwendbare Basis genutzt.")
+            profile_scan_status(result, "Mehrere Repository-Basen erkannt; Auswahl wird in dieser Version als Übersicht angezeigt.", "warning")
+    else:
+        profile_scan_status(result, "Kein vollständiges dists/-Repository gefunden. Prüfe flache APT-Strukturen.", "warning")
+        for root_url in all_candidate_roots or [profile_scan_directory_url(start_url)]:
+            profile_scan_check_cancel(result)
+            flat = profile_scan_scan_flat_root(root_url, result)
+            if flat:
+                result["flat_repo"] = flat
+                selected_base_url = profile_scan_directory_url(flat.get("repo_base_url") or root_url)
+                result["warnings"].append("Flache APT-Struktur erkannt. Die automatische Profilerzeugung wird dafür noch nicht sicher aktiviert; nutze bei Bedarf die normale Profilbearbeitung.")
+                break
+
+    selected_parsed = urllib.parse.urlparse(selected_base_url)
+    result["base_url"] = selected_base_url.rstrip("/")
+    result["method"] = selected_parsed.scheme
+    result["host"] = selected_parsed.netloc
+    result["root_path"] = profile_scan_root_path_from_url(selected_base_url)
+
+    checked_transfer_methods: List[str] = []
+    for method in [selected_parsed.scheme, "https", "http"]:
+        if method in {"http", "https"} and method not in checked_transfer_methods:
+            result["transfers"].append(profile_scan_check_http_transfer(selected_base_url, method))
+            checked_transfer_methods.append(method)
+    result["transfers"].append(profile_scan_check_rsync_transfer(selected_base_url))
+
+    all_components: List[str] = []
+    all_archs: List[str] = []
+    for suite in result["suites"]:
+        all_components.extend(suite.get("components") or [])
+        all_archs.extend(suite.get("archs") or [])
+    if result.get("flat_repo"):
+        all_components.extend(result["flat_repo"].get("components") or [])
+        all_archs.extend(result["flat_repo"].get("archs") or [])
+    result["components"] = profile_scan_unique(all_components)
+    result["archs"] = profile_scan_unique(all_archs)
+
+    base_html = ""
+    for page in all_directory_pages:
+        if profile_scan_directory_url(page.get("url", "")) == selected_base_url:
+            base_html = page.get("html", "")
+            break
+    result["gpg_keys"] = profile_scan_find_gpg_keys(selected_base_url, base_html, all_directory_pages, result)
+    if not result["gpg_keys"]:
+        result["warnings"].append("Kein möglicher GPG-Key an typischen Speicherorten oder im Verzeichnislisting gefunden.")
+        profile_scan_status(result, "Keine mögliche GPG-Key-Datei gefunden.", "warning")
+    result["usable"] = bool(result["suites"] and result["components"] and result["archs"])
+    if result["usable"]:
+        profile_scan_status(result, f"Prüfung abgeschlossen: verwendbares Repository mit {len(result['suites'])} Suite(s), {len(result['components'])} Komponente(n), {len(result['archs'])} Architektur(en).", "ok")
+    elif not result.get("flat_repo"):
+        result["warnings"].append("Keine vollständige APT-Repository-Struktur erkannt.")
+        profile_scan_status(result, "Prüfung abgeschlossen: keine vollständige APT-Repository-Struktur erkannt.", "error")
+    return result
+
+
+def generator_build_values_from_scan(form) -> Dict[str, Any]:
+    source_url = normalize_profile_scan_url(form.get("source_url", ""))
+    parsed = urllib.parse.urlparse(source_url)
+    method = form.get("method") or parsed.scheme
+    if method not in {"http", "https", "rsync", "ftp"}:
+        method = parsed.scheme if parsed.scheme in {"http", "https", "rsync"} else "https"
+    suites = profile_scan_unique(form.getlist("suites"))
+    components = profile_scan_unique(form.getlist("components"))
+    archs = profile_scan_unique(form.getlist("archs"))
+    if not suites:
+        raise ValueError("Bitte mindestens eine gefundene Suite auswählen.")
+    if not components:
+        raise ValueError("Bitte mindestens eine Komponente auswählen.")
+    if not archs:
+        raise ValueError("Bitte mindestens eine Architektur auswählen.")
+    root_path = normalize_root_path(form.get("root_path", "") or profile_scan_root_path_from_url(source_url)) or "."
+    default_name = f"{parsed.netloc} {'+'.join(suites[:2])}"
+    name = (form.get("profile_name") or default_name).strip()
+    target_suffix = profile_scan_slug(form.get("target_suffix") or f"{parsed.netloc}-{root_path}-{suites[0]}")
+    values = default_mirror_values({
+        "name": name,
+        "enabled": 1,
+        "method": method,
+        "host": parsed.netloc,
+        "root_path": root_path,
+        "target_path": str(MIRROR_BASE / target_suffix),
+        "dists": ",".join(suites),
+        "sections": ",".join(components),
+        "archs": ",".join(archs),
+        "source_mode": "nosource",
+        "schedule_mode": "manual",
+    })
+    return values
 
 def generator_build_values(form) -> Dict[str, Any]:
     family = form.get("family", "debian")
@@ -3383,21 +4630,172 @@ def generator_build_values(form) -> Dict[str, Any]:
     return values
 
 
+def profile_scan_worker(token: str, scan_url: str, scan_depth: int, scan_path_variables: Any = None) -> None:
+    try:
+        result = scan_apt_repository_url(scan_url, scan_depth, live_token=token, scan_path_variables=scan_path_variables)
+        result.pop("_job_token", None)
+        status = "done"
+        error = ""
+    except ProfileScanCancelled as exc:
+        result = None
+        status = "cancelled"
+        error = str(exc)
+    except Exception as exc:
+        result = None
+        status = "error"
+        error = str(exc)
+    with PROFILE_SCAN_JOBS_LOCK:
+        job = PROFILE_SCAN_JOBS.get(token)
+        if job is not None:
+            job["status"] = status
+            job["result"] = result
+            job["error"] = error
+            job["updated_at"] = time.time()
+            if status == "cancelled":
+                job.setdefault("status_lines", []).append({"level": "warning", "message": "Prüfung wurde beendet.", "timestamp": now_iso()})
+            elif error:
+                job.setdefault("status_lines", []).append({"level": "error", "message": error, "timestamp": now_iso()})
+
+
+@app.route("/profile-generator/scan/start", methods=["POST"])
+@require_admin
+def profile_generator_scan_start():
+    profile_scan_jobs_cleanup()
+    scan_url = (request.form.get("scan_url") or "").strip()
+    scan_depth = profile_scan_parse_depth(request.form.get("scan_depth"))
+    scan_path_variables = get_profile_scan_path_variables()
+    token = secrets.token_urlsafe(16)
+    with PROFILE_SCAN_JOBS_LOCK:
+        PROFILE_SCAN_JOBS[token] = {
+            "status": "running",
+            "scan_url": scan_url,
+            "scan_depth": scan_depth,
+            "scan_path_variables": scan_path_variables,
+            "status_lines": [{"level": "info", "message": "Live-Prüfung wurde gestartet.", "timestamp": now_iso()}],
+            "result": None,
+            "error": "",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+    thread = threading.Thread(target=profile_scan_worker, args=(token, scan_url, scan_depth, scan_path_variables), daemon=True)
+    thread.start()
+    return jsonify({"ok": True, "token": token})
+
+
+@app.route("/profile-generator/scan/status/<token>")
+@require_admin
+def profile_generator_scan_status(token: str):
+    profile_scan_jobs_cleanup()
+    with PROFILE_SCAN_JOBS_LOCK:
+        job = PROFILE_SCAN_JOBS.get(token)
+        if not job:
+            return jsonify({"ok": False, "error": "Scan nicht gefunden oder bereits abgelaufen."}), 404
+        return jsonify({
+            "ok": True,
+            "status": job.get("status"),
+            "status_lines": job.get("status_lines") or [],
+            "error": job.get("error") or "",
+            "result_url": url_for("profile_generator", scan_token=token) if job.get("status") == "done" else "",
+        })
+
+
+@app.route("/profile-generator/scan/stop/<token>", methods=["POST"])
+@require_admin
+def profile_generator_scan_stop(token: str):
+    profile_scan_jobs_cleanup()
+    with PROFILE_SCAN_JOBS_LOCK:
+        job = PROFILE_SCAN_JOBS.get(token)
+        if not job:
+            return jsonify({"ok": False, "error": "Scan nicht gefunden oder bereits abgelaufen."}), 404
+        if job.get("status") in {"done", "error", "cancelled"}:
+            return jsonify({"ok": True, "status": job.get("status"), "message": "Scan ist bereits beendet."})
+        job["cancel_requested"] = True
+        job["status"] = "cancelling"
+        job["updated_at"] = time.time()
+        job.setdefault("status_lines", []).append({"level": "warning", "message": "Stopp angefordert. Der laufende HTTP-Aufruf wird noch beendet, danach stoppt der Scan.", "timestamp": now_iso()})
+    return jsonify({"ok": True, "status": "cancelling"})
+
+
 @app.route("/profile-generator", methods=["GET", "POST"])
 @require_admin
 def profile_generator():
+    scan_result = None
+    scan_url = ""
+    scan_depth = PROFILE_SCAN_DEFAULT_DEPTH
+    scan_token = request.args.get("scan_token", "").strip()
+    if request.method == "GET" and scan_token:
+        with PROFILE_SCAN_JOBS_LOCK:
+            job = PROFILE_SCAN_JOBS.get(scan_token)
+        if job and job.get("status") == "done" and job.get("result"):
+            scan_result = job.get("result")
+            scan_url = job.get("scan_url", "")
+            scan_depth = profile_scan_parse_depth(job.get("scan_depth"))
+            if scan_result.get("usable"):
+                flash("Repository wurde geprüft. Gefundene Suites, Komponenten und Architekturen können jetzt ausgewählt werden.", "success")
+            else:
+                flash("Prüfung abgeschlossen, aber es wurde noch kein vollständig verwendbares dists/-Repository erkannt.", "warning")
+        elif job and job.get("error"):
+            scan_url = job.get("scan_url", "")
+            scan_depth = profile_scan_parse_depth(job.get("scan_depth"))
+            flash(job.get("error"), "danger")
+        else:
+            flash("Der Live-Scan ist nicht mehr verfügbar. Bitte die Adresse erneut prüfen.", "warning")
     if request.method == "POST":
-        values = generator_build_values(request.form)
-        flash("Profil wurde aus dem Generator vorbereitet. Prüfe die Werte und speichere danach das Profil.", "success")
-        return render_template(
-            "mirror_form.html",
-            mirror=values,
-            title="Profil aus Generator speichern",
-            keyrings=list_keyring_files(),
-            return_url=url_for("profile_generator"),
-            return_label="Zurück zum Generator",
-        )
-    return render_template("profile_generator.html", generator=get_profile_generator_config())
+        action = request.form.get("action") or "legacy_generate"
+        if action == "scan_url":
+            scan_url = request.form.get("scan_url", "").strip()
+            scan_depth = profile_scan_parse_depth(request.form.get("scan_depth"))
+            scan_path_variables = get_profile_scan_path_variables()
+            try:
+                scan_result = scan_apt_repository_url(scan_url, scan_depth, scan_path_variables=scan_path_variables)
+                scan_result.pop("_job_token", None)
+                if scan_result.get("usable"):
+                    flash("Repository wurde geprüft. Gefundene Suites, Komponenten und Architekturen können jetzt ausgewählt werden.", "success")
+                else:
+                    flash("Prüfung abgeschlossen, aber es wurde noch kein vollständig verwendbares dists/-Repository erkannt.", "warning")
+            except Exception as exc:
+                flash(str(exc), "danger")
+        elif action == "create_from_scan":
+            try:
+                values = generator_build_values_from_scan(request.form)
+                selected_key = request.form.get("selected_gpg_key", "").strip()
+                if selected_key:
+                    flash(f"GPG-Key gefunden, aber noch nicht automatisch importiert: {selected_key}", "info")
+                flash("Profil wurde aus dem Repository-Scan vorbereitet. Prüfe die Werte und speichere danach das Profil.", "success")
+                return render_template(
+                    "mirror_form.html",
+                    mirror=values,
+                    title="Profil aus Repository-Scan speichern",
+                    keyrings=list_keyring_files(),
+                    return_url=url_for("profile_generator"),
+                    return_label="Zurück zum Generator",
+                )
+            except Exception as exc:
+                flash(str(exc), "danger")
+                scan_url = request.form.get("source_url", "").strip()
+                scan_depth = profile_scan_parse_depth(request.form.get("scan_depth"))
+        else:
+            values = generator_build_values(request.form)
+            flash("Profil wurde aus dem Standardgenerator vorbereitet. Prüfe die Werte und speichere danach das Profil.", "success")
+            return render_template(
+                "mirror_form.html",
+                mirror=values,
+                title="Profil aus Generator speichern",
+                keyrings=list_keyring_files(),
+                return_url=url_for("profile_generator"),
+                return_label="Zurück zum Generator",
+            )
+    return render_template(
+        "profile_generator.html",
+        generator=get_profile_generator_config(),
+        scan_result=scan_result,
+        scan_url=scan_url,
+        scan_depth=scan_depth,
+        default_scan_depth=PROFILE_SCAN_DEFAULT_DEPTH,
+        max_scan_depth=PROFILE_SCAN_MAX_DEPTH,
+        scan_path_variables=get_profile_scan_path_variables(),
+        scan_path_variables_text="\n".join(get_profile_scan_path_variables()),
+    )
 
 
 @app.route("/examples")
@@ -3435,7 +4833,8 @@ def mirror_detail(mirror_id: int):
         jobs = enrich_jobs_duration([row_to_dict(r) for r in con.execute("SELECT * FROM jobs WHERE mirror_id=? ORDER BY id DESC LIMIT ?", (mirror_id, min(job_list_limit(), 200))).fetchall()])
     stats = mirror_stats(mirror)
     storage = disk_usage_info(MIRROR_BASE)
-    return render_template("mirror_detail.html", mirror=mirror, jobs=jobs, schedules=list_schedules_for_mirror(mirror_id), command=cmd, dry_command=dry_cmd, command_error=command_error, stats=stats, storage=storage)
+    start_block_reason = mirror_start_block_reason(mirror, dry_run=False)
+    return render_template("mirror_detail.html", mirror=mirror, jobs=jobs, schedules=list_schedules_for_mirror(mirror_id), command=cmd, dry_command=dry_cmd, command_error=command_error, stats=stats, storage=storage, start_block_reason=start_block_reason)
 
 
 @app.route("/mirrors/<int:mirror_id>/size/recalculate", methods=["POST"])
@@ -3623,8 +5022,16 @@ def user_scripts_page():
                     dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
                 except Exception:
                     pass
+                set_user_script_enabled(filename, True, require_existing=True)
                 add_event("info", f"Benutzerskript hochgeladen: {filename}")
-                flash("Benutzerskript wurde hochgeladen.", "success")
+                flash("Benutzerskript wurde hochgeladen und aktiviert.", "success")
+                return redirect(url_for("user_scripts_page"))
+            if action == "set_enabled":
+                script_name = request.form.get("script_name", "")
+                enabled = bool_from_form("enabled")
+                set_user_script_enabled(script_name, enabled, require_existing=True)
+                add_event("info", f"Benutzerskript {'aktiviert' if enabled else 'deaktiviert'}: {script_name}")
+                flash("Aktiv-Status des Benutzerskripts wurde gespeichert.", "success")
                 return redirect(url_for("user_scripts_page"))
             if action == "save_target":
                 script_name = request.form.get("script_name", "")
@@ -3650,7 +5057,7 @@ def user_scripts_page():
             raise ValueError("Unbekannte Aktion.")
         except Exception as exc:
             flash(str(exc), "danger")
-    return render_template("user_scripts.html", scripts=list_user_scripts(), user_script_dir=str(USER_SCRIPT_DIR))
+    return render_template("user_scripts.html", scripts=enrich_user_script_runtime_info(list_user_scripts()), user_script_dir=str(USER_SCRIPT_DIR))
 
 
 @app.route("/user-scripts/<script_name>/delete", methods=["POST"])
@@ -3658,8 +5065,9 @@ def user_scripts_page():
 def user_script_delete(script_name: str):
     try:
         path = safe_user_script_path(script_name)
+        set_user_script_enabled(script_name, False, require_existing=True)
         path.unlink()
-        add_event("warning", f"Benutzerskript gelöscht: {script_name}")
+        add_event("warning", f"Benutzerskript gelöscht und deaktiviert: {script_name}")
         flash("Benutzerskript wurde gelöscht.", "success")
     except Exception as exc:
         flash(str(exc), "danger")
@@ -5266,7 +6674,7 @@ def build_config_export() -> Dict[str, Any]:
     for m in list_mirrors():
         mirrors.append({k: m.get(k) for k in EXPORT_MIRROR_COLUMNS if k in m})
     settings = load_settings()
-    safe_settings = {k: v for k, v in settings.items() if k in {"appearance", "max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "dashboard_recent_jobs_limit", "dashboard_events_limit", "user_script_targets"}}
+    safe_settings = {k: v for k, v in settings.items() if k in {"appearance", "max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets"}}
     if isinstance(settings.get("notify"), dict):
         notify_export = dict(settings["notify"])
         for field in SECRET_FIELDS:
@@ -5349,7 +6757,7 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
     safe_settings = data.get("settings") or {}
     if isinstance(safe_settings, dict):
         current = load_settings()
-        for key in ("appearance", "notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "user_script_targets"):
+        for key in ("appearance", "notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets"):
             if key in safe_settings:
                 current[key] = safe_settings[key]
                 imported["settings"] += 1
@@ -5770,7 +7178,7 @@ def help_page():
     return render_template("markdown_page.html", title="Anleitung", content_html=render_markdown_light(content))
 
 
-BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.33\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
+BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.45\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
 
 # ---------------------------------------------------------------------------
 # Startup

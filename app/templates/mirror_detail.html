@@ -10,8 +10,12 @@
     <a class="button" href="{{ url_for('mirrors_page') }}">Zurück zu Profilen</a>
     {% if is_admin %}
     <a class="button" href="{{ url_for('mirror_edit', mirror_id=mirror.id) }}">Bearbeiten</a>
-    <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><button class="primary" type="submit">Jetzt starten</button></form>
-    <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run starten</button></form>
+    {% if start_block_reason %}
+      <button type="button" class="locked-button" disabled title="{{ start_block_reason }}"><span>Jetzt starten</span></button>
+    {% else %}
+      <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><button class="primary" type="submit">Jetzt starten</button></form>
+    {% endif %}
+    {% if not start_block_reason or start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run starten</button></form>{% endif %}
     {% endif %}
   </div>
 </div>

@@ -29,11 +29,22 @@
   <h2>Vorhandene Skripte</h2>
   {% if scripts %}
   <table>
-    <thead><tr><th>Name</th><th>Skriptgröße</th><th>Zielverzeichnis / Größe</th><th>Geändert</th><th>Ausführbar</th><th>Aktionen</th></tr></thead>
+    <thead><tr><th>Name</th><th>Aktiv</th><th>Skriptgröße</th><th>Zielverzeichnis / Größe</th><th>Geändert</th><th>Ausführbar</th><th>Status</th><th>Aktionen</th></tr></thead>
     <tbody>
     {% for script in scripts %}
       <tr>
         <td><strong>{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
+        <td>
+          {% if is_admin %}
+          <form method="post" class="inline script-enabled-form" action="{{ url_for('user_scripts_page') }}">
+            <input type="hidden" name="action" value="set_enabled">
+            <input type="hidden" name="script_name" value="{{ script.name }}">
+            <label class="inline-check"><input type="checkbox" name="enabled" {% if script.enabled %}checked{% endif %} onchange="this.form.submit()"> aktiv</label>
+          </form>
+          {% else %}
+            {% if script.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}
+          {% endif %}
+        </td>
         <td>{{ script.size_h }}</td>
         <td>
           {% if script.target_path %}
@@ -59,21 +70,26 @@
             <form method="post" class="script-target-form" action="{{ url_for('user_scripts_page') }}">
               <input type="hidden" name="action" value="save_target">
               <input type="hidden" name="script_name" value="{{ script.name }}">
-              <input name="target_path" value="{{ script.target_path }}" placeholder="z. B. /mirror/esm/infra/ubuntu" aria-label="Zielverzeichnis nur für Größenberechnung">
+              <input name="target_path" value="{{ script.target_path }}" placeholder="z. B. /mirror/ubuntu" aria-label="Zielverzeichnis nur für Größenberechnung">
               <button type="submit">Speichern</button>
             </form>
           </div>
           {% endif %}
         </td>
         <td>{{ script.modified_at }}</td>
-        <td>{% if script.executable %}<span class="badge ok">ja</span>{% else %}<span class="badge warning">bash fallback</span>{% endif %}</td>
+        <td>{% if script.executable %}<span class="badge ok">ja</span>{% else %}<span class="badge error">nein</span>{% endif %}</td>
+        <td>{% if script.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=script.dashboard_status.job_id) }}"><span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span>{% endif %}</td>
         <td>
           {% if is_admin %}
-          <form method="post" class="inline" action="{{ url_for('user_scripts_page') }}">
-            <input type="hidden" name="action" value="run">
-            <input type="hidden" name="script_name" value="{{ script.name }}">
-            <button class="primary" type="submit">Als Job starten</button>
-          </form>
+          {% if script.start_block_reason %}
+            <button type="button" class="locked-button" disabled title="{{ script.start_block_reason }}"><span>Als Job starten</span></button>
+          {% else %}
+            <form method="post" class="inline" action="{{ url_for('user_scripts_page') }}">
+              <input type="hidden" name="action" value="run">
+              <input type="hidden" name="script_name" value="{{ script.name }}">
+              <button class="primary" type="submit">Als Job starten</button>
+            </form>
+          {% endif %}
           <form method="post" class="inline" action="{{ url_for('user_script_delete', script_name=script.name) }}" onsubmit="return confirm('Skript wirklich löschen?');">
             <button class="danger" type="submit">Löschen</button>
           </form>

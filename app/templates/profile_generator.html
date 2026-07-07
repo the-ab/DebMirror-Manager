@@ -4,7 +4,7 @@
 <div class="page-head">
   <div>
     <h1>Profilgenerator</h1>
-    <p>Erstellt ein Mirror-Profil aus Distribution, Release, Komponenten und Architekturen. Danach kannst du alle Details vor dem Speichern prüfen.</p>
+    <p>Prüft allgemeine APT-Repository-Adressen und bereitet daraus Mirror-Profile vor. Der bisherige Standardgenerator bleibt darunter erhalten.</p>
   </div>
   <div class="actions">
     {% if current_user.role == 'admin' %}<a class="button" href="{{ url_for('profile_generator_settings') }}">Generator-Einstellungen</a>{% endif %}
@@ -12,8 +12,206 @@
 </div>
 
 <section class="card">
+  <h2>Repository-Adresse prüfen</h2>
+  <p class="hint">Die Prüfung ist nicht auf Debian oder Ubuntu beschränkt. Sie sucht allgemein nach APT-Strukturen wie <code>dists/</code>, <code>Release</code>, <code>InRelease</code>, <code>Packages</code> und möglichen GPG-Key-Dateien.</p>
+  <p class="hint">Wenn an der Hauptadresse nichts gefunden wird, werden automatisch Suchpfad-Variablen relativ zur eingegebenen Adresse geprüft, zum Beispiel <code>deb/</code>, <code>debian/</code>, <code>repo/</code> oder <code>repository/</code>.</p>
+  <form method="post" class="grid-form" id="repository-scan-form">
+    <input type="hidden" name="action" value="scan_url">
+    <label>Repository-Adresse
+      <input name="scan_url" value="{{ scan_url or '' }}" placeholder="https://repo.example.org/packages" required>
+    </label>
+    <label>Verzeichnistiefe
+      <input name="scan_depth" type="number" min="0" max="{{ max_scan_depth }}" value="{{ scan_depth if scan_depth is defined else default_scan_depth }}">
+      <small>Default: {{ default_scan_depth }}. Höhere Werte prüfen mehr Unterverzeichnisse, können aber länger dauern.</small>
+    </label>
+    <div class="form-info scan-path-info">
+      <strong>Suchpfad-Variablen:</strong> werden aus den Generator-Einstellungen verwendet.
+      <small>Die Prüfung hängt diese Werte relativ an die eingegebene Adresse an, z. B. <code>https://host/basis/</code> + <code>deb</code> = <code>https://host/basis/deb/</code>.</small>
+    </div>
+    <div class="form-actions inline-end">
+      <button class="primary" type="submit" id="repository-scan-button">Adresse prüfen</button>
+      <button type="button" id="repository-scan-stop-button" hidden>Prüfung stoppen</button>
+      {% if current_user.role == 'admin' %}<a class="button" href="{{ url_for('profile_generator_settings') }}">Erweiterte Generator-Einstellungen</a>{% endif %}
+    </div>
+  </form>
+  <div id="repository-scan-live" class="scan-live-panel" hidden>
+    <div class="scan-live-head">
+      <strong>Live-Status</strong>
+      <span id="repository-scan-live-state">Prüfung läuft ...</span>
+    </div>
+    <div id="repository-scan-live-lines" class="scan-status-window live"></div>
+    <p class="hint">Nach Abschluss wird das Prüfergebnis automatisch angezeigt.</p>
+  </div>
+</section>
+
+{% if scan_result %}
+<section class="card">
+  <h2>Prüfergebnis</h2>
+  <div class="scan-summary">
+    <div><strong>Basisadresse</strong><br><code>{{ scan_result.base_url }}</code></div>
+    <div><strong>Host</strong><br><code>{{ scan_result.host }}</code></div>
+    <div><strong>Root-Pfad</strong><br><code>{{ scan_result.root_path }}</code></div>
+    <div><strong>Verzeichnistiefe</strong><br><code>{{ scan_result.scan_depth }}</code></div>
+    <div><strong>Status</strong><br>{% if scan_result.usable %}<span class="badge ok">verwendbar</span>{% else %}<span class="badge warning">prüfen</span>{% endif %}</div>
+  </div>
+
+  <h3>Status / Ausgabe</h3>
+  <div class="scan-status-window">
+    {% for line in scan_result.status_lines %}
+      <div class="scan-status-line {{ line.level }}"><span>{{ loop.index }}.</span> {{ line.message }}</div>
+    {% else %}
+      <div class="scan-status-line info"><span>1.</span> Keine Statusausgabe vorhanden.</div>
+    {% endfor %}
+  </div>
+
+  {% if scan_result.repository_roots %}
+  <h3>Gefundene Repository-Basen</h3>
+  <div class="table-scroll">
+    <table class="compact-table">
+      <thead><tr><th>Basis</th><th>Root-Pfad</th><th>Suites</th><th>Komponenten</th><th>Architekturen</th></tr></thead>
+      <tbody>
+      {% for repo_root in scan_result.repository_roots %}
+        <tr>
+          <td><code>{{ repo_root.base_url }}</code>{% if loop.first %}<br><span class="badge ok">für Profil aktiv</span>{% endif %}</td>
+          <td><code>{{ repo_root.root_path }}</code></td>
+          <td>{{ repo_root.suite_count }}</td>
+          <td>{{ repo_root.components|join(', ') if repo_root.components else '-' }}</td>
+          <td>{{ repo_root.archs|join(', ') if repo_root.archs else '-' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <h3>Transferarten</h3>
+  <div class="table-scroll">
+    <table class="compact-table">
+      <thead><tr><th>Methode</th><th>Status</th><th>URL</th><th>Details</th></tr></thead>
+      <tbody>
+      {% for transfer in scan_result.transfers %}
+        <tr>
+          <td><code>{{ transfer.method }}</code></td>
+          <td><span class="badge {{ transfer.status_class }}">{{ 'verfügbar' if transfer.available else transfer.status }}</span></td>
+          <td><code>{{ transfer.url }}</code></td>
+          <td>{{ transfer.detail }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if scan_result.suites %}
+  <form method="post" class="scan-create-form">
+    <input type="hidden" name="action" value="create_from_scan">
+    <input type="hidden" name="source_url" value="{{ scan_result.base_url }}">
+    <input type="hidden" name="root_path" value="{{ scan_result.root_path }}">
+
+    <div class="form-grid scan-profile-fields">
+      <label>Profilname
+        <input name="profile_name" value="{{ scan_result.host }} {{ scan_result.suites[0].name }}">
+      </label>
+      <label>Ziel-Suffix unter /mirror
+        <input name="target_suffix" value="{{ (scan_result.host ~ '-' ~ scan_result.root_path ~ '-' ~ scan_result.suites[0].name)|replace('/', '-')|replace('.', '-') }}">
+      </label>
+      <label>Transfer für neues Profil
+        <select name="method">
+          {% for transfer in scan_result.transfers %}
+            {% if transfer.method in ['https','http','rsync','ftp'] %}<option value="{{ transfer.method }}" {% if transfer.available and transfer.method == scan_result.method %}selected{% endif %}>{{ transfer.method }}{% if not transfer.available %} (nicht bestätigt){% endif %}</option>{% endif %}
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <h3>Gefundene Suites</h3>
+    <div class="table-scroll">
+      <table class="compact-table">
+        <thead><tr><th>Auswahl</th><th>Suite</th><th>Codename</th><th>Komponenten</th><th>Architekturen</th><th>Signatur</th></tr></thead>
+        <tbody>
+        {% for suite in scan_result.suites %}
+          <tr>
+            <td><label class="inline-check"><input type="checkbox" name="suites" value="{{ suite.name }}" {% if loop.first %}checked{% endif %}> übernehmen</label></td>
+            <td><strong>{{ suite.name }}</strong>{% if suite.suite and suite.suite != suite.name %}<br><small>Suite: {{ suite.suite }}</small>{% endif %}</td>
+            <td>{{ suite.codename or '-' }}</td>
+            <td>{{ suite.components|join(', ') if suite.components else '-' }}</td>
+            <td>{{ suite.archs|join(', ') if suite.archs else '-' }}</td>
+            <td>{% if suite.signed %}<span class="badge ok">InRelease</span>{% else %}<span class="badge muted">Release</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="scan-options-grid">
+      <fieldset>
+        <legend>Komponenten</legend>
+        {% for component in scan_result.components %}
+          <label class="inline-check"><input type="checkbox" name="components" value="{{ component }}" checked> {{ component }}</label>
+        {% endfor %}
+      </fieldset>
+      <fieldset>
+        <legend>Architekturen</legend>
+        {% for arch in scan_result.archs %}
+          <label class="inline-check"><input type="checkbox" name="archs" value="{{ arch }}" {% if arch in ['amd64','all'] or loop.first %}checked{% endif %}> {{ arch }}</label>
+        {% endfor %}
+      </fieldset>
+    </div>
+
+    <h3>Gefundene GPG-Keys</h3>
+    {% if scan_result.gpg_keys %}
+      <div class="table-scroll">
+        <table class="compact-table">
+          <thead><tr><th>Auswahl</th><th>Name</th><th>URL</th><th>Typ</th></tr></thead>
+          <tbody>
+          {% for key in scan_result.gpg_keys %}
+            <tr>
+              <td><label class="inline-check"><input type="radio" name="selected_gpg_key" value="{{ key.url }}" {% if loop.first %}checked{% endif %}> merken</label></td>
+              <td>{{ key.name }}</td>
+              <td><code>{{ key.url }}</code></td>
+              <td>{{ key.content_type }}</td>
+            </tr>
+          {% endfor %}
+          <tr>
+            <td colspan="4"><label class="inline-check"><input type="radio" name="selected_gpg_key" value=""> keinen Key vormerken</label></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">Der Key wird in diesem ersten Schritt nur erkannt und angezeigt. Importieren kannst du ihn danach über „Mirror -> Keyrings“ per URL.</p>
+    {% else %}
+      <p class="hint">Keine mögliche GPG-Key-Datei gefunden.</p>
+    {% endif %}
+
+    <div class="form-actions">
+      <button class="primary" type="submit">Profil aus Auswahl vorbereiten</button>
+      <a class="button" href="{{ url_for('profile_generator') }}">Prüfung zurücksetzen</a>
+    </div>
+  </form>
+  {% endif %}
+
+  {% if scan_result.flat_repo %}
+  <div class="alert alert-warning">
+    <strong>Flache APT-Struktur erkannt.</strong>
+    {% if scan_result.flat_repo.release_url %}<br>Release-Datei: <code>{{ scan_result.flat_repo.release_url }}</code>{% endif %}
+    {% if scan_result.flat_repo.packages %}<br>Packages-Dateien: {% for pkg in scan_result.flat_repo.packages %}<code>{{ pkg.path }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}
+    <br>Automatische Profilerzeugung für flache Repositories wird noch nicht sicher aktiviert. Falls diese Meldung bei einem normalen <code>dists/&lt;suite&gt;</code>-Repository erscheint, bitte die Basisadresse eine Ebene oberhalb von <code>dists/</code> prüfen.
+  </div>
+  {% endif %}
+
+  {% if scan_result.warnings %}
+  <h3>Hinweise / Warnungen</h3>
+  <ul class="warning-list">
+    {% for warning in scan_result.warnings %}<li>{{ warning }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card">
   <h2>Neues Standardprofil erzeugen</h2>
+  <p class="hint">Der bisherige Generator bleibt für bekannte Standardprofile erhalten.</p>
   <form method="post" class="grid-form">
+    <input type="hidden" name="action" value="legacy_generate">
     <label>Distribution
       <select name="family" id="family-select">
         {% for key, spec in generator.items() %}<option value="{{ key }}">{{ spec.label }}</option>{% endfor %}
@@ -51,7 +249,7 @@
       {% for a in ['amd64','arm64','i386','riscv64'] %}<label class="inline-check"><input type="checkbox" name="archs" value="{{ a }}" {% if a == 'amd64' %}checked{% endif %}> {{ a }}</label>{% endfor %}
     </fieldset>
     <div class="form-actions">
-      <button class="primary" type="submit">Profil vorbereiten</button>
+      <button class="primary" type="submit">Standardprofil vorbereiten</button>
       <a class="button" href="{{ url_for('mirrors_page') }}">Zurück zu Profilen</a>
     </div>
   </form>
@@ -59,6 +257,164 @@
 
 <section class="card">
   <h2>Hinweis</h2>
-  <p>Der Generator erzeugt Standardprofile aus seiner konfigurierbaren Generator-Datenbasis. Spezialfälle wie Proxmox, GitHub-Paketquellen oder eigene Komponenten lassen sich weiterhin über die normale Profilbearbeitung oder den Skript-Import anlegen.</p>
+  <p>Der neue Repository-Scan erkennt allgemeine APT-Repositories über Dateien und Verzeichnisstruktur, nicht über feste Namen wie Debian oder Ubuntu. Spezialfälle lassen sich weiterhin über die normale Profilbearbeitung oder den Skript-Import anlegen.</p>
 </section>
+
+<script>
+(function () {
+  const form = document.getElementById('repository-scan-form');
+  const panel = document.getElementById('repository-scan-live');
+  const lineBox = document.getElementById('repository-scan-live-lines');
+  const state = document.getElementById('repository-scan-live-state');
+  const button = document.getElementById('repository-scan-button');
+  const stopButton = document.getElementById('repository-scan-stop-button');
+  if (!form || !panel || !lineBox || !state || !button || !stopButton || !window.fetch) return;
+
+  let pollTimer = null;
+  let rendered = 0;
+  let currentToken = '';
+
+  function addLine(item, index) {
+    const row = document.createElement('div');
+    const level = item && item.level ? item.level : 'info';
+    row.className = 'scan-status-line ' + level;
+    const num = document.createElement('span');
+    num.textContent = String(index) + '.';
+    row.appendChild(num);
+    row.appendChild(document.createTextNode(' ' + ((item && item.message) ? item.message : '')));
+    lineBox.appendChild(row);
+    lineBox.scrollTop = lineBox.scrollHeight;
+  }
+
+  function stopPolling() {
+    if (pollTimer) window.clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  function resetButtons() {
+    button.disabled = false;
+    button.textContent = 'Adresse prüfen';
+    stopButton.hidden = true;
+    stopButton.disabled = false;
+    stopButton.textContent = 'Prüfung stoppen';
+    currentToken = '';
+  }
+
+  function poll(token) {
+    fetch('{{ url_for("profile_generator_scan_status", token="__TOKEN__") }}'.replace('__TOKEN__', encodeURIComponent(token)), {headers: {'Accept': 'application/json'}})
+      .then(function (response) { return response.json().then(function (data) { return {ok: response.ok, data: data}; }); })
+      .then(function (payload) {
+        if (!payload.ok || !payload.data.ok) {
+          state.textContent = 'Prüfung abgebrochen';
+          addLine({level: 'error', message: payload.data && payload.data.error ? payload.data.error : 'Status konnte nicht gelesen werden.'}, rendered + 1);
+          resetButtons();
+          return;
+        }
+        const data = payload.data;
+        const lines = data.status_lines || [];
+        for (let i = rendered; i < lines.length; i++) addLine(lines[i], i + 1);
+        rendered = lines.length;
+        if (data.status === 'done' && data.result_url) {
+          state.textContent = 'Prüfung abgeschlossen, Ergebnis wird geladen ...';
+          stopPolling();
+          window.location.href = data.result_url;
+          return;
+        }
+        if (data.status === 'cancelled') {
+          state.textContent = 'Prüfung gestoppt';
+          stopPolling();
+          resetButtons();
+          return;
+        }
+        if (data.status === 'cancelling') {
+          state.textContent = 'Prüfung wird gestoppt ...';
+          stopButton.disabled = true;
+          stopButton.textContent = 'Stopp läuft ...';
+          pollTimer = window.setTimeout(function () { poll(token); }, 700);
+          return;
+        }
+        if (data.status === 'error') {
+          state.textContent = 'Prüfung mit Fehler beendet';
+          if (data.error) addLine({level: 'error', message: data.error}, rendered + 1);
+          stopPolling();
+          resetButtons();
+          return;
+        }
+        state.textContent = 'Prüfung läuft ...';
+        pollTimer = window.setTimeout(function () { poll(token); }, 700);
+      })
+      .catch(function (error) {
+        state.textContent = 'Prüfung unterbrochen';
+        addLine({level: 'error', message: String(error)}, rendered + 1);
+        resetButtons();
+      });
+  }
+
+  stopButton.addEventListener('click', function () {
+    if (!currentToken) return;
+    stopButton.disabled = true;
+    stopButton.textContent = 'Stopp läuft ...';
+    state.textContent = 'Stopp wird angefordert ...';
+    fetch('{{ url_for("profile_generator_scan_stop", token="__TOKEN__") }}'.replace('__TOKEN__', encodeURIComponent(currentToken)), {
+      method: 'POST',
+      headers: {'Accept': 'application/json'}
+    })
+      .then(function (response) { return response.json().then(function (data) { return {ok: response.ok, data: data}; }); })
+      .then(function (payload) {
+        if (!payload.ok || !payload.data.ok) {
+          addLine({level: 'error', message: payload.data && payload.data.error ? payload.data.error : 'Stopp konnte nicht angefordert werden.'}, rendered + 1);
+          stopButton.disabled = false;
+          stopButton.textContent = 'Prüfung stoppen';
+          return;
+        }
+        addLine({level: 'warning', message: 'Stopp wurde angefordert.'}, rendered + 1);
+        rendered += 1;
+      })
+      .catch(function (error) {
+        addLine({level: 'error', message: String(error)}, rendered + 1);
+        stopButton.disabled = false;
+        stopButton.textContent = 'Prüfung stoppen';
+      });
+  });
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    stopPolling();
+    rendered = 0;
+    currentToken = '';
+    lineBox.innerHTML = '';
+    panel.hidden = false;
+    state.textContent = 'Prüfung wird gestartet ...';
+    button.disabled = true;
+    button.textContent = 'Prüfung läuft ...';
+    stopButton.hidden = false;
+    stopButton.disabled = true;
+    stopButton.textContent = 'Prüfung stoppen';
+
+    const data = new FormData(form);
+    fetch('{{ url_for("profile_generator_scan_start") }}', {
+      method: 'POST',
+      body: data,
+      headers: {'Accept': 'application/json'}
+    })
+      .then(function (response) { return response.json().then(function (data) { return {ok: response.ok, data: data}; }); })
+      .then(function (payload) {
+        if (!payload.ok || !payload.data.ok || !payload.data.token) {
+          state.textContent = 'Prüfung konnte nicht gestartet werden';
+          addLine({level: 'error', message: payload.data && payload.data.error ? payload.data.error : 'Start fehlgeschlagen.'}, 1);
+          resetButtons();
+          return;
+        }
+        currentToken = payload.data.token;
+        stopButton.disabled = false;
+        poll(payload.data.token);
+      })
+      .catch(function (error) {
+        state.textContent = 'Prüfung konnte nicht gestartet werden';
+        addLine({level: 'error', message: String(error)}, 1);
+        resetButtons();
+      });
+  });
+})();
+</script>
 {% endblock %}

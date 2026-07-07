@@ -1,5 +1,138 @@
 # Release Notes
 
+## v0.1.45
+
+- Dashboard: Status-Badges mit Job-ID (`aktiv #ID`, `queue #ID`, weitere Jobzustände) sind jetzt direkt anklickbar und öffnen den zugehörigen Job.
+- Normale Mirror-Starts werden zentral blockiert, wenn das Profil deaktiviert oder offensichtlich fehlerhaft ist.
+- Dry-Run bleibt für deaktivierte Mirror-Profile weiterhin startbar.
+- Start-Schaltflächen für gesperrte Mirror-Profile werden deaktiviert und als durchgestrichen angezeigt.
+- Benutzerskripte besitzen jetzt einen gespeicherten Aktiv-Status in `settings.json`.
+- Deaktivierte oder nicht ausführbare Benutzerskripte können nicht mehr manuell oder per Zeitplan gestartet werden.
+- Beim Löschen eines Benutzerskripts wird dessen Aktiv-Status auf inaktiv gesetzt.
+- Zeitpläne: Die Job-Zeitplanliste steht jetzt direkt unter **Aktuelle Regeln**.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.45.
+
+## v0.1.44
+
+- Dashboard: Statusanzeige in der gemeinsamen Tabelle **Mirror-Profile / Benutzerskripte** vereinheitlicht.
+- Kein laufender oder wartender Job wird jetzt als `idle` angezeigt.
+- Laufende, startende oder stoppende Jobs werden als `aktiv #ID` angezeigt.
+- Wartende Jobs werden als `queue #ID` angezeigt.
+- Nicht startfähige Einträge werden als `error` angezeigt, z. B. bei nicht ausführbarem Benutzerskript oder offensichtlich unvollständigem Mirror-Profil.
+- Mobile Darstellung der gemeinsamen Mirror-/Script-Tabelle optimiert: Tabellenzeilen werden auf kleinen Displays als kompakter Kartenblock dargestellt.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.44.
+
+## v0.1.43
+
+- Dashboard-Bearbeitung verbessert: Blockbreiten werden jetzt feiner über ein 12-Spalten-Raster gespeichert.
+- Größenänderung über den Griff unten rechts passt jetzt Breite und Höhe an.
+- Bei vergrößerter Blockhöhe wachsen interne Scrollbereiche von Tabellen-, Job-, Ereignis- und Healthcheck-Blöcken mit.
+- Dashboard-Layout-Speicherung in `settings.json` wurde um gespeicherte Blockbreiten erweitert.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.43.
+
+## v0.1.42
+
+- Dashboard-Bearbeitung überarbeitet: Blöcke werden jetzt per Maus/Drag & Drop verschoben.
+- Blockgröße kann im Bearbeitungsmodus über einen Griff unten rechts verändert werden.
+- Dashboard-Layout wird zentral in `settings.json` gespeichert statt nur lokal im Browser.
+- Neue Backend-Endpunkte für Laden, Speichern und Zurücksetzen des Dashboard-Layouts ergänzt.
+- Dashboard-Bearbeitung ist wegen der zentralen Einstellung nur noch für Admin-Benutzer sichtbar.
+- Menü angepasst: **Profilgenerator** steht im Bereich **Mirror** jetzt direkt unter **Profile**.
+- Kopfzeile angepasst: **Mirror-Basis**, **Zeit** und **Auth** stehen jetzt oben neben dem Benutzer; die untere Statuszeile wurde entfernt.
+- Dashboard-Tabelle nutzt für Mirror/Profile und Script jetzt die Spalte **Art**.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.42.
+
+## v0.1.41
+
+- Navigation angepasst: **Benutzerskripte** wurden in den Bereich **Mirror** verschoben.
+- **Generator-Einstellungen** wurden aus **Mirror** entfernt und in den Bereich **System** verschoben.
+- Dashboard: Mirror-Profile und Benutzerskripte werden jetzt in einer gemeinsamen Tabelle angezeigt.
+- In der gemeinsamen Tabelle wurde die neue Spalte **Typ** ergänzt; Einträge werden als **Mirror** oder **Script** gekennzeichnet.
+- Dashboard-Kachel **Profile / Benutzerskripte** bereinigt: Die Bezeichnungen **Mirror-Profile** und **Benutzerskripte** sind direkt anklickbar, die zusätzliche Linkzeile darunter wurde entfernt.
+- Dashboard-Bearbeitungsmodus ergänzt: Über **Dashboard bearbeiten** können Blöcke verschoben und auf **Normal**, **Breit** oder **Voll** gesetzt werden.
+- Das Dashboard-Layout wird lokal im Browser gespeichert und kann über **Layout zurücksetzen** zurückgesetzt werden.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.41.
+
+## v0.1.40
+
+- Profilgenerator: Zusatzprüfung für Suchpfad-Variablen mit direkt angehängtem `dists/` ergänzt.
+- Wenn Hauptadresse und normale Suchpfad-Variablen kein Repository liefern, prüft der Scanner nun zusätzlich z. B. `<basis>/<variable>/dists/`.
+- Direkt gefundene `dists/`-Verzeichnisse werden jetzt als Repository-Struktur erkannt; die aktive Repository-Basis wird dabei automatisch auf die Ebene oberhalb von `dists/` gesetzt.
+- Live-Status zeigt die neue Zusatzprüfung inklusive vollständiger Prüf-URL an.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.40.
+
+## v0.1.39
+
+- Profilgenerator: Protokoll-Fallback für Eingaben ohne Schema korrigiert.
+- Wenn der Benutzer z. B. nur `ftp.at.debian.org` eingibt, wird weiterhin zuerst HTTPS geprüft; falls dort kein Repository gefunden wird, wird die Inhaltsprüfung zusätzlich mit HTTP wiederholt.
+- Wird das Repository über HTTP gefunden, wird die aktive Repository-Basis auf HTTP gesetzt und kann direkt für die Profilerzeugung genutzt werden.
+- Transferprüfung bleibt erhalten und zeigt HTTP, HTTPS und rsync getrennt an.
+- Suchpfad-Variablen wurden wieder aus dem direkten Profilgenerator-Scanformular entfernt.
+- Suchpfad-Variablen bleiben zentral unter `Mirror -> Generator-Einstellungen` bearbeitbar und werden beim Scan aus diesen Einstellungen verwendet.
+- Live-Status zeigt jetzt an, wenn wegen fehlender Protokollangabe ein HTTP-Fallback-Scan gestartet wird.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.39.
+
+## v0.1.38
+
+- Profilgenerator: Suchpfad-Variablen sind jetzt direkt im Repository-Scan sichtbar und bearbeitbar.
+- Live-Scan übergibt die Suchpfad-Variablen jetzt zuverlässig an das Backend und speichert geänderte Werte.
+- Suchpfad-Variablen werden relativ zur eingegebenen Repository-Adresse geprüft und im Live-Status mit kompletter Prüf-URL ausgegeben.
+- Korrektur: Fallback-Pfade wie `deb/`, `debian/`, `repo/` und `repository/` werden beim Scan nachvollziehbar an die Basisadresse angehängt.
+- CSS für das neue Suchpfad-Feld im Profilgenerator ergänzt.
+
+## v0.1.37
+
+- Profilgenerator um konfigurierbare Suchpfad-Variablen erweitert. Standardwerte sind unter anderem `deb`, `debian`, `repo`, `repository`, `apt`, `packages`, `mirror`, `download` und `public`.
+- Wenn an der Hauptadresse kein verwendbares Repository gefunden wird, prüft der Scanner automatisch diese zusätzlichen relativen Pfade innerhalb der eingegebenen Basisadresse.
+- Unter `Mirror -> Generator-Einstellungen` können Suchpfad-Variablen zeilenweise ergänzt, gespeichert oder auf Standard zurückgesetzt werden.
+- Live-Scan kann jetzt über **Prüfung stoppen** abgebrochen werden. Der Scanner setzt ein Abbruchsignal und stoppt nach dem laufenden HTTP-/rsync-Prüfschritt.
+- Live-Statusausgabe zeigt zusätzlich, wenn die Hauptprüfung ohne Ergebnis blieb und die Suchpfad-Variablen geprüft werden.
+- Konfigurations-Export/-Import enthält jetzt auch die Suchpfad-Variablen des Profilgenerators.
+- Geplante Erweiterungen aus dem Profilgenerator-Ausbau wurden in die erste Ausbaustufe übernommen: automatische Pfadsuche, HTML-Verzeichnislisting-Auswertung, rsync-Transferprüfung, GPG-Key-Erkennung und genauere Warnungen.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.37.
+
+## v0.1.36
+
+- Profilgenerator-Prüfung um eine echte Live-Statusausgabe erweitert: Der Scan läuft im Hintergrund und die WebUI zeigt fortlaufend neue Prüfschritte an.
+- Neue Scan-Status-Endpunkte ergänzt, damit die Ausgabe während der Prüfung per Polling aktualisiert wird.
+- Erkennung für normale `dists/<suite>/InRelease`-Repository-Strukturen korrigiert, wenn der Scanner direkt auf eine Suite wie `dists/stable/` stößt.
+- `dists/`-Verzeichnisse ohne auswertbares Listing werden jetzt zusätzlich mit typischen Suite-Namen wie `stable`, `testing` oder `unstable` direkt geprüft.
+- Normale APT-Repositories werden dadurch nicht mehr versehentlich als flache APT-Struktur eingestuft, wenn `dists/<suite>/InRelease` erreichbar ist.
+- Statusausgabe und Hinweise im Profilgenerator aktualisiert.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.36.
+
+## v0.1.35
+
+- Profilgenerator-Prüfung um ein sichtbares Statusfenster mit detaillierter Ausgabe ergänzt.
+- Verzeichnistiefe für Repository-Scans ist jetzt einstellbar; Standardwert ist `5`, maximal `10`.
+- Der Repository-Scan durchsucht begrenzt Unterverzeichnisse innerhalb der eingegebenen Basisadresse und prüft dort mögliche `dists/`-Repository-Basen.
+- Gefundene Repository-Basen werden im Prüfergebnis zusätzlich aufgelistet.
+- GPG-Key-Suche berücksichtigt nun auch Links und typische Key-Pfade aus den gescannten Verzeichnissen.
+- Flache APT-Strukturen können ebenfalls in tiefer liegenden Verzeichnissen erkannt werden.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.35.
+
+## v0.1.34
+
+- Profilgenerator um allgemeinen Repository-Scan erweitert.
+- URL-Prüfung ist nicht auf Debian oder Ubuntu beschränkt und erkennt generische APT-Strukturen über `dists/`, `Release`, `InRelease` und `Packages`-Dateien.
+- Gefundene Suites, Komponenten und Architekturen werden aufgelistet und können zur Profilerzeugung ausgewählt werden.
+- HTTP/HTTPS werden geprüft; rsync wird soweit möglich als Transferart getestet.
+- Mögliche GPG-Key-Dateien werden an typischen Speicherorten und über Verzeichnislinks gesucht und im Prüfergebnis angezeigt.
+- Flache APT-Repositories werden erkannt und mit Hinweis angezeigt; automatische Profilerzeugung bleibt dafür vorerst deaktiviert.
+- Der bisherige Standardgenerator bleibt erhalten.
+- Anleitung und Release Notes aktualisiert.
+- `VERSION` geprüft: 0.1.34.
+
 ## v0.1.33
 
 - Größenberechnung nach Jobs neu aufgebaut: Manuell gestartete Jobs lösen keine automatische Größenberechnung mehr aus.

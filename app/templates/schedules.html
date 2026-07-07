@@ -27,6 +27,53 @@
   {% if is_admin %}<p class="hint">Diese Werte änderst du unter <a href="{{ url_for('settings_page') }}">System → Einstellungen</a>.</p>{% else %}<p class="hint">Diese Werte sind globale Systemeinstellungen und können nur von Admin-Benutzern geändert werden.</p>{% endif %}
 </section>
 
+<section class="card compact-card">
+  <h2>Job-Zeitplanliste</h2>
+  {% if schedules %}
+  <div class="table-scroll full-list-scroll">
+  <table class="compact-table">
+    <thead><tr><th>Name</th><th>Ziel</th><th>Zeittyp</th><th>Uhrzeiten</th><th>Tage</th><th>Status</th><th>Letzter Lauf-Key</th><th>Aktion</th></tr></thead>
+    <tbody>
+    {% for s in schedules %}
+      <tr>
+        <td><strong>{{ s.name }}</strong>{% if s.origin == 'profile' %}<br><span class="badge info">Profilzeitplan</span>{% endif %}{% if s.dry_run %}<br><small>Dry-Run</small>{% endif %}</td>
+        <td>
+          {% if s.job_kind == 'script' %}
+            <span class="badge info">script</span>
+            {% if (s.script_selection or 'single') == 'all' %}alle Benutzerskripte{% elif (s.script_selection or 'single') == 'selected' %}{{ s.script_names or '-' }}{% else %}{{ s.script_name or '-' }}{% endif %}
+          {% elif s.mirror_id %}
+            {{ s.mirror_name }}
+          {% else %}
+            <span class="badge info">global</span> alle aktiven Profile
+          {% endif %}
+        </td>
+        <td>{{ s.schedule_type }}{% if s.schedule_type == 'interval' %} · alle {{ s.interval_hours }}h{% endif %}</td>
+        <td>{{ s.times }}</td>
+        <td>{{ s.weekdays }}</td>
+        <td>{% if s.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
+        <td><small>{{ s.last_run_key or '-' }}</small></td>
+        <td>{% if is_admin %}
+          <div class="actions compact-actions">
+            <form method="post" action="{{ url_for('schedule_toggle', schedule_id=s.id) }}">
+              <button type="submit">{% if s.enabled %}Deaktivieren{% else %}Aktivieren{% endif %}</button>
+            </form>
+            <a class="button" href="{{ url_for('schedule_edit', schedule_id=s.id) }}">Bearbeiten</a>
+            <form method="post" action="{{ url_for('schedule_delete', schedule_id=s.id) }}" onsubmit="return confirm('{% if s.origin == 'profile' %}Profil-Zeitplan wirklich löschen? Das zugehörige Profil wird auf manuell gestellt.{% else %}Zeitplan wirklich löschen?{% endif %}');">
+              <button class="danger" type="submit">Löschen</button>
+            </form>
+          </div>
+        {% else %}<small>Nur Ansicht</small>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+    <p>Noch keine Zeitpläne vorhanden.</p>
+  {% endif %}
+</section>
+
+
 {% if is_admin %}
 <section class="card compact-card">
   <div class="section-head">
@@ -108,51 +155,6 @@
 </section>
 {% endif %}
 
-<section class="card compact-card">
-  <h2>Job-Zeitplanliste</h2>
-  {% if schedules %}
-  <div class="table-scroll full-list-scroll">
-  <table class="compact-table">
-    <thead><tr><th>Name</th><th>Ziel</th><th>Zeittyp</th><th>Uhrzeiten</th><th>Tage</th><th>Status</th><th>Letzter Lauf-Key</th><th>Aktion</th></tr></thead>
-    <tbody>
-    {% for s in schedules %}
-      <tr>
-        <td><strong>{{ s.name }}</strong>{% if s.origin == 'profile' %}<br><span class="badge info">Profilzeitplan</span>{% endif %}{% if s.dry_run %}<br><small>Dry-Run</small>{% endif %}</td>
-        <td>
-          {% if s.job_kind == 'script' %}
-            <span class="badge info">script</span>
-            {% if (s.script_selection or 'single') == 'all' %}alle Benutzerskripte{% elif (s.script_selection or 'single') == 'selected' %}{{ s.script_names or '-' }}{% else %}{{ s.script_name or '-' }}{% endif %}
-          {% elif s.mirror_id %}
-            {{ s.mirror_name }}
-          {% else %}
-            <span class="badge info">global</span> alle aktiven Profile
-          {% endif %}
-        </td>
-        <td>{{ s.schedule_type }}{% if s.schedule_type == 'interval' %} · alle {{ s.interval_hours }}h{% endif %}</td>
-        <td>{{ s.times }}</td>
-        <td>{{ s.weekdays }}</td>
-        <td>{% if s.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
-        <td><small>{{ s.last_run_key or '-' }}</small></td>
-        <td>{% if is_admin %}
-          <div class="actions compact-actions">
-            <form method="post" action="{{ url_for('schedule_toggle', schedule_id=s.id) }}">
-              <button type="submit">{% if s.enabled %}Deaktivieren{% else %}Aktivieren{% endif %}</button>
-            </form>
-            <a class="button" href="{{ url_for('schedule_edit', schedule_id=s.id) }}">Bearbeiten</a>
-            <form method="post" action="{{ url_for('schedule_delete', schedule_id=s.id) }}" onsubmit="return confirm('{% if s.origin == 'profile' %}Profil-Zeitplan wirklich löschen? Das zugehörige Profil wird auf manuell gestellt.{% else %}Zeitplan wirklich löschen?{% endif %}');">
-              <button class="danger" type="submit">Löschen</button>
-            </form>
-          </div>
-        {% else %}<small>Nur Ansicht</small>{% endif %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
-  {% else %}
-    <p>Noch keine Zeitpläne vorhanden.</p>
-  {% endif %}
-</section>
 
 {% if is_admin %}<section class="card compact-card">
   <h2>Bereinigung</h2>

@@ -1,8 +1,13 @@
 # DebMirror Manager
 
+### Änderung v0.1.45
+
+Die Status-Badges `aktiv #ID` und `queue #ID` in der gemeinsamen Dashboard-Tabelle sind jetzt direkt anklickbar und öffnen den zugehörigen Job. Deaktivierte Mirror-Profile und deaktivierte bzw. nicht ausführbare Benutzerskripte können nicht mehr normal gestartet werden; Dry-Run bleibt für deaktivierte Mirror-Profile möglich.
+
+
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`, zusätzlich können eigene Benutzerskripte wie `lftp`- oder `rsync`-Synchronisationen als Jobs ausgeführt und geplant werden.
 
-Aktuelle Version: **0.1.33**
+Aktuelle Version: **0.1.45**
 
 ## Grundprinzip
 
@@ -26,12 +31,12 @@ backup/                                   update.sh-Backups im Projektordner
 /srv/mirror oder /mnt/linux-mirror         lokale Repository-/Mirror-Daten
 ```
 
-Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielpfade in Profilen und Script-Größenzielen müssen deshalb innerhalb von `/mirror` liegen, z. B. `/mirror/debian` oder `/mirror/esm/infra/ubuntu`.
+Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielpfade in Profilen und Script-Größenzielen müssen deshalb innerhalb von `/mirror` liegen, z. B. `/mirror/debian` oder `/mirror/ubuntu`.
 
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.33.zip
+unzip debmirror-manager-v0.1.45.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -73,7 +78,7 @@ cp /pfad/zur/debmirror-manager-vNEU.zip updates/
 
 ### Übersicht -> Dashboard
 
-Zeigt Speicherplatz, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks. Das Feld **Warteschlange** zeigt neben laufenden/wartenden Jobs auch laufende, wartende und vorgemerkte Größenberechnungen. Die frühere Profil-Kachel ist in **Mirror-Profile** und **Benutzerskripte** geteilt. Mirror-Profile und Benutzerskripte sind optisch gleich aufgebaut und zeigen Status, Größe, Zeitplan, letzten Job und Aktion. Die Bereiche **Letzte Jobs** und **Ereignisse** bleiben in Scrollboxen; die Anzahl der geladenen Einträge ist unter `System -> Einstellungen` konfigurierbar.
+Zeigt Speicherplatz, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks. Das Feld **Warteschlange** zeigt neben laufenden/wartenden Jobs auch laufende, wartende und vorgemerkte Größenberechnungen. Die Kachel **Profile / Benutzerskripte** ist zweigeteilt; die Bezeichnungen **Mirror-Profile** und **Benutzerskripte** sind direkt anklickbar. Mirror-Profile und Benutzerskripte werden darunter in einer gemeinsamen Tabelle mit der Spalte **Art** angezeigt. Über **Dashboard bearbeiten** können Blöcke per Maus verschoben und über den Griff unten rechts vergrößert oder verkleinert werden; das Layout wird zentral in `settings.json` gespeichert und gilt dadurch browserübergreifend. Die Bereiche **Letzte Jobs** und **Ereignisse** bleiben in Scrollboxen; die Anzahl der geladenen Einträge ist unter `System -> Einstellungen` konfigurierbar.
 
 ### Mirror -> Profile
 
@@ -83,7 +88,11 @@ Im Bearbeiten-Dialog kann im Bereich **Zeitplan** ein einfacher Profilzeitplan g
 
 ### Mirror -> Profilgenerator
 
-Erzeugt Standardprofile für Debian/Ubuntu anhand von Distribution, Release, Komponenten und Architekturen. Die Generator-Daten sind unter `Mirror -> Generator-Einstellungen` erweiterbar.
+Prüft allgemeine APT-Repository-Adressen und ist nicht auf Debian oder Ubuntu beschränkt. Die URL-Prüfung sucht nach `dists/`, `Release`, `InRelease`, `Packages`-Dateien, vorhandenen Suites, Komponenten, Architekturen und möglichen GPG-Key-Dateien wie `.gpg`, `.asc`, `Release.key` oder `archive-keyring.gpg`. Die Verzeichnistiefe ist einstellbar; Standard ist `5`, maximal `10`. Während der Prüfung zeigt ein Live-Statusfenster fortlaufend, welche Verzeichnisse, `dists/`-Pfade, Release-Dateien, Packages-Dateien und GPG-Key-Kandidaten geprüft werden. Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner bei Bedarf zusätzlich HTTP, wenn über HTTPS kein Repository gefunden wurde. Der Scan kann über **Prüfung stoppen** abgebrochen werden; ein laufender HTTP-Aufruf wird dabei noch beendet, danach stoppt die Prüfung.
+
+Wenn an der eingegebenen Hauptadresse kein verwendbares Repository gefunden wird, prüft der Generator automatisch konfigurierbare Suchpfad-Variablen wie `deb`, `debian`, `repo`, `repository`, `apt` oder `packages`. Diese Liste wird zentral unter `System -> Generator-Einstellungen` gepflegt und kann dort erweitert werden, damit auch Hersteller-Repositories mit eigenen Pfaden später besser erkannt werden. Bleibt auch diese Prüfung ohne Treffer, wird zusätzlich je Suchvariable ein direkt angehängtes `dists/` geprüft, zum Beispiel `<basis>/repository/dists/`. Auch direkte Suite-Pfade wie `dists/stable/InRelease` oder direkt gefundene `dists/`-Verzeichnisse werden als normale Repository-Struktur erkannt und nicht mehr als flaches Repository behandelt. Aus erkannten `dists/`-Repositories kann ein neues Mirror-Profil vorbereitet werden. Gefundene GPG-Keys werden angezeigt, aber noch nicht automatisch importiert.
+
+Der bisherige Standardgenerator für bekannte Debian-/Ubuntu-Profile bleibt darunter erhalten. Die Generator-Daten und Suchpfad-Variablen sind unter `System -> Generator-Einstellungen` erweiterbar.
 
 ### Mirror -> Skript-Import
 
@@ -99,7 +108,7 @@ Zeigt Jobhistorie, Status, Exit-Code, Startzeit, Endzeit, Dauer und Logs. Laufen
 
 ### Betrieb -> Zeitpläne
 
-Flexible Jobplanung für Mirror-Profile und Benutzerskripte. Unterstützt:
+Flexible Jobplanung für Mirror-Profile und Benutzerskripte. Die Job-Zeitplanliste steht direkt unter den aktuellen Regeln, damit gespeicherte Jobs schneller erreichbar sind. Unterstützt:
 
 - tägliche Uhrzeiten, auch mehrere pro Tag, z. B. `06:00,18:00`
 - Wochentage
@@ -110,7 +119,9 @@ Flexible Jobplanung für Mirror-Profile und Benutzerskripte. Unterstützt:
 - einzelnes Aktivieren/Deaktivieren gespeicherter Zeitpläne
 - Profilzeitpläne aus Mirror-Profilen; beim Löschen wird das Profil auf manuell zurückgesetzt
 
-### Betrieb -> Benutzerskripte
+### Mirror -> Benutzerskripte
+
+Benutzerskripte besitzen einen eigenen Aktiv-Schalter. Nur aktive und ausführbare Skripte können manuell oder per Zeitplan gestartet werden. Beim Löschen eines Skripts wird sein gespeicherter Aktiv-Status auf inaktiv gesetzt.
 
 Eigene Skripte werden aus `/docker_data/debmirror-manager/user-scripts` geladen. Die WebUI führt nur Dateien direkt in diesem Verzeichnis aus, keine freie Shell-Eingabe.
 
@@ -137,6 +148,10 @@ Zentrale Einstellungen für Darstellung, Jobs, Warteschlange, Log-Aufbewahrung, 
 - Speicherplatz-Sperre direkt im Block **Mirror-Speicher**
 - Zeitzone
 - Container-/Programmprüfung
+
+### System -> Generator-Einstellungen
+
+Verwaltet die Generator-Daten und Suchpfad-Variablen für den Profilgenerator. Suchpfade wie `deb`, `debian`, `repo`, `repository`, `apt` oder `packages` werden bei erfolgloser Hauptprüfung automatisch relativ zur eingegebenen Repository-Adresse geprüft.
 
 ### System -> Backup / Wiederherstellen
 

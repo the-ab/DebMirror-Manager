@@ -49,7 +49,7 @@
     {% for m in mirrors %}
       <tr>
         <td><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
-        <td>{% if m.running_job %}<span class="badge {{ m.running_job.status }}">{{ m.running_job.status }} #{{ m.running_job.id }}</span>{% elif m.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
+        <td>{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
         <td><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
         <td><small>{{ m.method }}://{{ m.host }}/{{ m.root_path }}<br>{{ m.dists }} · {{ m.sections }} · {{ m.archs }}</small></td>
         <td>{{ m.schedule_display }}</td>
@@ -60,8 +60,12 @@
           {% if m.running_job %}
             <a class="button" href="{{ url_for('job_detail', job_id=m.running_job.id) }}">Log</a>
           {% elif is_admin %}
-            <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
-            <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>
+            {% if m.start_block_reason %}
+              <button type="button" class="locked-button" disabled title="{{ m.start_block_reason }}"><span>Start</span></button>
+            {% else %}
+              <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
+            {% endif %}
+            {% if not m.start_block_reason or m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
           {% else %}<small>Nur Ansicht</small>{% endif %}
         </td>
       </tr>

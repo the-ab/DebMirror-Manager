@@ -4,10 +4,24 @@
 <div class="page-head">
   <div>
     <h1>Profilgenerator-Einstellungen</h1>
-    <p>Hier kannst du die verfügbaren Distributionen, Releases, Komponenten und Architekturen des Profilgenerators erweitern.</p>
+    <p>Hier kannst du den Standardgenerator und die Suchpfade für die automatische Repository-Erkennung erweitern.</p>
   </div>
   <a class="button" href="{{ url_for('profile_generator') }}">Zurück zum Generator</a>
 </div>
+
+<section class="card">
+  <h2>Suchpfad-Variablen</h2>
+  <p class="hint">Diese relativen Pfade werden automatisch geprüft, wenn an der eingegebenen Hauptadresse kein verwendbares Repository gefunden wurde. Ein Eintrag pro Zeile, zum Beispiel <code>deb</code>, <code>debian</code>, <code>repo</code> oder <code>repository</code>.</p>
+  <form method="post">
+    <textarea name="scan_path_variables" rows="12" class="mono-textarea">{{ scan_path_variables }}</textarea>
+    <small>Maximal {{ max_scan_path_variables }} Einträge. Es sind nur relative Pfade innerhalb der geprüften Basisadresse erlaubt.</small>
+    <div class="form-actions">
+      <button class="primary" type="submit" name="action" value="save_scan_paths">Suchpfad-Variablen speichern</button>
+      <button type="submit" name="action" value="reset_scan_paths" onclick="return confirm('Suchpfad-Variablen wirklich auf Standard zurücksetzen?');">Auf Standard zurücksetzen</button>
+    </div>
+  </form>
+  <p class="hint">Standardwerte: {{ default_scan_path_variables|join(', ') }}</p>
+</section>
 
 <section class="card">
   <h2>Generator-Konfiguration</h2>

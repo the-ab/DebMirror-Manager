@@ -1,197 +1,480 @@
 {% extends "base.html" %}
 {% block title %}Dashboard - {{ app_name }}{% endblock %}
+{% macro dashboard_tools() -%}
+  <div class="dashboard-block-tools">
+    <button type="button" class="dashboard-drag-handle" title="Block mit der Maus verschieben" aria-label="Block verschieben">↕ Verschieben</button>
+    <span class="dashboard-resize-label">rechts/unten ziehen: Breite und Höhe ändern</span>
+  </div>
+  <button type="button" class="dashboard-resize-handle" title="Blockgröße mit der Maus ändern" aria-label="Blockgröße ändern"></button>
+{%- endmacro %}
 {% block content %}
-<div class="page-head compact-head">
+<div class="page-head compact-head dashboard-head">
   <div>
     <h1>Dashboard</h1>
-    <p>Kurzübersicht über Speicher, Warteschlange, Profile, Healthchecks und die letzten Aktivitäten.</p>
+    <p>Kurzübersicht über Speicher, Warteschlange, Profile, Benutzerskripte, Healthchecks und die letzten Aktivitäten.</p>
   </div>
-  {% if is_admin %}<a class="button primary" href="{{ url_for('profile_generator') }}">Profil erzeugen</a>{% endif %}
+  <div class="actions dashboard-head-actions">
+    {% if is_admin %}
+      <a class="button primary" href="{{ url_for('profile_generator') }}">Profil erzeugen</a>
+      <button type="button" class="button" id="dashboardEditToggle">Dashboard bearbeiten</button>
+      <button type="button" class="button dashboard-reset-button" id="dashboardLayoutReset">Layout zurücksetzen</button>
+    {% endif %}
+  </div>
 </div>
 
-<section class="summary-grid">
-  <article class="card summary-card storage-card">
-    <h2>Speicherplatz</h2>
-    <p class="summary-value">{{ storage.percent if not storage.error else '-' }}%</p>
-    <small>{{ storage.path }}</small>
-    {% if storage.error %}
-      <p class="error-text">{{ storage.error }}</p>
-    {% else %}
-      <div class="meter"><span style="width: {{ storage.percent }}%"></span></div>
-      <div class="stats-row compact"><span>{{ storage.used_h }} belegt</span><span>{{ storage.free_h }} frei</span><span>{{ storage.total_h }} gesamt</span></div>
-      {% if storage_guard.blocked %}<div class="notice danger"><strong>Sperre aktiv:</strong> {{ storage_guard.message }}</div>{% elif storage_guard.enabled %}<small>Sperre ab {{ storage_guard.threshold }}%</small>{% endif %}
-    {% endif %}
-  </article>
-  <article class="card summary-card">
-    <h2>Warteschlange</h2>
-    <p class="summary-value">{{ active_jobs_count }}/{{ max_parallel_jobs }}</p>
-    <small>Jobs: {{ queue_count }} wartend</small>
-    <small class="queue-size-line">Größen: {{ size_queue_state.running_count }} laufend · {{ size_queue_state.total_waiting }} wartend</small>
-    {% if active_job %}<p><a href="{{ url_for('job_detail', job_id=active_job.id) }}">#{{ active_job.id }} {{ active_job.mirror_name }}</a> <span class="badge {{ active_job.status }}">{{ active_job.status }}</span></p>{% else %}<p>Keine aktiven Jobs.</p>{% endif %}
-    {% if size_queue_state.running_count or size_queue_state.total_waiting %}
-      <p class="queue-size-detail">
-        {% if size_queue_state.running_paths %}<small>Läuft: {{ size_queue_state.running_paths[0] }}{% if size_queue_state.running_count > 1 %} +{{ size_queue_state.running_count - 1 }}{% endif %}</small><br>{% endif %}
-        {% if size_queue_state.pending_items %}<small>Vorgemerkt: {{ size_queue_state.pending_items[0].target_name }}{% if size_queue_state.pending_count > 1 %} +{{ size_queue_state.pending_count - 1 }}{% endif %}</small>{% endif %}
-        {% if size_queue_state.queued_items %}<small>{% if size_queue_state.pending_items %}<br>{% endif %}Wartet: {{ size_queue_state.queued_items[0].path }}{% if size_queue_state.queued_count > 1 %} +{{ size_queue_state.queued_count - 1 }}{% endif %}</small>{% endif %}
-      </p>
-    {% endif %}
-  </article>
-  <article class="card summary-card">
-    <h2>Profile / Benutzerskripte</h2>
-    <div class="summary-split">
-      <div><p class="summary-value">{{ mirrors|length }}</p><small>Mirror-Profile</small></div>
-      <div><p class="summary-value">{{ user_scripts|length }}</p><small>Benutzerskripte</small></div>
-    </div>
-    <p><a href="{{ url_for('mirrors_page') }}">Profile</a> · <a href="{{ url_for('user_scripts_page') }}">Benutzerskripte</a>{% if is_admin %} · <a href="{{ url_for('mirror_new') }}">Profil neu</a>{% endif %}</p>
-  </article>
-  <article class="card summary-card">
-    <h2>Healthchecks</h2>
-    <p class="summary-value">{{ healthchecks|length }}</p>
-    <small>konfigurierte Prüfungen</small>
-    <p><a href="{{ url_for('healthchecks_page') }}">Healthchecks öffnen</a></p>
-  </article>
-</section>
+<div id="dashboardRoot" class="dashboard-root">
+  <div class="notice dashboard-edit-hint">Bearbeitungsmodus aktiv: Blöcke können mit der Maus verschoben werden. Die Größe kann unten rechts am Block verändert werden. Das Layout wird zentral in settings.json gespeichert.</div>
 
-<section class="card compact-card">
-  <div class="section-head">
-    <h2>Mirror-Profile</h2>
-    <a href="{{ url_for('mirrors_page') }}">Alle Profile</a>
-  </div>
-  {% if mirrors %}
-  <div class="table-scroll dashboard-table-scroll">
-    <table class="compact-table dashboard-entity-table">
-      <colgroup><col class="col-name"><col class="col-status"><col class="col-size"><col class="col-schedule"><col class="col-last"><col class="col-action"></colgroup>
-      <thead><tr><th>Name</th><th>Status</th><th>Größe</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktion</th></tr></thead>
-      <tbody>
-      {% for m in mirrors %}
-        <tr>
-          <td><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.host }}/{{ m.root_path }} → {{ m.target_path }}</small></td>
-          <td>{% if m.running_job %}<span class="badge {{ m.running_job.status }}">{{ m.running_job.status }} #{{ m.running_job.id }}</span>{% elif m.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}</td>
-          <td><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
-          <td>{{ m.schedule_display }}</td>
-          <td>{% if m.last_job %}<span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
-          <td>
-            {% if m.running_job %}
-            <a class="button" href="{{ url_for('job_detail', job_id=m.running_job.id) }}">Log</a>
-            {% elif is_admin %}
-            <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
-            {% else %}<small>Nur Ansicht</small>
-            {% endif %}
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-    <p>Noch keine Mirror-Profile vorhanden.</p>
-  {% endif %}
-</section>
-
-<section class="card compact-card">
-  <div class="section-head">
-    <h2>Benutzerskripte</h2>
-    <a href="{{ url_for('user_scripts_page') }}">Alle Benutzerskripte</a>
-  </div>
-  {% if user_scripts %}
-  <div class="table-scroll dashboard-table-scroll">
-    <table class="compact-table dashboard-entity-table">
-      <colgroup><col class="col-name"><col class="col-status"><col class="col-size"><col class="col-schedule"><col class="col-last"><col class="col-action"></colgroup>
-      <thead><tr><th>Name</th><th>Status</th><th>Größe</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktion</th></tr></thead>
-      <tbody>
-      {% for script in user_scripts %}
-        <tr>
-          <td><a href="{{ url_for('user_scripts_page') }}"><strong>{{ script.name }}</strong></a><br><small><code>{{ script.path }}</code></small></td>
-          <td>{% if script.running_job %}<span class="badge {{ script.running_job.status }}">{{ script.running_job.status }} #{{ script.running_job.id }}</span>{% elif script.executable %}<span class="badge ok">bereit</span>{% else %}<span class="badge warning">bash fallback</span>{% endif %}</td>
-          <td>
-            {% if script.target_path %}
-              <strong>{{ script.target_size_info.size_h }}</strong>{% if script.target_size_info.status %}<br><small>{{ script.target_size_info.status }}{% if script.target_size_info.calculated_at %} · {{ script.target_size_info.calculated_at }}{% endif %}</small>{% endif %}{% if script.target_size_info.error %}<br><small>{{ script.target_size_info.error }}</small>{% endif %}
-            {% else %}
-              <small>kein Ziel gesetzt</small>
-            {% endif %}
-          </td>
-          <td>{{ script.schedule_display }}</td>
-          <td>{% if script.last_job %}<span class="badge {{ script.last_job.status }}">{{ script.last_job.status }}</span><br><small>#{{ script.last_job.id }} {{ script.last_job.started_at }} · {{ script.last_job.duration_h }}<br>{{ script.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
-          <td>
-            {% if script.running_job %}
-              <a class="button" href="{{ url_for('job_detail', job_id=script.running_job.id) }}">Log</a>
-            {% elif is_admin %}
-              <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline">
-                <input type="hidden" name="action" value="run">
-                <input type="hidden" name="script_name" value="{{ script.name }}">
-                <button type="submit">Start</button>
-              </form>
-            {% else %}<small>Nur Ansicht</small>{% endif %}
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-    <p>Noch keine Benutzerskripte vorhanden.</p>
-  {% endif %}
-</section>
-
-<div class="grid two compact-grid">
-  <section class="card compact-card">
-    <div class="section-head"><h2>Letzte Jobs</h2><a href="{{ url_for('jobs') }}">Alle Jobs</a></div>
-    {% if recent_jobs %}
-    <div class="table-scroll dashboard-list-scroll">
-      <table class="compact-table">
-        <thead><tr><th>ID</th><th>Ziel</th><th>Status</th><th>Quelle</th><th>Start</th><th>Dauer</th><th>Exit</th></tr></thead>
-        <tbody>
-        {% for j in recent_jobs %}
-          <tr>
-            <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
-            <td>{{ j.mirror_name }}</td>
-            <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
-            <td><small>{{ j.source_h }}</small></td>
-            <td><small>{{ j.started_at }}</small></td>
-            <td>{{ j.duration_h or '-' }}</td>
-            <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}<p>Noch keine Jobs.</p>{% endif %}
-  </section>
-
-  <section class="card compact-card">
-    <div class="section-head"><h2>Ereignisse</h2><span class="muted-text">neueste Meldungen</span></div>
-    {% if events %}
-      <div class="event-scroll dashboard-list-scroll">
-        <ul class="event-list">
-        {% for e in events %}
-          <li><span class="badge {{ e.level }}">{{ e.level }}</span><div><small>{{ e.created_at }}</small><br>{{ e.message }}</div></li>
-        {% endfor %}
-        </ul>
+  <section class="summary-grid dashboard-zone" data-dashboard-zone="summary">
+    <article class="card summary-card storage-card dashboard-block" data-dashboard-block="storage" data-dashboard-size="normal">
+      {{ dashboard_tools() }}
+      <h2>Speicherplatz</h2>
+      <p class="summary-value">{{ storage.percent if not storage.error else '-' }}%</p>
+      <small>{{ storage.path }}</small>
+      {% if storage.error %}
+        <p class="error-text">{{ storage.error }}</p>
+      {% else %}
+        <div class="meter"><span style="width: {{ storage.percent }}%"></span></div>
+        <div class="stats-row compact"><span>{{ storage.used_h }} belegt</span><span>{{ storage.free_h }} frei</span><span>{{ storage.total_h }} gesamt</span></div>
+        {% if storage_guard.blocked %}<div class="notice danger"><strong>Sperre aktiv:</strong> {{ storage_guard.message }}</div>{% elif storage_guard.enabled %}<small>Sperre ab {{ storage_guard.threshold }}%</small>{% endif %}
+      {% endif %}
+    </article>
+    <article class="card summary-card dashboard-block" data-dashboard-block="queue" data-dashboard-size="normal">
+      {{ dashboard_tools() }}
+      <h2>Warteschlange</h2>
+      <p class="summary-value">{{ active_jobs_count }}/{{ max_parallel_jobs }}</p>
+      <small>Jobs: {{ queue_count }} wartend</small>
+      <small class="queue-size-line">Größen: {{ size_queue_state.running_count }} laufend · {{ size_queue_state.total_waiting }} wartend</small>
+      {% if active_job %}<p><a href="{{ url_for('job_detail', job_id=active_job.id) }}">#{{ active_job.id }} {{ active_job.mirror_name }}</a> <span class="badge {{ active_job.status }}">{{ active_job.status }}</span></p>{% else %}<p>Keine aktiven Jobs.</p>{% endif %}
+      {% if size_queue_state.running_count or size_queue_state.total_waiting %}
+        <p class="queue-size-detail">
+          {% if size_queue_state.running_paths %}<small>Läuft: {{ size_queue_state.running_paths[0] }}{% if size_queue_state.running_count > 1 %} +{{ size_queue_state.running_count - 1 }}{% endif %}</small><br>{% endif %}
+          {% if size_queue_state.pending_items %}<small>Vorgemerkt: {{ size_queue_state.pending_items[0].target_name }}{% if size_queue_state.pending_count > 1 %} +{{ size_queue_state.pending_count - 1 }}{% endif %}</small>{% endif %}
+          {% if size_queue_state.queued_items %}<small>{% if size_queue_state.pending_items %}<br>{% endif %}Wartet: {{ size_queue_state.queued_items[0].path }}{% if size_queue_state.queued_count > 1 %} +{{ size_queue_state.queued_count - 1 }}{% endif %}</small>{% endif %}
+        </p>
+      {% endif %}
+    </article>
+    <article class="card summary-card dashboard-block" data-dashboard-block="profile-script-summary" data-dashboard-size="normal">
+      {{ dashboard_tools() }}
+      <h2>Profile / Benutzerskripte</h2>
+      <div class="summary-split">
+        <div><p class="summary-value">{{ mirrors|length }}</p><small><a href="{{ url_for('mirrors_page') }}">Mirror-Profile</a></small></div>
+        <div><p class="summary-value">{{ user_scripts|length }}</p><small><a href="{{ url_for('user_scripts_page') }}">Benutzerskripte</a></small></div>
       </div>
-    {% else %}
-      <p>Noch keine Ereignisse.</p>
-    {% endif %}
+    </article>
+    <article class="card summary-card dashboard-block" data-dashboard-block="health-summary" data-dashboard-size="normal">
+      {{ dashboard_tools() }}
+      <h2>Healthchecks</h2>
+      <p class="summary-value">{{ healthchecks|length }}</p>
+      <small>konfigurierte Prüfungen</small>
+      <p><a href="{{ url_for('healthchecks_page') }}">Healthchecks öffnen</a></p>
+    </article>
   </section>
+
+  <div class="dashboard-main-grid dashboard-zone" data-dashboard-zone="main">
+    <section class="card compact-card dashboard-block" data-dashboard-block="mirror-script-list" data-dashboard-size="full">
+      {{ dashboard_tools() }}
+      <div class="section-head">
+        <h2>Mirror-Profile / Benutzerskripte</h2>
+        <span><a href="{{ url_for('mirrors_page') }}">Profile</a> · <a href="{{ url_for('user_scripts_page') }}">Benutzerskripte</a></span>
+      </div>
+      {% if mirrors or user_scripts %}
+      <div class="table-scroll dashboard-table-scroll">
+        <table class="compact-table dashboard-entity-table dashboard-combined-table">
+          <colgroup><col class="col-name"><col class="col-status"><col class="col-type"><col class="col-size"><col class="col-schedule"><col class="col-last"><col class="col-action"></colgroup>
+          <thead><tr><th>Name</th><th>Status</th><th>Art</th><th>Größe</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktion</th></tr></thead>
+          <tbody>
+          {% for m in mirrors %}
+            <tr>
+              <td data-label="Name"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.host }}/{{ m.root_path }} → {{ m.target_path }}</small></td>
+              <td data-label="Status">{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
+              <td data-label="Art"><span class="badge muted">Mirror</span></td>
+              <td data-label="Größe"><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
+              <td data-label="Zeitplan">{{ m.schedule_display }}</td>
+              <td data-label="Letzter Job">{% if m.last_job %}<span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
+              <td data-label="Aktion">
+                {% if m.running_job %}
+                <a class="button" href="{{ url_for('job_detail', job_id=m.running_job.id) }}">Log</a>
+                {% elif is_admin %}
+                  {% if m.start_block_reason %}
+                    <button type="button" class="locked-button" disabled title="{{ m.start_block_reason }}"><span>Start</span></button>
+                    {% if m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
+                  {% else %}
+                    <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
+                  {% endif %}
+                {% else %}<small>Nur Ansicht</small>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          {% for script in user_scripts %}
+            <tr>
+              <td data-label="Name"><a href="{{ url_for('user_scripts_page') }}"><strong>{{ script.name }}</strong></a><br><small><code>{{ script.path }}</code></small></td>
+              <td data-label="Status">{% if script.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=script.dashboard_status.job_id) }}"><span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span>{% endif %}</td>
+              <td data-label="Art"><span class="badge muted">Script</span></td>
+              <td data-label="Größe">
+                {% if script.target_path %}
+                  <strong>{{ script.target_size_info.size_h }}</strong>{% if script.target_size_info.status %}<br><small>{{ script.target_size_info.status }}{% if script.target_size_info.calculated_at %} · {{ script.target_size_info.calculated_at }}{% endif %}</small>{% endif %}{% if script.target_size_info.error %}<br><small>{{ script.target_size_info.error }}</small>{% endif %}
+                {% else %}
+                  <small>kein Ziel gesetzt</small>
+                {% endif %}
+              </td>
+              <td data-label="Zeitplan">{{ script.schedule_display }}</td>
+              <td data-label="Letzter Job">{% if script.last_job %}<span class="badge {{ script.last_job.status }}">{{ script.last_job.status }}</span><br><small>#{{ script.last_job.id }} {{ script.last_job.started_at }} · {{ script.last_job.duration_h }}<br>{{ script.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
+              <td data-label="Aktion">
+                {% if script.running_job %}
+                  <a class="button" href="{{ url_for('job_detail', job_id=script.running_job.id) }}">Log</a>
+                {% elif is_admin %}
+                  {% if script.start_block_reason %}
+                    <button type="button" class="locked-button" disabled title="{{ script.start_block_reason }}"><span>Start</span></button>
+                  {% else %}
+                    <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline">
+                      <input type="hidden" name="action" value="run">
+                      <input type="hidden" name="script_name" value="{{ script.name }}">
+                      <button type="submit">Start</button>
+                    </form>
+                  {% endif %}
+                {% else %}<small>Nur Ansicht</small>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+        <p>Noch keine Mirror-Profile oder Benutzerskripte vorhanden.</p>
+      {% endif %}
+    </section>
+
+    <section class="card compact-card dashboard-block" data-dashboard-block="recent-jobs" data-dashboard-size="normal">
+      {{ dashboard_tools() }}
+      <div class="section-head"><h2>Letzte Jobs</h2><a href="{{ url_for('jobs') }}">Alle Jobs</a></div>
+      {% if recent_jobs %}
+      <div class="table-scroll dashboard-list-scroll">
+        <table class="compact-table">
+          <thead><tr><th>ID</th><th>Ziel</th><th>Status</th><th>Quelle</th><th>Start</th><th>Dauer</th><th>Exit</th></tr></thead>
+          <tbody>
+          {% for j in recent_jobs %}
+            <tr>
+              <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
+              <td>{{ j.mirror_name }}</td>
+              <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+              <td><small>{{ j.source_h }}</small></td>
+              <td><small>{{ j.started_at }}</small></td>
+              <td>{{ j.duration_h or '-' }}</td>
+              <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}<p>Noch keine Jobs.</p>{% endif %}
+    </section>
+
+    <section class="card compact-card dashboard-block" data-dashboard-block="events" data-dashboard-size="normal">
+      {{ dashboard_tools() }}
+      <div class="section-head"><h2>Ereignisse</h2><span class="muted-text">neueste Meldungen</span></div>
+      {% if events %}
+        <div class="event-scroll dashboard-list-scroll">
+          <ul class="event-list">
+          {% for e in events %}
+            <li><span class="badge {{ e.level }}">{{ e.level }}</span><div><small>{{ e.created_at }}</small><br>{{ e.message }}</div></li>
+          {% endfor %}
+          </ul>
+        </div>
+      {% else %}
+        <p>Noch keine Ereignisse.</p>
+      {% endif %}
+    </section>
+
+    <section class="card compact-card dashboard-block" data-dashboard-block="healthchecks" data-dashboard-size="full">
+      {{ dashboard_tools() }}
+      <div class="section-head"><h2>Healthchecks</h2><a href="{{ url_for('healthchecks_page') }}">Alle Healthchecks</a></div>
+      {% if healthchecks %}
+      <div class="table-scroll dashboard-table-scroll small">
+        <table class="compact-table">
+          <thead><tr><th>Name</th><th>Status</th><th>Letzte Prüfung</th><th>URL</th></tr></thead>
+          <tbody>
+          {% for c in healthchecks[:8] %}
+            <tr>
+              <td><a href="{{ url_for('healthchecks_page') }}"><strong>{{ c.name }}</strong></a></td>
+              <td>{% if c.last_ok is none %}<span class="badge muted">nie geprüft</span>{% elif c.last_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">Fehler</span>{% endif %}</td>
+              <td>{{ c.last_check_at or '-' }}</td>
+              <td><small>{{ c.url }}</small></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}<p>Noch keine Healthchecks eingerichtet.</p>{% endif %}
+    </section>
+  </div>
 </div>
 
-<section class="card compact-card">
-  <div class="section-head"><h2>Healthchecks</h2><a href="{{ url_for('healthchecks_page') }}">Alle Healthchecks</a></div>
-  {% if healthchecks %}
-  <div class="table-scroll dashboard-table-scroll small">
-    <table class="compact-table">
-      <thead><tr><th>Name</th><th>Status</th><th>Letzte Prüfung</th><th>URL</th></tr></thead>
-      <tbody>
-      {% for c in healthchecks[:8] %}
-        <tr>
-          <td><a href="{{ url_for('healthchecks_page') }}"><strong>{{ c.name }}</strong></a></td>
-          <td>{% if c.last_ok is none %}<span class="badge muted">nie geprüft</span>{% elif c.last_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">Fehler</span>{% endif %}</td>
-          <td>{{ c.last_check_at or '-' }}</td>
-          <td><small>{{ c.url }}</small></td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}<p>Noch keine Healthchecks eingerichtet.</p>{% endif %}
-</section>
+<script>
+(function () {
+  const root = document.getElementById('dashboardRoot');
+  const editButton = document.getElementById('dashboardEditToggle');
+  const resetButton = document.getElementById('dashboardLayoutReset');
+  if (!root || !editButton) return;
+
+  const saveUrl = {{ url_for('dashboard_layout_save')|tojson }};
+  const resetUrl = {{ url_for('dashboard_layout_reset')|tojson }};
+  let currentLayout = {{ dashboard_layout|tojson }};
+  let editMode = false;
+  let draggedBlock = null;
+  let dragArmedBlock = null;
+  let saveTimer = null;
+
+  function zoneName(zone) { return zone ? (zone.dataset.dashboardZone || '') : ''; }
+
+  function allBlocks() {
+    return Array.from(root.querySelectorAll('.dashboard-block'));
+  }
+
+  function zoneColumns() { return 12; }
+
+  function widthFromSize(size, zone) {
+    const zoneIsSummary = zone && zone.classList && zone.classList.contains('summary-grid');
+    if (size === 'full') return 12;
+    if (size === 'wide') return zoneIsSummary ? 6 : 9;
+    return zoneIsSummary ? 3 : 6;
+  }
+
+  function setBlockSize(block, size) {
+    const allowed = ['normal', 'wide', 'full'];
+    const nextSize = allowed.indexOf(size) >= 0 ? size : (block.dataset.dashboardSize || 'normal');
+    block.dataset.dashboardSize = nextSize;
+  }
+
+  function sizeFromWidth(width) {
+    const span = parseInt(width || 0, 10);
+    if (span >= 12) return 'full';
+    if (span >= 7) return 'wide';
+    return 'normal';
+  }
+
+  function setBlockWidth(block, width) {
+    const value = Math.max(3, Math.min(12, parseInt(width || 0, 10) || widthFromSize(block.dataset.dashboardSize || 'normal', block.parentElement)));
+    block.dataset.dashboardWidth = String(value);
+    block.style.gridColumn = 'span ' + value;
+    setBlockSize(block, sizeFromWidth(value));
+  }
+
+  function setBlockHeight(block, height) {
+    const value = parseInt(height || 0, 10);
+    if (value && value >= 120 && value <= 1400) {
+      block.dataset.dashboardHeight = String(value);
+      block.style.height = value + 'px';
+      block.style.setProperty('--dashboard-block-height', value + 'px');
+    } else {
+      delete block.dataset.dashboardHeight;
+      block.style.height = '';
+      block.style.removeProperty('--dashboard-block-height');
+    }
+  }
+
+  function stateForBlock(layout, blockId, parentZone) {
+    const zones = layout && layout.zones ? layout.zones : {};
+    if (zones[parentZone]) return zones[parentZone];
+    for (const name in zones) {
+      if (zones[name] && Array.isArray(zones[name].order) && zones[name].order.indexOf(blockId) >= 0) return zones[name];
+    }
+    return null;
+  }
+
+  function applyLayout(layout) {
+    layout = layout || {};
+    const blocksById = {};
+    allBlocks().forEach(function (block) {
+      if (!block.dataset.dashboardDefaultZone) block.dataset.dashboardDefaultZone = zoneName(block.parentElement);
+      blocksById[block.dataset.dashboardBlock] = block;
+    });
+
+    const placed = {};
+    root.querySelectorAll('.dashboard-zone').forEach(function (zone) {
+      const zName = zoneName(zone);
+      const zState = layout.zones && layout.zones[zName] ? layout.zones[zName] : null;
+      if (zState && Array.isArray(zState.order)) {
+        zState.order.forEach(function (id) {
+          if (blocksById[id] && !placed[id]) {
+            zone.appendChild(blocksById[id]);
+            placed[id] = true;
+          }
+        });
+      }
+    });
+
+    allBlocks().forEach(function (block) {
+      const id = block.dataset.dashboardBlock;
+      if (!placed[id]) {
+        const fallbackZone = root.querySelector('.dashboard-zone[data-dashboard-zone="' + block.dataset.dashboardDefaultZone + '"]') || root.querySelector('.dashboard-zone');
+        if (fallbackZone) fallbackZone.appendChild(block);
+      }
+    });
+
+    allBlocks().forEach(function (block) {
+      const id = block.dataset.dashboardBlock;
+      const parentZone = zoneName(block.parentElement);
+      const zState = stateForBlock(layout, id, parentZone);
+      const savedSize = zState && zState.sizes ? zState.sizes[id] : (block.dataset.dashboardSize || 'normal');
+      setBlockSize(block, savedSize);
+      const savedWidth = zState && zState.widths ? zState.widths[id] : null;
+      setBlockWidth(block, savedWidth || widthFromSize(savedSize, block.parentElement));
+      setBlockHeight(block, zState && zState.heights ? zState.heights[id] : block.dataset.dashboardHeight);
+    });
+  }
+
+  function buildLayout() {
+    const state = { zones: {} };
+    root.querySelectorAll('.dashboard-zone').forEach(function (zone) {
+      const zName = zoneName(zone);
+      state.zones[zName] = { order: [], sizes: {}, widths: {}, heights: {} };
+      zone.querySelectorAll(':scope > .dashboard-block').forEach(function (block) {
+        const id = block.dataset.dashboardBlock;
+        state.zones[zName].order.push(id);
+        state.zones[zName].sizes[id] = block.dataset.dashboardSize || 'normal';
+        state.zones[zName].widths[id] = parseInt(block.dataset.dashboardWidth || 0, 10) || widthFromSize(block.dataset.dashboardSize || 'normal', zone);
+        if (block.dataset.dashboardHeight) state.zones[zName].heights[id] = parseInt(block.dataset.dashboardHeight, 10) || 0;
+      });
+    });
+    return state;
+  }
+
+  function saveLayout(immediate) {
+    if (!editMode) return;
+    const payload = buildLayout();
+    currentLayout = payload;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      fetch(saveUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (data) { if (data && data.layout) currentLayout = data.layout; })
+        .catch(function () {});
+    }, immediate ? 0 : 350);
+  }
+
+  function setEditing(active) {
+    editMode = active;
+    root.classList.toggle('dashboard-editing', active);
+    editButton.textContent = active ? 'Bearbeitung beenden' : 'Dashboard bearbeiten';
+    if (resetButton) resetButton.style.display = active ? 'inline-flex' : '';
+    allBlocks().forEach(function (block) { block.draggable = active; });
+  }
+
+  root.addEventListener('pointerdown', function (event) {
+    const handle = event.target.closest('.dashboard-drag-handle');
+    dragArmedBlock = editMode && handle ? handle.closest('.dashboard-block') : null;
+  });
+
+  root.addEventListener('dragstart', function (event) {
+    const block = event.target.closest('.dashboard-block');
+    if (!editMode || !block || dragArmedBlock !== block) {
+      event.preventDefault();
+      return;
+    }
+    draggedBlock = block;
+    block.classList.add('dashboard-dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', block.dataset.dashboardBlock || 'dashboard-block');
+  });
+
+  root.addEventListener('dragover', function (event) {
+    if (!editMode || !draggedBlock) return;
+    const zone = event.target.closest('.dashboard-zone');
+    if (!zone || !root.contains(zone)) return;
+    event.preventDefault();
+    zone.classList.add('dashboard-drop-active');
+    const targetBlock = event.target.closest('.dashboard-block');
+    if (targetBlock && targetBlock !== draggedBlock && targetBlock.parentElement === zone) {
+      const rect = targetBlock.getBoundingClientRect();
+      const before = event.clientY < rect.top + rect.height / 2;
+      zone.insertBefore(draggedBlock, before ? targetBlock : targetBlock.nextSibling);
+    } else if (!targetBlock || targetBlock.parentElement !== zone) {
+      zone.appendChild(draggedBlock);
+    }
+  });
+
+  root.addEventListener('dragleave', function (event) {
+    const zone = event.target.closest('.dashboard-zone');
+    if (zone && !zone.contains(event.relatedTarget)) zone.classList.remove('dashboard-drop-active');
+  });
+
+  root.addEventListener('drop', function (event) {
+    if (!editMode || !draggedBlock) return;
+    event.preventDefault();
+    root.querySelectorAll('.dashboard-drop-active').forEach(function (zone) { zone.classList.remove('dashboard-drop-active'); });
+    saveLayout(true);
+  });
+
+  root.addEventListener('dragend', function () {
+    if (draggedBlock) draggedBlock.classList.remove('dashboard-dragging');
+    draggedBlock = null;
+    dragArmedBlock = null;
+    root.querySelectorAll('.dashboard-drop-active').forEach(function (zone) { zone.classList.remove('dashboard-drop-active'); });
+    saveLayout(true);
+  });
+
+  let resizeState = null;
+  root.addEventListener('pointerdown', function (event) {
+    const handle = event.target.closest('.dashboard-resize-handle');
+    if (!editMode || !handle) return;
+    event.preventDefault();
+    const block = handle.closest('.dashboard-block');
+    if (!block) return;
+    resizeState = {
+      block: block,
+      zone: block.parentElement,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: block.getBoundingClientRect().width,
+      startHeight: block.getBoundingClientRect().height
+    };
+    document.body.classList.add('dashboard-resizing');
+    handle.setPointerCapture(event.pointerId);
+  });
+
+  root.addEventListener('pointermove', function (event) {
+    if (!resizeState) return;
+    const block = resizeState.block;
+    const zone = resizeState.zone;
+    const zoneWidth = Math.max(zone.getBoundingClientRect().width, 1);
+    const nextWidth = Math.max(180, resizeState.startWidth + event.clientX - resizeState.startX);
+    const columnWidth = zoneWidth / zoneColumns();
+    const nextSpan = Math.max(3, Math.min(12, Math.round(nextWidth / columnWidth)));
+    setBlockWidth(block, nextSpan);
+
+    const nextHeight = Math.max(120, Math.min(1400, Math.round((resizeState.startHeight + event.clientY - resizeState.startY) / 10) * 10));
+    setBlockHeight(block, nextHeight);
+  });
+
+  root.addEventListener('pointerup', function (event) {
+    if (!resizeState) return;
+    try { event.target.releasePointerCapture(event.pointerId); } catch (e) {}
+    resizeState = null;
+    document.body.classList.remove('dashboard-resizing');
+    saveLayout(true);
+  });
+
+  editButton.addEventListener('click', function () {
+    const nextState = !editMode;
+    if (!nextState) saveLayout(true);
+    setEditing(nextState);
+  });
+
+  if (resetButton) {
+    resetButton.addEventListener('click', function () {
+      fetch(resetUrl, { method: 'POST' })
+        .then(function () { window.location.reload(); })
+        .catch(function () { window.location.reload(); });
+    });
+  }
+
+  applyLayout(currentLayout);
+  setEditing(false);
+})();
+</script>
 {% endblock %}
