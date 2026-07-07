@@ -61,7 +61,7 @@
       <option value="{{ keyring }}" {% if mirror.keyring == keyring %}selected{% endif %}>{{ keyring }}</option>
       {% endfor %}
     </select>
-    <small>Neue Keyrings kannst du im Bereich „Keyrings“ hochladen oder importieren.</small>
+    <small>Neue Keys verwaltest du im Bereich „Keyrings“. Bei Profil-Keyrings wird hier der generierte Profil-Keyring angezeigt; „Kein zusätzlicher Keyring“ entfernt die zentrale Profil-Keyring-Zuordnung.</small>
 
     <label>Erwarteter Key-Fingerprint optional</label>
     <input name="keyring_fingerprint" value="{{ mirror.keyring_fingerprint or '' }}" placeholder="Fingerprint ohne oder mit Leerzeichen">

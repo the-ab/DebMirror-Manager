@@ -1,34 +1,30 @@
 # DebMirror Manager
 
-### Änderung v0.1.45
+DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Die Status-Badges `aktiv #ID` und `queue #ID` in der gemeinsamen Dashboard-Tabelle sind jetzt direkt anklickbar und öffnen den zugehörigen Job. Deaktivierte Mirror-Profile und deaktivierte bzw. nicht ausführbare Benutzerskripte können nicht mehr normal gestartet werden; Dry-Run bleibt für deaktivierte Mirror-Profile möglich.
-
-
-DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`, zusätzlich können eigene Benutzerskripte wie `lftp`- oder `rsync`-Synchronisationen als Jobs ausgeführt und geplant werden.
-
-Aktuelle Version: **0.1.45**
+Aktuelle Version: **0.1.63**
 
 ## Grundprinzip
 
 - Mirror-Profile erzeugen kontrollierte `debmirror`-Befehle.
-- Benutzerskripte werden als Dateien aus einem fest definierten Verzeichnis ausgeführt.
-- Alle Jobs laufen über Warteschlange, Logs und Historie weiter, auch wenn die WebUI geschlossen ist.
-- Die WebUI speichert Konfigurationen in SQLite und `settings.json`.
-- Große Verzeichnisse werden nicht blockierend berechnet, sondern über einen Größen-Cache im Hintergrund.
+- Benutzerskripte werden nur aus einem fest definierten Verzeichnis gestartet.
+- Alle Mirror- und Script-Jobs laufen über Warteschlange, Logs und Historie.
+- Konfigurationen liegen in SQLite und `settings.json`.
+- Große Verzeichnisse werden nicht bei jedem Seitenaufruf berechnet, sondern über einen Größen-Cache gepflegt.
+- GPG-Keys werden zentral im Master-Keyring verwaltet; pro Mirror-Profil werden bereinigte Profil-Keyrings erzeugt.
 
 ## Standardpfade
 
 ```text
-updates/                                  Update-ZIPs im Projektordner
-backup/                                   update.sh-Backups im Projektordner
-/docker_data/debmirror-manager/data        SQLite-Datenbank und settings.json
-/docker_data/debmirror-manager/logs        WebUI- und Job-Logs
-/docker_data/debmirror-manager/keyrings    GPG-Keyrings
-/docker_data/debmirror-manager/import-scripts  Import alter debmirror-Skripte
-/docker_data/debmirror-manager/user-scripts    eigene Benutzerskripte
-/docker_data/debmirror-manager/backup      WebUI-Vollbackups
-/srv/mirror oder /mnt/linux-mirror         lokale Repository-/Mirror-Daten
+updates/                                      Update-ZIPs im Projektordner
+backup/                                       update.sh-Backups im Projektordner
+/docker_data/debmirror-manager/data           SQLite-Datenbank und settings.json
+/docker_data/debmirror-manager/logs           WebUI- und Job-Logs
+/docker_data/debmirror-manager/keyrings       GPG-Keyrings, Master-Keyring, Archiv und Profil-Keyrings
+/docker_data/debmirror-manager/import-scripts Import alter debmirror-Skripte
+/docker_data/debmirror-manager/user-scripts   eigene Benutzerskripte
+/docker_data/debmirror-manager/backup         WebUI-Vollbackups
+/srv/mirror oder /mnt/linux-mirror            lokale Repository-/Mirror-Daten
 ```
 
 Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielpfade in Profilen und Script-Größenzielen müssen deshalb innerhalb von `/mirror` liegen, z. B. `/mirror/debian` oder `/mirror/ubuntu`.
@@ -36,27 +32,13 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.45.zip
+unzip debmirror-manager-v0.1.63.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
 ```
 
-`install.sh` fragt die relevanten Werte ab, darunter:
-
-- persistenter Datenpfad
-- lokales Mirror-Verzeichnis
-- WebUI-Port
-- optionaler nginx-Mirror-HTTP-Container
-- Update- und Backup-Verzeichnisse
-- Job-Warteschlange und Retention
-- Dashboard-Limits
-- Größenberechnung
-- Speicherplatz-Sperre direkt im Block **Mirror-Speicher**
-- Zeitzone
-- Admin-Zugang
-
-Bei erneutem Aufruf liest `install.sh` vorhandene `.env`-Werte und schlägt sie als Defaults vor.
+`install.sh` fragt die relevanten Werte ab, darunter persistenter Datenpfad, lokales Mirror-Verzeichnis, WebUI-Port, optionaler nginx-Mirror-HTTP-Container, Update-/Backup-Verzeichnisse, Job-Warteschlange, Retention, Dashboard-Limits, Größenberechnung, Speicherplatz-Sperre, Zeitzone und Admin-Zugang. Bei erneutem Aufruf liest `install.sh` vorhandene `.env`-Werte und schlägt sie als Defaults vor.
 
 ## Update
 
@@ -74,119 +56,231 @@ cp /pfad/zur/debmirror-manager-vNEU.zip updates/
 ./update.sh --rebuild
 ```
 
-## Navigation und Menüpunkte
+## Navigation
 
-### Übersicht -> Dashboard
+Die Hauptnavigation ist in Bereiche gegliedert:
 
-Zeigt Speicherplatz, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks. Das Feld **Warteschlange** zeigt neben laufenden/wartenden Jobs auch laufende, wartende und vorgemerkte Größenberechnungen. Die Kachel **Profile / Benutzerskripte** ist zweigeteilt; die Bezeichnungen **Mirror-Profile** und **Benutzerskripte** sind direkt anklickbar. Mirror-Profile und Benutzerskripte werden darunter in einer gemeinsamen Tabelle mit der Spalte **Art** angezeigt. Über **Dashboard bearbeiten** können Blöcke per Maus verschoben und über den Griff unten rechts vergrößert oder verkleinert werden; das Layout wird zentral in `settings.json` gespeichert und gilt dadurch browserübergreifend. Die Bereiche **Letzte Jobs** und **Ereignisse** bleiben in Scrollboxen; die Anzahl der geladenen Einträge ist unter `System -> Einstellungen` konfigurierbar.
+- **Dashboard**: zentrale Übersicht, Warteschlange, Status, letzte Jobs und Healthchecks.
+- **Mirror**: Profile, Profilgenerator, Benutzerskripte, Skript-Import, Zeitpläne und Healthchecks.
+- **Betrieb**: Jobs, Ereignisse, Benachrichtigungen und laufende Auswertungen.
+- **System**: Einstellungen, Generator-Einstellungen, Keyrings, Backup/Wiederherstellen, Konfig Export/Import, Benutzer und API.
 
-### Mirror -> Profile
+## Dashboard
 
-Liste aller debmirror-Profile. Pro Profil werden Status, Ziel, Größe, Zeitplan, letzter Job und Aktionen angezeigt. Die Größe stammt aus dem Größen-Cache.
+Das Dashboard zeigt Speicher, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks.
 
-Im Bearbeiten-Dialog kann im Bereich **Zeitplan** ein einfacher Profilzeitplan gesetzt werden. Wird dort nicht **Manuell** gewählt, legt die WebUI automatisch einen Eintrag in **Betrieb -> Zeitpläne** an. Dieser Eintrag ist dort als **Profilzeitplan** gekennzeichnet, kann einzeln aktiviert/deaktiviert und gelöscht werden. Beim Löschen eines Profilzeitplans wird das zugehörige Mirror-Profil automatisch wieder auf **Manuell** gestellt.
+Wichtige Bereiche:
 
-### Mirror -> Profilgenerator
+- **Speicher**: Auslastung des Mirror-Basisverzeichnisses.
+- **Warteschlange**: laufende/wartende Jobs sowie laufende, wartende oder vorgemerkte Größenberechnungen.
+- **Profile / Benutzerskripte**: zweigeteilte Schnellübersicht; die Überschriften sind direkt anklickbar.
+- **Mirror-Profile / Benutzerskripte**: gemeinsame Tabelle mit Art, Status, Größe, Zeitplan, letztem Job und Aktion.
+- **Letzte Jobs**: jüngste Jobs mit Status, Quelle, Dauer und Exit-Code.
+- **Ereignisse**: aktuelle System- und WebUI-Meldungen.
+- **Healthchecks**: zuletzt geprüfte Mirror-URLs.
 
-Prüft allgemeine APT-Repository-Adressen und ist nicht auf Debian oder Ubuntu beschränkt. Die URL-Prüfung sucht nach `dists/`, `Release`, `InRelease`, `Packages`-Dateien, vorhandenen Suites, Komponenten, Architekturen und möglichen GPG-Key-Dateien wie `.gpg`, `.asc`, `Release.key` oder `archive-keyring.gpg`. Die Verzeichnistiefe ist einstellbar; Standard ist `5`, maximal `10`. Während der Prüfung zeigt ein Live-Statusfenster fortlaufend, welche Verzeichnisse, `dists/`-Pfade, Release-Dateien, Packages-Dateien und GPG-Key-Kandidaten geprüft werden. Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner bei Bedarf zusätzlich HTTP, wenn über HTTPS kein Repository gefunden wurde. Der Scan kann über **Prüfung stoppen** abgebrochen werden; ein laufender HTTP-Aufruf wird dabei noch beendet, danach stoppt die Prüfung.
+Über **Dashboard bearbeiten** können Blöcke mit der Maus verschoben und über den Griff unten rechts in Breite und Höhe angepasst werden. Das Layout wird zentral in `settings.json` gespeichert und gilt dadurch browserübergreifend.
 
-Wenn an der eingegebenen Hauptadresse kein verwendbares Repository gefunden wird, prüft der Generator automatisch konfigurierbare Suchpfad-Variablen wie `deb`, `debian`, `repo`, `repository`, `apt` oder `packages`. Diese Liste wird zentral unter `System -> Generator-Einstellungen` gepflegt und kann dort erweitert werden, damit auch Hersteller-Repositories mit eigenen Pfaden später besser erkannt werden. Bleibt auch diese Prüfung ohne Treffer, wird zusätzlich je Suchvariable ein direkt angehängtes `dists/` geprüft, zum Beispiel `<basis>/repository/dists/`. Auch direkte Suite-Pfade wie `dists/stable/InRelease` oder direkt gefundene `dists/`-Verzeichnisse werden als normale Repository-Struktur erkannt und nicht mehr als flaches Repository behandelt. Aus erkannten `dists/`-Repositories kann ein neues Mirror-Profil vorbereitet werden. Gefundene GPG-Keys werden angezeigt, aber noch nicht automatisch importiert.
+Statuswerte in der gemeinsamen Tabelle **Mirror-Profile / Benutzerskripte**:
 
-Der bisherige Standardgenerator für bekannte Debian-/Ubuntu-Profile bleibt darunter erhalten. Die Generator-Daten und Suchpfad-Variablen sind unter `System -> Generator-Einstellungen` erweiterbar.
+```text
+idle       kein laufender oder wartender Job
+aktiv #ID  Job läuft; die Job-ID ist anklickbar
+queue #ID  Job wartet; die Job-ID ist anklickbar
+no key     Mirror-Profil hat keinen erzeugten/zugeordneten Profil-Keyring
+inaktiv    Profil oder Skript ist deaktiviert
+error      Start nicht möglich, z. B. Pflichtwerte fehlen oder Skript ist nicht ausführbar
+```
 
-### Mirror -> Skript-Import
+## Mirror-Profile
 
-Importiert bestehende debmirror-Skripte. Unterstützt direkte `debmirror`-Befehle und Variablenstrukturen wie `DEB_HOST`, `DEB_ROOT`, `DEB_DIST`, `DEB_SECT`, `DEB_ARCH`, `DEB_OPT` und Keyring-/Fingerprint-Variablen.
+Mirror-Profile enthalten alle Werte, die für einen `debmirror`-Lauf benötigt werden:
 
-### Mirror -> Keyrings
+- Methode: `rsync`, `http`, `https` oder `ftp`
+- Host und Repository-Wurzelpfad
+- Distributionen/Suites
+- Sektionen/Komponenten
+- Architekturen
+- Zielverzeichnis unter `/mirror`
+- Quellpakete optional aktivierbar
+- zusätzliche debmirror-Optionen
+- GPG-/Keyring-Zuordnung
+- Profilzeitplan
+- Aktiv-Status
 
-Verwaltet GPG-Keyrings. Keys können per Datei, URL oder Keyserver importiert werden. Fingerprints können geprüft und Profilen zugewiesen werden.
+Deaktivierte Profile können nicht normal gestartet werden, weder manuell noch per Zeitplan oder API. Dry-Runs bleiben möglich. In Listen wird ein gesperrter Start als deaktivierter/durchgestrichener Start-Button dargestellt.
 
-### Betrieb -> Jobs / Logs
+## Profilgenerator
 
-Zeigt Jobhistorie, Status, Exit-Code, Startzeit, Endzeit, Dauer und Logs. Laufende Jobs streamen Live-Logs. Nach Job-Ende wird die Fehlerauswertung oberhalb des Logs aktualisiert, ohne die komplette Seite neu zu laden.
+Der Profilgenerator prüft allgemeine APT-Repository-Adressen und ist nicht auf Debian oder Ubuntu beschränkt.
 
-### Betrieb -> Zeitpläne
+Die Prüfung erkennt unter anderem:
 
-Flexible Jobplanung für Mirror-Profile und Benutzerskripte. Die Job-Zeitplanliste steht direkt unter den aktuellen Regeln, damit gespeicherte Jobs schneller erreichbar sind. Unterstützt:
+- `dists/`
+- `Release` und `InRelease`
+- `Packages`, `Packages.gz`, `Packages.xz`
+- Suites/Distributionen
+- Komponenten/Sektionen
+- Architekturen
+- mögliche GPG-Key-Dateien wie `.gpg`, `.asc`, `Release.key`, `archive-keyring.gpg`
+- flache APT-Repositories
+- direkte Suite-Pfade wie `dists/stable/InRelease`
+
+Die Verzeichnistiefe ist einstellbar; Standard ist `5`, maximal `10`. Während der Prüfung zeigt ein Live-Statusfenster die geprüften Verzeichnisse, `dists/`-Pfade, Release-Dateien, Packages-Dateien und GPG-Key-Kandidaten. Der Scan kann über **Prüfung stoppen** abgebrochen werden.
+
+Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner zuerst HTTPS und bei Bedarf zusätzlich HTTP. Wenn an der Hauptadresse kein Repository gefunden wird, werden die Suchpfad-Variablen aus **System -> Generator-Einstellungen** relativ zur eingegebenen Adresse geprüft, z. B. `deb`, `debian`, `repo`, `repository`, `apt`, `packages`, `mirror`, `download` oder `public`. Bleibt auch das ohne Treffer, wird je Suchvariable zusätzlich ein direkt angehängtes `dists/` geprüft.
+
+## Benutzerskripte
+
+Benutzerskripte werden aus `/docker_data/debmirror-manager/user-scripts` geladen. Die WebUI führt nur Dateien direkt in diesem Verzeichnis aus; freie Shell-Eingabe ist nicht vorgesehen.
+
+Funktionen:
+
+- Skripte hochladen oder vorhandene Dateien erkennen
+- Aktiv-Schalter pro Skript
+- Start nur, wenn Skript aktiv und ausführbar ist
+- Zeitpläne für einzelne, mehrere oder alle aktiven Skripte
+- Joblogs und Historie wie bei Mirror-Profilen
+- Zielverzeichnis nur für Größenberechnung
+- manuelle Größenberechnung nur für dieses eine Skriptziel
+
+Beim Löschen eines Skripts wird der gespeicherte Aktiv-Status auf inaktiv gesetzt.
+
+## Skript-Import
+
+Der Skript-Import hilft beim Übernehmen bestehender debmirror-Skripte. Unterstützt werden direkte `debmirror`-Befehle sowie Variablenstrukturen wie:
+
+```text
+DEB_HOST
+DEB_ROOT
+DEB_DIST
+DEB_SECT
+DEB_ARCH
+DEB_OPT
+DEB_KEYRING
+DEB_KEY_FINGERPRINT
+```
+
+Gefundene Werte werden in ein Mirror-Profil übernommen und können vor dem Speichern geprüft werden.
+
+## Keyring-Verwaltung
+
+Die Keyring-Verwaltung arbeitet mit drei Ebenen:
+
+```text
+Master-Keyring
+├── zentrale Arbeitsdatei mit allen verwalteten Keys
+Archiv
+├── importierte Originaldateien als Quelle/Backup
+Profil-Keyrings
+└── automatisch erzeugte Keyrings pro Mirror-Profil mit nur den zugeordneten Keys
+```
+
+### Master-Keyring
+
+Der Master-Keyring liegt unter:
+
+```text
+/app/keyrings/master/debmirror-manager-master.gpg
+```
+
+Die Oberfläche zeigt Hauptkeys, Subkeys, Gesamt-Fingerprints, Größe, Pfad und GPG-Hinweise. Einzelne Master-Keys können exportiert oder entfernt werden. Das Entfernen wird blockiert, solange der Key noch einem Mirror-Profil zugeordnet ist.
+
+Es gibt zwei Neuaufbau-Arten:
+
+- **Master-Keyring neu aufbauen**: baut aus Archivdateien neu auf, lässt bewusst entfernte Keys weiter ausgeschlossen.
+- **Vollständig neu aufbauen**: baut aus allen Archivdateien neu auf und hebt vorherige Entfernsperren auf.
+
+### Import
+
+Keys können importiert werden über:
+
+- Datei-Upload
+- URL
+- eingefügten ASCII-Key
+- Keyserver
+
+Vor dem Import wird eine Vorschau angezeigt mit UID, Key-ID, Fingerprint, Algorithmus, Schlüssellänge, Erstellungsdatum, Ablaufdatum, Status und Subkeys. Bereits vorhandene Fingerprints werden als Duplikate erkannt; ein Import ist dann nur bewusst mit **Duplikate erlauben** möglich.
+
+Neue Importdateien werden im Archiv abgelegt und zusätzlich in den Master-Keyring übernommen. Archivdateien können einzeln gelöscht werden; das Löschen einer Archivdatei entfernt nicht automatisch den aktuell vorhandenen Master-Key.
+
+### Profil-Keyrings
+
+Mirror-Profile bekommen keine komplette Importdatei und nicht den kompletten Master-Keyring zugewiesen. Stattdessen werden einzelne Fingerprints aus dem Master-Keyring ausgewählt. Daraus erzeugt die WebUI einen bereinigten Profil-Keyring unter:
+
+```text
+/app/keyrings/profiles/
+```
+
+Dieser Profil-Keyring enthält nur die zugeordneten Hauptkeys inklusive der benötigten Subkeys. Dadurch enthalten auch Client-Exports nur die Keys, die für dieses Profil nötig sind.
+
+### Fehlerdiagnose für fehlende Keys
+
+Wenn ein Dry-Run oder Job fehlende GPG-Keys meldet, prüft die Fehlerdiagnose:
+
+- gemeldete `NO_PUBKEY`-IDs
+- Hauptkey-Fingerprints
+- Signing-Subkeys
+- Master-Keyring-Treffer
+- Archiv-Keyring-Treffer
+
+Master-Keyring und Archiv-Keyring werden getrennt angezeigt. Mehrere benötigte Fingerprints können gemeinsam ausgewählt und mit einem einzigen Button dem Profil zugeordnet werden. Archiv-Treffer werden zuerst in den Master-Keyring übernommen; danach wird ein bereinigter Profil-Keyring erzeugt.
+
+## Client-Export
+
+Auf der Mirror-Detailseite kann ein Client-Export erzeugt werden. Der Export enthält:
+
+- bereinigten Profil-Keyring als `.gpg`
+- Deb822-`.sources`-Datei
+- klassische `.list`-Datei
+- README mit Installationsbefehlen für den Client
+
+Der Client-Export verwendet nur den Profil-Keyring des ausgewählten Mirror-Profils und enthält dadurch keine unnötigen Zusatzkeys.
+
+## Jobs und Logs
+
+Alle Jobs laufen über dieselbe Warteschlange. Jobseiten zeigen Status, Quelle, Startzeit, Endzeit, Dauer, Exit-Code und Logausgabe. Laufende Jobs streamen Live-Logs. Nach Job-Ende wird die Fehlerauswertung oberhalb des Logs aktualisiert, ohne die komplette Seite neu zu laden.
+
+Statusbeispiele:
+
+```text
+queued       wartet
+running      läuft
+success      erfolgreich beendet
+error        Fehler
+stopping     Stop angefordert
+stopped      gestoppt
+```
+
+## Zeitpläne
+
+Zeitpläne unterstützen:
 
 - tägliche Uhrzeiten, auch mehrere pro Tag, z. B. `06:00,18:00`
 - Wochentage
 - Intervalle in Stunden
 - globale Mirror-Zeitpläne für alle aktiven Profile
-- Benutzerskript-Zeitpläne für alle, einzelne oder selektierte Skripte
+- Zeitpläne für einzelne oder ausgewählte Profile
+- Benutzerskript-Zeitpläne für einzelne, mehrere oder alle aktiven Skripte
+- Aktivieren/Deaktivieren einzelner gespeicherter Zeitpläne
 - Bearbeiten und Löschen bestehender Zeitpläne
-- einzelnes Aktivieren/Deaktivieren gespeicherter Zeitpläne
-- Profilzeitpläne aus Mirror-Profilen; beim Löschen wird das Profil auf manuell zurückgesetzt
+- Profilzeitpläne aus dem Mirror-Profilformular
 
-### Mirror -> Benutzerskripte
-
-Benutzerskripte besitzen einen eigenen Aktiv-Schalter. Nur aktive und ausführbare Skripte können manuell oder per Zeitplan gestartet werden. Beim Löschen eines Skripts wird sein gespeicherter Aktiv-Status auf inaktiv gesetzt.
-
-Eigene Skripte werden aus `/docker_data/debmirror-manager/user-scripts` geladen. Die WebUI führt nur Dateien direkt in diesem Verzeichnis aus, keine freie Shell-Eingabe.
-
-Pro Skript kann ein **Zielverzeichnis nur für Größenberechnung** gesetzt werden. Dieses Ziel wird nicht an das Skript übergeben und verändert die Skriptausführung nicht. Es dient ausschließlich dazu, die Größe eines durch das Skript erzeugten Sync-/Mirror-Verzeichnisses anzuzeigen. Größe, Status, Berechnungszeit und der Button **Größe neu berechnen** werden in einer kompakten Zeile dargestellt. Eine manuelle Größenberechnung betrifft nur dieses eine Skriptziel. Nach beendeten Zeitplan-Skript-Jobs wird die automatische Größenberechnung nur vorgemerkt und erst nach Ruhefenster sowie ohne aktive/wartende Jobs gestartet.
-
-### Betrieb -> Healthchecks
-
-Prüft lokale Repository-URLs wie `http://mirror.local/debian/dists/bookworm/Release`. Healthchecks können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen.
-
-### Betrieb -> Benachrichtigung
-
-Konfiguriert SMTP-Mail, Telegram und Discord. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Gespeichert werden diese Werte verschlüsselt, sofern der Container mit dem normalen Image inklusive `cryptography` läuft.
-
-### System -> Einstellungen
-
-Zentrale Einstellungen für Darstellung, Jobs, Warteschlange, Log-Aufbewahrung, Dashboard-Limits, Größenberechnung, Zeitzone und Container-Prüfung. Die Seite ist bewusst in kompakte Blöcke geteilt, damit lange Formulare und Statusbereiche wie **Mirror-Speicher** nicht unnötig viel Leerraum erzeugen. Die Optionen **Speicherplatz-Sperre für Mirror-Jobs** und **Grenzwert Mirror-Speichernutzung** befinden sich direkt im Block **Mirror-Speicher**, weil sie sich auf genau dieses Basisverzeichnis beziehen:
-
-- Darstellung und Dark Mode
-- maximale parallele Jobs
-- Job-/Log-Aufbewahrung
-- Dashboard-Limits
-- Größenberechnung und Cache
-- automatische Größenberechnung nach ruhigem Job-Fenster
-- Speicherplatz-Sperre direkt im Block **Mirror-Speicher**
-- Zeitzone
-- Container-/Programmprüfung
-
-### System -> Generator-Einstellungen
-
-Verwaltet die Generator-Daten und Suchpfad-Variablen für den Profilgenerator. Suchpfade wie `deb`, `debian`, `repo`, `repository`, `apt` oder `packages` werden bei erfolgloser Hauptprüfung automatisch relativ zur eingegebenen Repository-Adresse geprüft.
-
-### System -> Backup / Wiederherstellen
-
-Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, Keyrings, Import-Skripte und Benutzerskripte. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
-
-### System -> Konfig Export/Import
-
-Exportiert/importiert Konfigurationsdaten wie Mirror-Profile, Healthchecks, Zeitpläne, Generator-Konfiguration und nicht-sensitive Einstellungen. Geheimwerte aus Benachrichtigungen werden dabei nicht exportiert.
-
-### System -> Benutzer
-
-Verwaltet Benutzer und Rollen:
-
-- `admin`: volle Verwaltung
-- `user`: rein betrachtender Zugriff
-
-Normale Benutzer dürfen keine kritischen Änderungen durchführen und keine Jobs starten/stoppen.
-
-### System -> API
-
-Verwaltet API-Tokens. Tokens werden nur einmal beim Erstellen angezeigt und danach nur gehasht gespeichert. Erste REST-Endpunkte liefern Status, Mirror, Jobs, Healthchecks und Benutzerskripte.
-
-### Hilfe -> Anleitung / Release Notes
-
-Zeigt diese Anleitung und die Versionshistorie innerhalb der WebUI an. Die Versionsnummer oben in der Kopfzeile ist ebenfalls direkt mit den Release Notes verlinkt.
-
-## Warteschlange und Parallelität
-
-Alle Mirror- und Benutzerskript-Jobs laufen über dieselbe Warteschlange. `MAX_PARALLEL_JOBS` legt fest, wie viele Jobs gleichzeitig laufen dürfen. Standard ist `1`. Weitere Jobs bleiben mit Status `queued` in der Warteschlange.
+Die Job-Zeitplanliste steht direkt unter **Aktuelle Regeln**, damit gespeicherte Jobs schnell erreichbar sind. Wird ein Profilzeitplan in der Zeitplanliste gelöscht, wird das zugehörige Mirror-Profil automatisch wieder auf **Manuell** gestellt.
 
 ## Größenberechnung
 
-Die Größe wird über einen Cache verwaltet. Dashboard und Listen starten keine Massenberechnung. Eine manuelle Berechnung auf einer Profil- oder Skriptseite betrifft nur dieses konkrete Ziel. Manuell gestartete Mirror- oder Benutzerskript-Jobs lösen keine automatische Größenberechnung mehr aus.
+Die Größenberechnung nutzt einen Cache und wird nicht automatisch für alle Profile gestartet.
 
-Automatische Größenberechnungen entstehen ausschließlich durch Marker nach beendeten Zeitplan-Jobs. Dabei wird nur das Ziel vorgemerkt, das zu diesem beendeten Zeitplan-Job gehört: das Mirror-Profil oder das Benutzerskript-Zielverzeichnis. Die Berechnung startet erst, wenn keine Jobs laufen oder warten und innerhalb des eingestellten Ruhefensters kein weiterer geplanter Job fällig ist. Während laufender oder wartender Jobs wird keine Größenberechnung gestartet; sie bleibt sichtbar als wartend/vorgemerkt.
+Regeln:
+
+- manuelle Größenberechnung betrifft nur das ausgewählte Profil oder Skriptziel
+- manuell gestartete Jobs lösen keine automatische Größenberechnung aus
+- automatische Größenberechnung entsteht nur nach beendeten Zeitplan-Jobs
+- pro beendetem Zeitplan-Job wird nur das betroffene Profil oder Skriptziel vorgemerkt
+- Berechnung startet nur, wenn keine Jobs laufen oder warten
+- eingestelltes Ruhefenster wird berücksichtigt
+- laufende oder wartende Größenberechnungen werden in der Warteschlange sichtbar
 
 Wichtige Einstellungen:
 
@@ -207,16 +301,64 @@ STORAGE_GUARD_ENABLED=1
 STORAGE_GUARD_THRESHOLD_PERCENT=95
 ```
 
-Dry-Runs und Benutzerskripte bleiben erlaubt. Die Einstellungen dazu werden in der WebUI im Block **System -> Einstellungen -> Mirror-Speicher** gepflegt.
+Dry-Runs und Benutzerskripte bleiben erlaubt. Die Einstellungen befinden sich unter **System -> Einstellungen -> Mirror-Speicher**.
+
+## Healthchecks
+
+Healthchecks prüfen lokale Repository-URLs wie:
+
+```text
+http://mirror.local/debian/dists/bookworm/Release
+```
+
+Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen.
+
+## Benachrichtigungen
+
+Unter **Betrieb -> Benachrichtigung** können SMTP-Mail, Telegram und Discord konfiguriert werden. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Gespeichert werden diese Werte verschlüsselt, sofern der Container mit dem normalen Image inklusive `cryptography` läuft.
+
+## Systembereiche
+
+### Einstellungen
+
+Zentrale Einstellungen für Darstellung, Jobs, Warteschlange, Log-Aufbewahrung, Dashboard-Limits, Größenberechnung, Zeitzone, Container-Prüfung und Mirror-Speicher.
+
+### Generator-Einstellungen
+
+Verwaltet Generator-Daten und Suchpfad-Variablen für den Profilgenerator.
+
+### Backup / Wiederherstellen
+
+Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, Keyrings, Import-Skripte und Benutzerskripte. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
+
+### Konfig Export/Import
+
+Exportiert und importiert Konfigurationsdaten wie Mirror-Profile, Healthchecks, Zeitpläne, Generator-Konfiguration und nicht-sensitive Einstellungen. Geheimwerte aus Benachrichtigungen werden nicht exportiert.
+
+### Benutzer
+
+Rollen:
+
+```text
+admin  volle Verwaltung
+user   rein betrachtender Zugriff
+```
+
+Normale Benutzer dürfen keine kritischen Änderungen durchführen und keine Jobs starten oder stoppen.
+
+### API
+
+API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeichert. Erste REST-Endpunkte liefern Status, Mirror, Jobs, Healthchecks und Benutzerskripte.
 
 ## Sicherheit
 
 - keine freie Shell-Eingabe in der WebUI
-- Benutzerskripte nur aus einem festen Verzeichnis
+- Benutzerskripte nur aus festem Verzeichnis
+- Start-Sperren greifen im Backend, nicht nur in der Oberfläche
 - Benutzerrollen trennen Admin- und Lesezugriff
-- Passwörter von Benutzern werden gehasht gespeichert
+- Benutzerpasswörter werden gehasht gespeichert
 - Legacy-Adminwerte werden aus `settings.json` entfernt und in die SQLite-Benutzerverwaltung migriert
-- SMTP-Passwort, Telegram-Token und Discord-Webhook werden nicht im Formular angezeigt und verschlüsselt in `settings.json` gespeichert
+- Benachrichtigungs-Geheimwerte werden verschlüsselt gespeichert
 - API-Tokens werden nur gehasht gespeichert
 - Key-Fingerprints sollten gegen Hersteller-/Projekt-Dokumentation geprüft werden
 
@@ -229,4 +371,8 @@ cd debmirror-manager
 ./set-admin-password.sh
 ```
 
-Das Skript schreibt den Admin-Zugang direkt in die SQLite-Benutzerverwaltung. `settings.json` enthält danach keine Legacy-Admin-Zugangswerte mehr.
+Das Skript schreibt den Admin-Zugang direkt in die SQLite-Benutzerverwaltung.
+
+## Hilfe
+
+Die WebUI enthält eine Anleitung und separate Release Notes. Die Anleitung beschreibt die Funktionen des Projekts; die Versionshistorie steht ausschließlich in den Release Notes.

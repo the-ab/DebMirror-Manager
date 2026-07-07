@@ -494,3 +494,143 @@ button.locked-button:disabled {
 @media (max-width: 760px) {
   .script-enabled-form .inline-check { justify-content: flex-start; }
 }
+
+/* Keyring-Verwaltung */
+.keyring-list {
+  display: grid;
+  gap: 1rem;
+}
+.keyring-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1rem;
+  background: var(--panel);
+}
+.keyring-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.keyring-card h3 {
+  margin-top: 0;
+  margin-bottom: .25rem;
+}
+.keyring-meta-edit {
+  margin: .75rem 0;
+}
+.keyring-table-wrap {
+  max-height: 420px;
+  overflow: auto;
+}
+.keyring-detail-table code,
+.keyring-card code {
+  word-break: break-all;
+}
+.subkey-row {
+  opacity: .86;
+}
+.subkey-row td:first-child {
+  padding-left: 1.5rem;
+}
+.keyring-usage ul {
+  margin: .25rem 0 0;
+  padding-left: 1.25rem;
+}
+.compact-form label {
+  margin-bottom: .35rem;
+}
+
+@media (max-width: 760px) {
+  .keyring-card-head {
+    display: block;
+  }
+  .keyring-card-head .actions {
+    margin-top: .75rem;
+  }
+}
+
+/* v0.1.49: Profil-Keyring-Zuordnung */
+.checkbox-list {
+  display: grid;
+  gap: .35rem;
+  margin: .5rem 0 .75rem;
+}
+.compact-list {
+  margin: .25rem 0 .75rem;
+  padding-left: 1.15rem;
+}
+.compact-list li,
+.usage-list li {
+  margin-bottom: .45rem;
+}
+.keyring-assign-form select {
+  min-width: min(360px, 100%);
+}
+
+/* v0.1.50: Master-Keyring und Fingerprint-Zuordnung */
+.keyring-option-group {
+  border: 1px solid rgba(148, 163, 184, .25);
+  border-radius: .65rem;
+  padding: .55rem .65rem;
+  display: grid;
+  gap: .35rem;
+}
+.key-fingerprint-choice {
+  padding-left: .35rem;
+}
+.key-fingerprint-choice code {
+  word-break: break-all;
+}
+
+/* v0.1.58: Fehlerdiagnose Key-Auswahl */
+.diagnosis-key-groups {
+  display: grid;
+  gap: .9rem;
+  margin: .75rem 0;
+}
+.diagnosis-key-group {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: .75rem;
+  background: rgba(148, 163, 184, .06);
+}
+.diagnosis-key-group h4 {
+  margin: 0 0 .55rem;
+}
+.diagnosis-key-form table code {
+  word-break: break-all;
+}
+
+/* v0.1.61: Profilübersicht mobil und Status ohne Zeilenbruch */
+.mirror-profile-table .status-cell,
+.mirror-profile-table .status-cell .badge,
+.mirror-profile-table .status-cell .badge-link {
+  white-space: nowrap;
+}
+.mirror-profile-table .status-cell { min-width: 86px; }
+@media (max-width: 760px) {
+  .mirror-profile-table,
+  .mirror-profile-table tbody,
+  .mirror-profile-table tr,
+  .mirror-profile-table td { display: block; width: 100%; }
+  .mirror-profile-table thead { display: none; }
+  .mirror-profile-table tr { border-bottom: 1px solid var(--line); padding: .65rem .55rem; }
+  .mirror-profile-table tr:last-child { border-bottom: 0; }
+  .mirror-profile-table td { border: 0; padding: .24rem 0; }
+  .mirror-profile-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--muted);
+    font-size: .72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin-bottom: .08rem;
+  }
+  .mirror-profile-table td[data-label="Name"]::before { display: none; }
+  .mirror-profile-table td[data-label="Name"] { padding-bottom: .4rem; }
+  .mirror-profile-table td[data-label="Aktionen"] { justify-content: flex-start; gap: .35rem; }
+  .mirror-profile-table td[data-label="Aktionen"] .button,
+  .mirror-profile-table td[data-label="Aktionen"] button { margin-top: .15rem; }
+}

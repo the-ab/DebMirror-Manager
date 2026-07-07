@@ -18,6 +18,7 @@ import shutil
 import stat
 import smtplib
 import sqlite3
+import tempfile
 import subprocess
 import threading
 import time
@@ -59,6 +60,11 @@ from app import APP_NAME, APP_VERSION
 APP_DATA_DIR = Path(os.environ.get("APP_DATA_DIR", "/app/data"))
 APP_LOG_DIR = Path(os.environ.get("APP_LOG_DIR", "/app/logs"))
 APP_KEYRING_DIR = Path(os.environ.get("APP_KEYRING_DIR", "/app/keyrings"))
+KEY_IMPORT_PREVIEW_DIR = APP_DATA_DIR / "key-import-previews"
+MASTER_KEYRING_DIR = APP_KEYRING_DIR / "master"
+MASTER_KEYRING_PATH = MASTER_KEYRING_DIR / "debmirror-manager-master.gpg"
+PROFILE_KEYRING_DIR = APP_KEYRING_DIR / "profiles"
+ARCHIVE_KEYRING_DIR = APP_KEYRING_DIR / "archive"
 APP_BACKUP_DIR = Path(os.environ.get("APP_BACKUP_DIR", "/app/backups"))
 IMPORT_SCRIPT_DIR = Path(os.environ.get("IMPORT_SCRIPT_DIR", "/import-scripts"))
 USER_SCRIPT_DIR = Path(os.environ.get("USER_SCRIPT_DIR", "/user-scripts"))
@@ -97,6 +103,10 @@ except Exception:
 APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
 APP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 APP_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
+KEY_IMPORT_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+MASTER_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
+PROFILE_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
+ARCHIVE_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
 APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 IMPORT_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 USER_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1441,6 +1451,30 @@ def mirror_dashboard_issue(mirror: Dict[str, Any]) -> str:
     return ""
 
 
+def mirror_keyring_dashboard_notice(mirror: Dict[str, Any]) -> str:
+    """Return a non-blocking dashboard hint for missing profile keyrings."""
+    mirror_id = int(mirror.get("id") or 0)
+    raw_keyring = str(mirror.get("keyring") or "").strip()
+    assignments: List[Dict[str, str]] = []
+    if mirror_id:
+        try:
+            assignments = mirror_keyring_assignment_items(mirror_id)
+        except Exception:
+            assignments = []
+    if not raw_keyring and not assignments:
+        return "Kein Keyring zugeordnet."
+    if assignments and not raw_keyring:
+        return "Profil-Keyring noch nicht erzeugt."
+    if raw_keyring:
+        try:
+            keyring_path = Path(allowed_keyring_path(raw_keyring))
+            if not keyring_path.exists():
+                return "Profil-Keyring-Datei fehlt." if assignments else "Keyring-Datei fehlt."
+        except Exception:
+            return "Keyring-Pfad prüfen."
+    return ""
+
+
 def mirror_start_block_reason(mirror: Dict[str, Any], *, dry_run: bool = False) -> str:
     issue = mirror_dashboard_issue(mirror)
     if issue:
@@ -1466,6 +1500,9 @@ def dashboard_entity_status(kind: str, item: Dict[str, Any]) -> Dict[str, str]:
         issue = mirror_dashboard_issue(item)
         if issue:
             return {"label": "error", "class": "error", "title": issue}
+        keyring_notice = mirror_keyring_dashboard_notice(item)
+        if keyring_notice:
+            return {"label": "no key", "class": "warning", "title": keyring_notice}
         if int(item.get("enabled") or 0) != 1:
             return {"label": "inaktiv", "class": "muted", "title": "Mirror-Profil ist deaktiviert"}
         return {"label": "idle", "class": "idle", "title": "Kein Job läuft und kein Job wartet"}
@@ -1869,41 +1906,63 @@ def keyring_fingerprint_matches(path: str, expected: str) -> bool:
 
 
 def extract_missing_pubkeys(log_text: str) -> List[Dict[str, str]]:
-    """Extract truly missing OpenPGP keys from debmirror/gpgv output.
+    """Extract OpenPGP key IDs/fingerprints that need attention.
 
-    Wichtig: `gpgv: using RSA key ...` ist kein Fehler. Diese Zeile erscheint
-    auch bei erfolgreicher Signaturprüfung. Als fehlend gilt ein Key nur bei
-    NO_PUBKEY/ERRSIG oder eindeutigen Fehlerzeilen.
+    `gpgv: using RSA key ...` allein ist kein Fehler. Gewertet werden nur
+    Fehler-Kontexte wie NO_PUBKEY, ERRSIG, EXPKEYSIG, REVKEYSIG oder BADSIG.
+    Die Funktion sammelt kurze Key-IDs, Long-Key-IDs und volle Fingerprints,
+    damit die spätere Diagnose gegen Master- und Archiv-Keyrings robust
+    auflösen kann.
     """
     text = log_text or ""
-    no_pubkeys = [normalize_fingerprint(m.group(1)) for m in re.finditer(r"NO_PUBKEY\s+([A-Fa-f0-9]{8,40})", text, re.I)]
-    full_keys = [normalize_fingerprint(m.group(1)) for m in re.finditer(r"using\s+(?:RSA|DSA|ECDSA|EDDSA)?\s*key\s+([A-Fa-f0-9]{32,40})", text, re.I)]
-    # ERRSIG-Zeilen enthalten bei gpgv häufig zuerst die Key-ID und später den vollen Fingerprint.
+    missing_ids: List[str] = []
+    full_keys: List[str] = []
+
+    def add_missing(value: str) -> None:
+        clean = normalize_fingerprint(value)
+        if 8 <= len(clean) <= 40 and clean not in missing_ids:
+            missing_ids.append(clean)
+
+    def add_full(value: str) -> None:
+        clean = normalize_fingerprint(value)
+        if 32 <= len(clean) <= 40 and clean not in full_keys:
+            full_keys.append(clean)
+
+    for m in re.finditer(r"NO_PUBKEY\s+([A-Fa-f0-9]{8,40})", text, re.I):
+        add_missing(m.group(1))
+    for m in re.finditer(r"(?:ERRSIG|EXPKEYSIG|REVKEYSIG|BADSIG)\s+([A-Fa-f0-9]{8,40})", text, re.I):
+        add_missing(m.group(1))
+    for m in re.finditer(r"using\s+(?:RSA|DSA|ECDSA|EDDSA)?\s*key\s+([A-Fa-f0-9]{32,40})", text, re.I):
+        add_full(m.group(1))
+
+    # ERRSIG-Zeilen enthalten bei gpgv häufig zuerst die Key-ID und später
+    # optional weitere Fingerprint-ähnliche Tokens.
+    error_markers = ("NO_PUBKEY", "ERRSIG", "EXPKEYSIG", "REVKEYSIG", "BADSIG")
     for line in text.splitlines():
-        if "ERRSIG" in line:
+        if any(marker in line.upper() for marker in error_markers):
             for token in line.split():
                 clean = normalize_fingerprint(token)
                 if len(clean) >= 32:
-                    full_keys.append(clean)
+                    add_full(clean)
+                    add_missing(clean)
                 elif 8 <= len(clean) <= 16:
-                    no_pubkeys.append(clean)
+                    add_missing(clean)
 
-    # Wenn nur `using RSA key` und `Good signature` vorhanden sind, ist nichts fehlend.
-    if not no_pubkeys:
+    if not missing_ids:
         return []
 
     results: List[Dict[str, str]] = []
     seen = set()
-    for short in no_pubkeys:
+    for missing in missing_ids:
         full = ""
         for candidate in full_keys:
-            if candidate.endswith(short):
+            if fingerprint_matches(candidate, missing):
                 full = candidate
                 break
-        key = full or short
+        key = full or missing
         if key not in seen:
             seen.add(key)
-            results.append({"key_id": short, "fingerprint": full or short, "has_full_fingerprint": "1" if len(full or short) >= 32 else "0"})
+            results.append({"key_id": missing, "fingerprint": key, "has_full_fingerprint": "1" if len(key) >= 32 else "0"})
     return results
 
 
@@ -1920,7 +1979,7 @@ def import_key_from_keyserver(fingerprint: str, filename: Optional[str] = None, 
     filename = secure_filename(filename or default_keyring_filename(fp))
     if not filename.endswith(".gpg"):
         filename += ".gpg"
-    dest = (APP_KEYRING_DIR / filename).resolve(strict=False)
+    dest = unique_keyring_path(filename, ARCHIVE_KEYRING_DIR)
     base = APP_KEYRING_DIR.resolve(strict=False)
     if base != dest and base not in dest.parents:
         raise ValueError("Ungültiger Keyring-Dateiname.")
@@ -1944,6 +2003,7 @@ def import_key_from_keyserver(fingerprint: str, filename: Optional[str] = None, 
         if fp and not any(x.endswith(fp) or fp.endswith(x) or x == fp for x in fps):
             dest.unlink(missing_ok=True)
             raise ValueError("Importierter Key passt nicht zum erwarteten Fingerprint.")
+        import_keyring_into_master(dest)
         return dest
     finally:
         shutil.rmtree(tmp_home, ignore_errors=True)
@@ -1952,19 +2012,31 @@ def import_key_from_keyserver(fingerprint: str, filename: Optional[str] = None, 
 def maybe_dearmor_key_file(path: Path) -> Path:
     """Convert ASCII-armored keys to binary .gpg keyrings for gpgv/debmirror."""
     try:
-        head = path.read_bytes()[:128]
+        head = path.read_bytes()[:256]
     except Exception:
         return path
     if b"-----BEGIN PGP PUBLIC KEY BLOCK-----" not in head:
         return path
     dest = path.with_suffix(".gpg")
+    # gpg --dearmor darf Eingabe und Ausgabe nicht dieselbe Datei sein.
+    # Bei hochgeladenen .gpg-Dateien mit ASCII-Inhalt wird deshalb erst in
+    # eine temporäre Datei geschrieben und danach atomar ersetzt.
+    output = dest
+    tmp_output: Optional[Path] = None
+    if dest == path:
+        tmp_output = path.with_suffix(path.suffix + ".dearmored.tmp")
+        output = tmp_output
     result = subprocess.run(
-        ["gpg", "--batch", "--yes", "--dearmor", "--output", str(dest), str(path)],
+        ["gpg", "--batch", "--yes", "--dearmor", "--output", str(output), str(path)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30, check=False,
     )
     if result.returncode != 0:
+        if tmp_output:
+            tmp_output.unlink(missing_ok=True)
         raise RuntimeError((result.stdout or "gpg --dearmor fehlgeschlagen.").strip())
-    if dest != path:
+    if tmp_output:
+        tmp_output.replace(dest)
+    elif dest != path:
         path.unlink(missing_ok=True)
     return dest
 
@@ -1974,8 +2046,17 @@ def assign_keyring_to_mirror(mirror_id: Optional[int], keyring_path: Path, finge
         return
     fp = normalize_fingerprint(fingerprint)
     if not fp:
-        fps = key_fingerprints(keyring_path)
-        fp = normalize_fingerprint(fps[0]) if fps else ""
+        fps = [normalize_fingerprint(x) for x in key_fingerprints(keyring_path)]
+        fp = fps[0] if len(fps) == 1 else ""
+    if fp:
+        try:
+            if not fingerprint_in_master(fp):
+                import_keyring_into_master(keyring_path)
+            assign_master_fingerprint_to_mirror(int(mirror_id), fp)
+            return
+        except Exception:
+            pass
+    # Fallback für externe/alte Pfade: direktes Feld weiterhin kompatibel setzen.
     with db() as con:
         con.execute(
             "UPDATE mirrors SET keyring=?, keyring_fingerprint=?, updated_at=? WHERE id=?",
@@ -4831,10 +4912,62 @@ def mirror_detail(mirror_id: int):
             dry_cmd = "Befehl konnte nicht generiert werden."
     with db() as con:
         jobs = enrich_jobs_duration([row_to_dict(r) for r in con.execute("SELECT * FROM jobs WHERE mirror_id=? ORDER BY id DESC LIMIT ?", (mirror_id, min(job_list_limit(), 200))).fetchall()])
+    migrate_legacy_keyring_assignments()
     stats = mirror_stats(mirror)
     storage = disk_usage_info(MIRROR_BASE)
     start_block_reason = mirror_start_block_reason(mirror, dry_run=False)
-    return render_template("mirror_detail.html", mirror=mirror, jobs=jobs, schedules=list_schedules_for_mirror(mirror_id), command=cmd, dry_command=dry_cmd, command_error=command_error, stats=stats, storage=storage, start_block_reason=start_block_reason)
+    return render_template(
+        "mirror_detail.html",
+        mirror=mirror,
+        jobs=jobs,
+        schedules=list_schedules_for_mirror(mirror_id),
+        command=cmd,
+        dry_command=dry_cmd,
+        command_error=command_error,
+        stats=stats,
+        storage=storage,
+        start_block_reason=start_block_reason,
+        profile_keyrings=assigned_keyring_rows_for_mirror(mirror_id),
+        profile_keyring_names=mirror_keyring_assignment_names(mirror_id),
+        profile_keyring_values=[assignment_value(item.get("filename", ""), item.get("fingerprint", "")) for item in mirror_keyring_assignment_items(mirror_id)],
+        keyring_options=master_key_rows(),
+    )
+
+
+@app.route("/mirrors/<int:mirror_id>/keyrings", methods=["POST"])
+@require_admin
+def mirror_keyrings_save(mirror_id: int):
+    mirror = get_mirror(mirror_id)
+    if not mirror:
+        flash("Mirror nicht gefunden.", "danger")
+        return redirect(url_for("mirrors_page"))
+    try:
+        action = request.form.get("action", "save_assignments")
+        if action == "save_assignments":
+            assignment_values = request.form.getlist("keyring_assignments") or request.form.getlist("keyrings")
+            if assignment_values:
+                generated = save_mirror_keyring_assignments_and_rebuild(mirror_id, assignment_values)
+                flash(f"Profil-Keyring gespeichert und gezielt aus dem Master-Keyring erzeugt: {generated.name}", "success")
+                add_event("info", f"Profil-Keyring aktualisiert: {mirror.get('name')}")
+            else:
+                clear_managed_keyring_assignments(mirror_id, clear_db_fields=True)
+                flash("Alle Keyring-Zuordnungen wurden entfernt.", "success")
+                add_event("info", f"Alle Keyring-Zuordnungen entfernt: {mirror.get('name')}")
+        elif action == "rebuild_profile_keyring":
+            generated = rebuild_profile_keyring(mirror_id)
+            flash(f"Profil-Keyring neu erzeugt: {generated.name}", "success")
+            add_event("info", f"Profil-Keyring neu erzeugt: {mirror.get('name')}")
+        elif action == "remove_assignment":
+            filename = request.form.get("filename", "")
+            fingerprint = request.form.get("fingerprint", "")
+            unassign_keyring_filename_from_mirror(mirror_id, filename, fingerprint)
+            flash("Keyring-Zuordnung entfernt.", "success")
+            add_event("info", f"Keyring-Zuordnung entfernt: {mirror.get('name')} / {filename}")
+        else:
+            raise ValueError("Unbekannte Keyring-Aktion.")
+    except Exception as exc:
+        flash(str(exc), "danger")
+    return redirect(url_for("mirror_detail", mirror_id=mirror_id))
 
 
 @app.route("/mirrors/<int:mirror_id>/size/recalculate", methods=["POST"])
@@ -4869,7 +5002,7 @@ def mirror_edit(mirror_id: int):
         "mirror_form.html",
         mirror=mirror,
         title="Mirror bearbeiten",
-        keyrings=list_keyring_files(),
+        keyrings=mirror_keyring_form_options(mirror),
         return_url=url_for("mirror_detail", mirror_id=mirror_id),
         return_label="Zurück zum Profil",
     )
@@ -4877,6 +5010,7 @@ def mirror_edit(mirror_id: int):
 
 def save_mirror(mirror_id: Optional[int]):
     try:
+        had_managed_keyring_assignments = bool(mirror_keyring_assignment_items(int(mirror_id))) if mirror_id is not None else False
         name = request.form.get("name", "").strip()
         if not name:
             raise ValueError("Name darf nicht leer sein.")
@@ -4939,6 +5073,15 @@ def save_mirror(mirror_id: Optional[int]):
                     list(values.values()) + [mirror_id],
                 )
             sync_profile_schedule(con, int(mirror_id), name, values)
+        if not created_new and mirror_id is not None and had_managed_keyring_assignments:
+            # If the legacy keyring field is explicitly cleared or changed away from
+            # the generated profile keyring, the central fingerprint assignments must
+            # be cleared as well. Otherwise the old key appears again in the
+            # "Profil-Keyrings" block and can be rebuilt unintentionally.
+            if not keyring:
+                clear_managed_keyring_assignments(int(mirror_id), clear_db_fields=False)
+            elif not is_profile_keyring_path(keyring):
+                clear_managed_keyring_assignments(int(mirror_id), clear_db_fields=False)
         add_event("info", f"Mirror {'angelegt' if created_new else 'aktualisiert'}: {name}")
         flash("Mirror gespeichert.", "success")
         return redirect(url_for("mirror_detail", mirror_id=mirror_id))
@@ -6041,12 +6184,67 @@ def script_import():
 # Keyrings
 # ---------------------------------------------------------------------------
 
-def list_keyring_files() -> List[str]:
-    files = []
-    for p in APP_KEYRING_DIR.glob("*"):
-        if p.is_file() and p.suffix.lower() in {".gpg", ".asc", ".key"}:
-            files.append(str(p))
-    return sorted(files)
+def list_keyring_files(include_archived: bool = False) -> List[str]:
+    """Return imported keyring source files.
+
+    By default only legacy files directly below APP_KEYRING_DIR are returned.
+    Archived import files are hidden from the normal UI, but are still used
+    when the Master-Keyring is rebuilt. Generated master/profile keyrings are
+    intentionally never returned here.
+    """
+    files: List[str] = []
+    search_dirs = [APP_KEYRING_DIR]
+    if include_archived:
+        search_dirs.append(ARCHIVE_KEYRING_DIR)
+    for directory in search_dirs:
+        try:
+            for p in directory.glob("*"):
+                if p.is_file() and p.suffix.lower() in {".gpg", ".asc", ".key"}:
+                    files.append(str(p))
+        except Exception:
+            continue
+    return sorted(set(files))
+
+
+def is_profile_keyring_path(value: str) -> bool:
+    try:
+        if not value:
+            return False
+        path = Path(value)
+        if not path.is_absolute():
+            path = APP_KEYRING_DIR / path
+        resolved = path.resolve(strict=False)
+        base = PROFILE_KEYRING_DIR.resolve(strict=False)
+        return resolved == base or base in resolved.parents
+    except Exception:
+        return False
+
+
+def remove_generated_profile_keyring_files(mirror_id: int) -> None:
+    try:
+        for path in PROFILE_KEYRING_DIR.glob(f"mirror-{int(mirror_id)}-*.gpg"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+    except Exception as exc:
+        log_webui_exception(f"remove generated profile keyrings mirror_id={mirror_id}", exc)
+
+
+def clear_managed_keyring_assignments(mirror_id: int, *, clear_db_fields: bool = True) -> None:
+    set_mirror_keyring_assignment_items(int(mirror_id), [])
+    remove_generated_profile_keyring_files(int(mirror_id))
+    if clear_db_fields:
+        with db() as con:
+            con.execute("UPDATE mirrors SET keyring='', keyring_fingerprint='', updated_at=? WHERE id=?", (now_iso(), int(mirror_id)))
+
+
+def mirror_keyring_form_options(mirror: Optional[Dict[str, Any]] = None) -> List[str]:
+    options = list_keyring_files()
+    current = str((mirror or {}).get("keyring") or "").strip()
+    if current and current not in options:
+        # Generated profile keyrings are hidden from the normal source-file list,
+        # but the edit form still has to keep the current value selected.
+        options.insert(0, current)
+    return options
 
 
 def key_fingerprints(path: Path) -> List[str]:
@@ -6069,6 +6267,1244 @@ def key_fingerprints(path: Path) -> List[str]:
         return []
 
 
+def gpg_show_key_output(path: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["gpg", "--show-keys", "--with-colons", "--with-fingerprint", "--with-subkey-fingerprint", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        return result.stdout or ""
+    except Exception as exc:
+        return f"err::::::{exc}"
+
+
+def gpg_keyring_list_output(path: Path) -> str:
+    """List keys from a real GnuPG keyring/keybox file.
+
+    `gpg --show-keys file.gpg` works for exported key blocks, but not reliably
+    for keybox/keyring files created with `--keyring`. The Master-Keyring is
+    such a real keyring, so it must be read with `--no-default-keyring --keyring`.
+    """
+    if not path.exists():
+        return ""
+    tmp_home = gpg_temp_home("debmirror-master-list-")
+    try:
+        result = subprocess.run(
+            [
+                "gpg", "--batch", "--homedir", str(tmp_home),
+                "--no-default-keyring", "--keyring", str(path),
+                "--list-keys", "--with-colons", "--with-fingerprint", "--with-subkey-fingerprint",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return result.stdout or ""
+    except Exception as exc:
+        return f"err::::::{exc}"
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def gpg_keyring_query_output(path: Path, expected: str) -> str:
+    """Ask GnuPG to resolve one key id/fingerprint inside a real keyring.
+
+    This is more reliable than only comparing parsed fingerprints when gpgv
+    reports a short signing-subkey ID. GnuPG can resolve such IDs to the
+    corresponding primary key if the key is already present in the Master-Keyring.
+    """
+    expected_n = normalize_fingerprint(expected)
+    if not expected_n or not path.exists():
+        return ""
+    tmp_home = gpg_temp_home("debmirror-master-query-")
+    try:
+        result = subprocess.run(
+            [
+                "gpg", "--batch", "--homedir", str(tmp_home),
+                "--no-default-keyring", "--keyring", str(path),
+                "--keyid-format", "LONG",
+                "--list-keys", "--with-colons", "--with-fingerprint", "--with-subkey-fingerprint",
+                expected_n,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return result.stdout or ""
+    except Exception as exc:
+        return f"err::::::{exc}"
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def gpg_imported_keyfile_list_output(path: Path, expected: str = "") -> str:
+    """Import a public-key file into a temporary GNUPGHOME and list it.
+
+    Archive files may be exported public-key blocks, binary keyrings or older
+    imported files.  `--show-keys` is fast but does not always expose the same
+    subkey information that a real keyring list exposes.  This fallback imports
+    the file into an isolated temporary home and asks GnuPG for the normalized
+    key/subkey view.
+    """
+    if not path.exists():
+        return ""
+    expected_n = normalize_fingerprint(expected)
+    tmp_home = gpg_temp_home("debmirror-archive-import-list-")
+    try:
+        imp = subprocess.run(
+            ["gpg", "--batch", "--homedir", str(tmp_home), "--import", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=40,
+            check=False,
+        )
+        if imp.returncode != 0:
+            # Some old .gpg files are real keyring files rather than importable
+            # key blocks.  Return the import output as warning context.
+            return imp.stdout or ""
+        cmd = [
+            "gpg", "--batch", "--homedir", str(tmp_home), "--keyid-format", "LONG",
+            "--list-keys", "--with-colons", "--with-fingerprint", "--with-subkey-fingerprint",
+        ]
+        if expected_n:
+            cmd.append(expected_n)
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=40,
+            check=False,
+        )
+        return result.stdout or ""
+    except Exception as exc:
+        return f"err::::::{exc}"
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def merge_gpg_detail_sets(*detail_sets: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge parsed GPG details from different read methods.
+
+    The same archive file can be readable as an exported key block, as a real
+    GnuPG keyring or after temporary import.  Merging prevents the UI and error
+    diagnosis from losing subkeys that only one read path exposes.
+    """
+    merged: Dict[str, Any] = {"keys": [], "fingerprints": [], "subkey_fingerprints": [], "all_fingerprints": [], "warnings": [], "raw": ""}
+    key_index: Dict[str, Dict[str, Any]] = {}
+
+    def add_unique(seq: List[str], value: str) -> None:
+        value_n = normalize_fingerprint(value)
+        if value_n and value_n not in seq:
+            seq.append(value_n)
+
+    for details in detail_sets:
+        if not isinstance(details, dict):
+            continue
+        for warning in details.get("warnings") or []:
+            if warning and warning not in merged["warnings"]:
+                merged["warnings"].append(warning)
+        if details.get("raw"):
+            merged["raw"] += ("\n" if merged["raw"] else "") + str(details.get("raw") or "")
+        for fp in details.get("fingerprints") or []:
+            add_unique(merged["fingerprints"], fp)
+        for fp in details.get("subkey_fingerprints") or []:
+            add_unique(merged["subkey_fingerprints"], fp)
+        for fp in details.get("all_fingerprints") or []:
+            add_unique(merged["all_fingerprints"], fp)
+
+        for key in details.get("keys") or []:
+            primary_fp = normalize_fingerprint(key.get("fingerprint") or "")
+            primary_id = normalize_fingerprint(key.get("key_id") or "")
+            key_id = primary_fp or primary_id
+            if not key_id:
+                continue
+            if key_id not in key_index:
+                copy = dict(key)
+                copy["fingerprint"] = primary_fp
+                copy["uids"] = list(key.get("uids") or [])
+                copy["subkeys"] = []
+                key_index[key_id] = copy
+                merged["keys"].append(copy)
+            target = key_index[key_id]
+            for field in ["validity", "length", "algorithm", "key_id", "created", "expires", "status", "status_class", "fingerprint"]:
+                if not target.get(field) and key.get(field):
+                    target[field] = key.get(field)
+            existing_uids = {u.get("uid") for u in target.get("uids") or [] if isinstance(u, dict)}
+            for uid in key.get("uids") or []:
+                if isinstance(uid, dict) and uid.get("uid") not in existing_uids:
+                    target.setdefault("uids", []).append(uid)
+                    existing_uids.add(uid.get("uid"))
+            existing_subs = {normalize_fingerprint(s.get("fingerprint") or s.get("key_id") or "") for s in target.get("subkeys") or [] if isinstance(s, dict)}
+            for sub in key.get("subkeys") or []:
+                if not isinstance(sub, dict):
+                    continue
+                sub_key = normalize_fingerprint(sub.get("fingerprint") or sub.get("key_id") or "")
+                if sub_key and sub_key not in existing_subs:
+                    target.setdefault("subkeys", []).append(dict(sub))
+                    existing_subs.add(sub_key)
+                    add_unique(merged["subkey_fingerprints"], sub.get("fingerprint") or "")
+                    add_unique(merged["all_fingerprints"], sub.get("fingerprint") or "")
+
+    # Keep primary fingerprints first, then subkeys/other fingerprints.
+    ordered_all: List[str] = []
+    for fp in merged["fingerprints"]:
+        add_unique(ordered_all, fp)
+    for fp in merged["all_fingerprints"]:
+        add_unique(ordered_all, fp)
+    merged["all_fingerprints"] = ordered_all
+    return merged
+
+
+def parse_gpg_colon_output(output: str) -> Dict[str, Any]:
+    keys: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+    current_sub: Optional[Dict[str, Any]] = None
+    warnings: List[str] = []
+    all_fingerprints: List[str] = []
+    subkey_fingerprints: List[str] = []
+    for line in (output or "").splitlines():
+        parts = line.split(":")
+        kind = parts[0] if parts else ""
+        if kind == "pub":
+            status, status_class = gpg_validity_label(parts[1] if len(parts) > 1 else "", parts[6] if len(parts) > 6 else "")
+            current = {
+                "type": "pub",
+                "validity": parts[1] if len(parts) > 1 else "",
+                "length": parts[2] if len(parts) > 2 else "",
+                "algorithm": gpg_algorithm_name(parts[3] if len(parts) > 3 else ""),
+                "key_id": parts[4] if len(parts) > 4 else "",
+                "created": gpg_timestamp_to_date(parts[5] if len(parts) > 5 else ""),
+                "expires": gpg_timestamp_to_date(parts[6] if len(parts) > 6 else ""),
+                "status": status,
+                "status_class": status_class,
+                "fingerprint": "",
+                "uids": [],
+                "subkeys": [],
+            }
+            keys.append(current)
+            current_sub = None
+        elif kind == "fpr":
+            fp = normalize_fingerprint(parts[9] if len(parts) > 9 else "")
+            if fp and fp not in all_fingerprints:
+                all_fingerprints.append(fp)
+            if current_sub is not None:
+                current_sub["fingerprint"] = fp
+                if fp and fp not in subkey_fingerprints:
+                    subkey_fingerprints.append(fp)
+            elif current is not None and not current.get("fingerprint"):
+                current["fingerprint"] = fp
+        elif kind == "uid" and current is not None:
+            uid_status, uid_class = gpg_validity_label(parts[1] if len(parts) > 1 else "")
+            current["uids"].append({
+                "uid": parts[9] if len(parts) > 9 else "",
+                "status": uid_status,
+                "status_class": uid_class,
+            })
+        elif kind == "sub" and current is not None:
+            status, status_class = gpg_validity_label(parts[1] if len(parts) > 1 else "", parts[6] if len(parts) > 6 else "")
+            current_sub = {
+                "key_id": parts[4] if len(parts) > 4 else "",
+                "length": parts[2] if len(parts) > 2 else "",
+                "algorithm": gpg_algorithm_name(parts[3] if len(parts) > 3 else ""),
+                "created": gpg_timestamp_to_date(parts[5] if len(parts) > 5 else ""),
+                "expires": gpg_timestamp_to_date(parts[6] if len(parts) > 6 else ""),
+                "status": status,
+                "status_class": status_class,
+                "fingerprint": "",
+            }
+            current["subkeys"].append(current_sub)
+        elif kind == "err" or line.lower().startswith("gpg:"):
+            if line.strip() and "trustdb" not in line.lower():
+                warnings.append(line.strip())
+    fingerprints = [normalize_fingerprint(k.get("fingerprint") or "") for k in keys if normalize_fingerprint(k.get("fingerprint") or "")]
+    for fp in fingerprints:
+        if fp and fp not in all_fingerprints:
+            all_fingerprints.insert(0, fp)
+    return {
+        "keys": keys,
+        "fingerprints": fingerprints,
+        "subkey_fingerprints": subkey_fingerprints,
+        "all_fingerprints": all_fingerprints,
+        "warnings": warnings,
+        "raw": output or "",
+    }
+
+
+def master_keyring_details() -> Dict[str, Any]:
+    return parse_gpg_colon_output(gpg_keyring_list_output(MASTER_KEYRING_PATH))
+
+
+def master_key_detail_for_primary(primary_fingerprint: str) -> Dict[str, Any]:
+    primary = normalize_fingerprint(primary_fingerprint)
+    if not primary or not MASTER_KEYRING_PATH.exists():
+        return {}
+    for key in master_keyring_details().get("keys") or []:
+        if fingerprint_matches(key.get("fingerprint") or "", primary):
+            return key
+    return {}
+
+
+def merge_master_subkeys_into_archive_details(details: Dict[str, Any]) -> Dict[str, Any]:
+    """Supplement archive-file display with Master-Keyring subkey metadata.
+
+    Some exported/imported archive files are parsed differently depending on
+    whether GnuPG reads them as key blocks, legacy keyrings or an imported
+    temporary keyring.  When the same primary key is already present in the
+    Master-Keyring, use the master view as an additional metadata source so the
+    archive overview and error diagnosis show the same primary/subkey set.
+    """
+    if not isinstance(details, dict) or not MASTER_KEYRING_PATH.exists():
+        return details
+    supplements = []
+    for key in details.get("keys") or []:
+        primary = normalize_fingerprint(key.get("fingerprint") or "")
+        master_key = master_key_detail_for_primary(primary) if primary else {}
+        if master_key:
+            supplements.append({
+                "keys": [master_key],
+                "fingerprints": [normalize_fingerprint(master_key.get("fingerprint") or "")],
+                "subkey_fingerprints": [normalize_fingerprint(sub.get("fingerprint") or "") for sub in (master_key.get("subkeys") or []) if normalize_fingerprint(sub.get("fingerprint") or "")],
+                "all_fingerprints": [normalize_fingerprint(master_key.get("fingerprint") or "")] + [normalize_fingerprint(sub.get("fingerprint") or "") for sub in (master_key.get("subkeys") or []) if normalize_fingerprint(sub.get("fingerprint") or "")],
+                "warnings": [],
+                "raw": "",
+            })
+    if not supplements:
+        return details
+    merged = merge_gpg_detail_sets(details, *supplements)
+    merged["master_supplemented"] = True
+    return merged
+
+
+def archive_keyring_details(path: Path, supplement_master: bool = True) -> Dict[str, Any]:
+    details = parse_keyring_details(path)
+    return merge_master_subkeys_into_archive_details(details) if supplement_master else details
+
+
+def gpg_timestamp_to_date(value: str) -> str:
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    try:
+        ts = int(value)
+        if ts <= 0:
+            return ""
+        return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return value
+
+
+def gpg_algorithm_name(value: str) -> str:
+    mapping = {
+        "1": "RSA",
+        "2": "RSA-E",
+        "3": "RSA-S",
+        "16": "ElGamal",
+        "17": "DSA",
+        "18": "ECDH",
+        "19": "ECDSA",
+        "20": "ElGamal",
+        "22": "EdDSA",
+    }
+    value = str(value or "").strip()
+    return mapping.get(value, value or "-")
+
+
+def gpg_validity_label(value: str, expires: str = "") -> Tuple[str, str]:
+    now_ts = int(dt.datetime.now(dt.timezone.utc).timestamp())
+    try:
+        if expires and int(expires) > 0 and int(expires) < now_ts:
+            return "abgelaufen", "danger"
+    except Exception:
+        pass
+    mapping = {
+        "r": ("widerrufen", "danger"),
+        "e": ("abgelaufen", "danger"),
+        "d": ("deaktiviert", "warning"),
+        "i": ("ungültig", "warning"),
+        "-": ("unbekannt", "muted"),
+        "q": ("unbekannt", "muted"),
+        "n": ("nicht vertraut", "muted"),
+        "m": ("teilweise vertraut", "warning"),
+        "f": ("voll vertraut", "ok"),
+        "u": ("gültig", "ok"),
+    }
+    return mapping.get(str(value or "")[:1], ("unbekannt", "muted"))
+
+
+def keyring_metadata_settings() -> Dict[str, Dict[str, Any]]:
+    value = load_settings().get("keyring_metadata")
+    return value if isinstance(value, dict) else {}
+
+
+def keyring_metadata_for(filename: str) -> Dict[str, Any]:
+    meta = keyring_metadata_settings().get(filename)
+    return meta if isinstance(meta, dict) else {}
+
+
+def save_keyring_metadata(filename: str, values: Dict[str, Any]) -> None:
+    filename = secure_filename(filename)
+    if not filename:
+        raise ValueError("Ungültiger Dateiname.")
+    settings = load_settings()
+    all_meta = settings.get("keyring_metadata") if isinstance(settings.get("keyring_metadata"), dict) else {}
+    current = all_meta.get(filename) if isinstance(all_meta.get(filename), dict) else {}
+    for key, value in values.items():
+        if value is None:
+            current.pop(key, None)
+        else:
+            current[key] = value
+    current["updated_at"] = now_iso()
+    all_meta[filename] = current
+    settings["keyring_metadata"] = all_meta
+    save_settings(settings)
+
+
+
+def mirror_keyring_assignment_settings() -> Dict[str, List[Dict[str, Any]]]:
+    value = load_settings().get("mirror_keyring_assignments")
+    return value if isinstance(value, dict) else {}
+
+
+def save_mirror_keyring_assignment_settings(assignments: Dict[str, List[Dict[str, Any]]]) -> None:
+    settings = load_settings()
+    settings["mirror_keyring_assignments"] = assignments
+    save_settings(settings)
+
+
+def keyring_filename_from_path(path_value: str) -> str:
+    if not (path_value or "").strip():
+        return ""
+    try:
+        path = Path(allowed_keyring_path(path_value))
+    except Exception:
+        return ""
+    try:
+        base = APP_KEYRING_DIR.resolve(strict=False)
+        resolved = path.resolve(strict=False)
+        if base != resolved and base not in resolved.parents:
+            return ""
+    except Exception:
+        return ""
+    if path.parent.resolve(strict=False) != APP_KEYRING_DIR.resolve(strict=False):
+        return ""
+    if path.suffix.lower() not in {".gpg", ".asc", ".key"}:
+        return ""
+    return secure_filename(path.name)
+
+
+def available_keyring_names() -> List[str]:
+    names: List[str] = []
+    for file in list_keyring_files():
+        name = secure_filename(Path(file).name)
+        if name:
+            names.append(name)
+    return sorted(set(names), key=str.lower)
+
+
+def mirror_keyring_assignment_names(mirror_id: int) -> List[str]:
+    result: List[str] = []
+    for item in mirror_keyring_assignment_items(int(mirror_id)):
+        name = item.get("filename") or ""
+        if name and name not in result:
+            result.append(name)
+    return result
+
+
+def set_mirror_keyring_assignment_names(mirror_id: int, filenames: Iterable[str]) -> None:
+    set_mirror_keyring_assignment_items(int(mirror_id), [{"filename": filename, "fingerprint": ""} for filename in filenames])
+
+
+def migrate_legacy_keyring_assignments() -> None:
+    """Map old single mirror.keyring values to the new assignment list.
+
+    The actual mirror field stays untouched until the user saves or rebuilds the
+    assignment. This keeps old installations compatible and makes the existing
+    key immediately visible in the new UI.
+    """
+    assignments = mirror_keyring_assignment_settings()
+    changed = False
+    with db() as con:
+        rows = con.execute("SELECT id, keyring FROM mirrors WHERE COALESCE(keyring, '') != '' ORDER BY id").fetchall()
+    for row in rows:
+        mirror_id = int(row["id"])
+        if str(mirror_id) in assignments:
+            continue
+        name = keyring_filename_from_path(row["keyring"] or "")
+        if name and (APP_KEYRING_DIR / name).exists():
+            assignments[str(mirror_id)] = [{"filename": name, "assigned_at": now_iso(), "migrated": 1}]
+            changed = True
+    if changed:
+        save_mirror_keyring_assignment_settings(assignments)
+
+
+def gpg_temp_home(prefix: str) -> Path:
+    tmp_home = Path(tempfile.mkdtemp(prefix=prefix, dir=str(APP_DATA_DIR)))
+    tmp_home.chmod(0o700)
+    return tmp_home
+
+
+def gpg_import_to_keyring(keyring_path: Path, source_path: Path) -> None:
+    keyring_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_home = gpg_temp_home("debmirror-master-import-")
+    try:
+        result = subprocess.run(
+            [
+                "gpg", "--batch", "--yes", "--homedir", str(tmp_home),
+                "--no-default-keyring", "--keyring", str(keyring_path),
+                "--import", str(source_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            msg = result.stderr.decode("utf-8", "replace") or result.stdout.decode("utf-8", "replace") or "Key konnte nicht in den Master-Keyring importiert werden."
+            raise RuntimeError(msg.strip())
+        try:
+            keyring_path.chmod(0o644)
+        except OSError:
+            pass
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def key_fingerprints_from_keyring_file(path: Path) -> List[str]:
+    return [normalize_fingerprint(fp) for fp in key_fingerprints(path) if normalize_fingerprint(fp)]
+
+
+def master_keyring_fingerprints() -> List[str]:
+    if not MASTER_KEYRING_PATH.exists():
+        return []
+    return [normalize_fingerprint(fp) for fp in (master_keyring_details().get("fingerprints") or []) if normalize_fingerprint(fp)]
+
+
+def master_keyring_all_fingerprints() -> List[str]:
+    if not MASTER_KEYRING_PATH.exists():
+        return []
+    return [normalize_fingerprint(fp) for fp in (master_keyring_details().get("all_fingerprints") or []) if normalize_fingerprint(fp)]
+
+
+def master_keyring_status_summary() -> Dict[str, Any]:
+    details = master_keyring_details() if MASTER_KEYRING_PATH.exists() else {"keys": [], "fingerprints": [], "subkey_fingerprints": [], "all_fingerprints": [], "warnings": []}
+    archive_files = archived_keyring_rows()
+    removed = removed_master_key_fingerprints()
+    return {
+        "primary_count": len(details.get("fingerprints") or []),
+        "subkey_count": len(details.get("subkey_fingerprints") or []),
+        "all_fingerprint_count": len(details.get("all_fingerprints") or []),
+        "archive_file_count": len(archive_files),
+        "archive_primary_count": sum(len(item.get("fingerprints") or []) for item in archive_files),
+        "archive_all_fingerprint_count": sum(len(item.get("all_fingerprints") or []) for item in archive_files),
+        "removed_count": len(removed),
+        "removed_fingerprints": removed,
+        "warnings": details.get("warnings") or [],
+    }
+
+
+def fingerprint_in_master(fingerprint: str) -> bool:
+    fp = normalize_fingerprint(fingerprint)
+    if not fp:
+        return False
+    return bool(master_keyring_match(fp))
+
+
+def removed_master_key_fingerprints() -> List[str]:
+    value = load_settings().get("removed_master_key_fingerprints")
+    if not isinstance(value, list):
+        return []
+    result: List[str] = []
+    for item in value:
+        fp = normalize_fingerprint(str(item or ""))
+        if fp and fp not in result:
+            result.append(fp)
+    return result
+
+
+def save_removed_master_key_fingerprints(fingerprints: Iterable[str]) -> None:
+    cleaned: List[str] = []
+    for item in fingerprints:
+        fp = normalize_fingerprint(str(item or ""))
+        if fp and fp not in cleaned:
+            cleaned.append(fp)
+    settings = load_settings()
+    settings["removed_master_key_fingerprints"] = cleaned
+    save_settings(settings)
+
+
+def mark_master_key_removed(fingerprint: str) -> None:
+    fp = normalize_fingerprint(fingerprint)
+    if not fp:
+        return
+    values = removed_master_key_fingerprints()
+    if fp not in values:
+        values.append(fp)
+        save_removed_master_key_fingerprints(values)
+
+
+def unmark_removed_master_fingerprints(fingerprints: Iterable[str]) -> None:
+    wanted = [normalize_fingerprint(fp) for fp in fingerprints if normalize_fingerprint(fp)]
+    if not wanted:
+        return
+    current = removed_master_key_fingerprints()
+    updated = [fp for fp in current if not any(fingerprint_matches(fp, item) for item in wanted)]
+    if updated != current:
+        save_removed_master_key_fingerprints(updated)
+
+
+def delete_fingerprints_from_keyring_file(keyring_path: Path, fingerprints: Iterable[str]) -> None:
+    fps = [normalize_fingerprint(fp) for fp in fingerprints if normalize_fingerprint(fp)]
+    if not fps or not keyring_path.exists():
+        return
+    tmp_home = gpg_temp_home("debmirror-master-delete-")
+    try:
+        cmd = [
+            "gpg", "--batch", "--yes", "--homedir", str(tmp_home),
+            "--no-default-keyring", "--keyring", str(keyring_path),
+            "--delete-keys", *fps,
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
+        if result.returncode != 0:
+            msg = result.stderr.decode("utf-8", "replace") or result.stdout.decode("utf-8", "replace") or "Key konnte nicht aus dem Keyring entfernt werden."
+            # Ignore missing-key situations so a stale removal marker does not break rebuilds.
+            msg_l = msg.lower()
+            if "not found" not in msg_l and "nicht gefunden" not in msg_l and "not exported" not in msg_l:
+                raise RuntimeError(msg.strip())
+        try:
+            keyring_path.chmod(0o644)
+        except OSError:
+            pass
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def purge_removed_master_key_fingerprints_from_keyring() -> None:
+    if not MASTER_KEYRING_PATH.exists():
+        return
+    for fp in removed_master_key_fingerprints():
+        if fingerprint_in_master(fp):
+            delete_fingerprints_from_keyring_file(MASTER_KEYRING_PATH, [fp])
+
+
+def remove_key_fingerprint_metadata_for_fingerprint(fingerprint: str) -> None:
+    fp = normalize_fingerprint(fingerprint)
+    if not fp:
+        return
+    settings = load_settings()
+    all_meta = settings.get("key_fingerprint_metadata") if isinstance(settings.get("key_fingerprint_metadata"), dict) else {}
+    changed = False
+    for existing in list(all_meta.keys()):
+        if fingerprint_matches(existing, fp):
+            all_meta.pop(existing, None)
+            changed = True
+    if changed:
+        settings["key_fingerprint_metadata"] = all_meta
+        save_settings(settings)
+
+
+def remove_master_key(fingerprint: str) -> str:
+    fp = normalize_fingerprint(fingerprint)
+    if not fp:
+        raise ValueError("Kein Fingerprint angegeben.")
+    used_by = master_key_used_by(fp)
+    if used_by:
+        names = ", ".join(str(item.get("name") or f"#{item.get('id')}") for item in used_by)
+        raise ValueError(f"Key ist noch Profilen zugeordnet und kann nicht entfernt werden: {names}")
+    if not fingerprint_in_master(fp):
+        mark_master_key_removed(fp)
+        remove_key_fingerprint_metadata_for_fingerprint(fp)
+        return fp
+    delete_fingerprints_from_keyring_file(MASTER_KEYRING_PATH, [fp])
+    mark_master_key_removed(fp)
+    remove_key_fingerprint_metadata_for_fingerprint(fp)
+    return fp
+
+
+def archived_keyring_path(filename: str) -> Path:
+    name = secure_filename(filename or "")
+    if not name:
+        raise ValueError("Keine Archivdatei ausgewählt.")
+    path = (ARCHIVE_KEYRING_DIR / name).resolve(strict=False)
+    base = ARCHIVE_KEYRING_DIR.resolve(strict=False)
+    if base != path and base not in path.parents:
+        raise ValueError("Ungültiger Archivpfad.")
+    if not path.exists() or not path.is_file():
+        raise ValueError("Archivdatei nicht gefunden.")
+    return path
+
+
+def delete_archived_keyring_file(filename: str) -> str:
+    path = archived_keyring_path(filename)
+    name = path.name
+    path.unlink()
+    remove_key_fingerprint_metadata_for_file(name)
+    settings = load_settings()
+    all_meta = settings.get("keyring_metadata") if isinstance(settings.get("keyring_metadata"), dict) else {}
+    if name in all_meta:
+        all_meta.pop(name, None)
+        settings["keyring_metadata"] = all_meta
+        save_settings(settings)
+    return name
+
+
+def import_keyring_into_master(path: Path) -> List[str]:
+    if not path.exists():
+        raise ValueError(f"Keyring existiert nicht: {path}")
+    fps = key_fingerprints_from_keyring_file(path)
+    if not fps:
+        raise ValueError(f"Keyring enthält keinen erkennbaren Fingerprint: {path.name}")
+    gpg_import_to_keyring(MASTER_KEYRING_PATH, path)
+    unmark_removed_master_fingerprints(fps)
+    return fps
+
+
+def rebuild_master_keyring(include_removed: bool = False) -> List[str]:
+    if include_removed:
+        # Vollständiger Neuaufbau: zuvor bewusst aus dem Master entfernte
+        # Fingerprints werden wieder aus den Archivdateien zugelassen.
+        save_removed_master_key_fingerprints([])
+    tmp_path = MASTER_KEYRING_PATH.with_suffix(".gpg.tmp")
+    tmp_path.unlink(missing_ok=True)
+    imported: List[str] = []
+    for file in list_keyring_files(include_archived=True):
+        path = Path(file)
+        details = parse_keyring_details(path)
+        fps = [normalize_fingerprint(fp) for fp in (details.get("fingerprints") or []) if normalize_fingerprint(fp)]
+        if not fps:
+            continue
+        gpg_import_to_keyring(tmp_path, path)
+        for fp in fps:
+            if fp not in imported:
+                imported.append(fp)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    if tmp_path.exists():
+        tmp_path.replace(MASTER_KEYRING_PATH)
+        try:
+            MASTER_KEYRING_PATH.chmod(0o644)
+        except OSError:
+            pass
+    else:
+        MASTER_KEYRING_PATH.unlink(missing_ok=True)
+    if not include_removed:
+        purge_removed_master_key_fingerprints_from_keyring()
+    return master_keyring_fingerprints()
+
+
+def export_fingerprints_from_master(fingerprints: Iterable[str], armor: bool = False) -> bytes:
+    if not MASTER_KEYRING_PATH.exists():
+        rebuild_master_keyring()
+    if not MASTER_KEYRING_PATH.exists():
+        raise ValueError("Master-Keyring ist leer oder wurde noch nicht erzeugt.")
+    fps: List[str] = []
+    for fp in fingerprints:
+        clean = normalize_fingerprint(fp)
+        if not clean:
+            continue
+        primary = matching_master_fingerprint(clean) or clean
+        if primary and primary not in fps:
+            fps.append(primary)
+    if not fps:
+        raise ValueError("Keine Fingerprints für den Export angegeben.")
+    tmp_home = gpg_temp_home("debmirror-master-export-")
+    try:
+        cmd = [
+            "gpg", "--batch", "--homedir", str(tmp_home),
+            "--no-default-keyring", "--keyring", str(MASTER_KEYRING_PATH),
+        ]
+        if armor:
+            cmd.append("--armor")
+        cmd.extend(["--export", *fps])
+        exp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=60)
+        if exp.returncode != 0 or not exp.stdout:
+            msg = exp.stderr.decode("utf-8", "replace") or "Keys konnten nicht aus dem Master-Keyring exportiert werden."
+            raise RuntimeError(msg.strip())
+        return exp.stdout
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def assignment_value(filename: str, fingerprint: str = "") -> str:
+    name = secure_filename(filename or "")
+    fp = normalize_fingerprint(fingerprint or "")
+    if fp and not name:
+        return f"master|{fp}"
+    return f"{name}|{fp}" if fp else name
+
+
+def parse_assignment_value(value: str) -> Dict[str, str]:
+    value = str(value or "").strip()
+    if "|" in value:
+        name, fp = value.split("|", 1)
+    else:
+        name, fp = value, ""
+    name = secure_filename(name or "")
+    fp = normalize_fingerprint(fp or "")
+    if name in {"master", "__master__"}:
+        name = ""
+    return {"filename": name, "fingerprint": fp}
+
+
+def mirror_keyring_assignment_items(mirror_id: int) -> List[Dict[str, str]]:
+    assignments = mirror_keyring_assignment_settings()
+    rows = assignments.get(str(mirror_id))
+    result: List[Dict[str, str]] = []
+    seen = set()
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict):
+                name = secure_filename(row.get("filename") or "")
+                fp = normalize_fingerprint(row.get("fingerprint") or "")
+            else:
+                parsed = parse_assignment_value(str(row or ""))
+                name = parsed["filename"]
+                fp = parsed["fingerprint"]
+            key = (name, fp)
+            if (name or fp) and key not in seen:
+                seen.add(key)
+                result.append({"filename": name, "fingerprint": fp})
+    return result
+
+
+def set_mirror_keyring_assignment_items(mirror_id: int, items: Iterable[Dict[str, str]]) -> None:
+    cleaned: List[Dict[str, Any]] = []
+    seen = set()
+    for item in items:
+        name = secure_filename(item.get("filename") or "")
+        fp = normalize_fingerprint(item.get("fingerprint") or "")
+        if not name and not fp:
+            continue
+        if name:
+            path = APP_KEYRING_DIR / name
+            if not path.exists() or not path.is_file():
+                # New imports are archived and assigned by fingerprint only.
+                # Keep old broken file assignments from being saved again.
+                if not fp:
+                    raise ValueError(f"Keyring existiert nicht: {name}")
+                name = ""
+            else:
+                if path.suffix.lower() not in {".gpg", ".asc", ".key"}:
+                    raise ValueError(f"Ungültiger Keyring-Typ: {name}")
+                available = key_fingerprints_from_keyring_file(path)
+                if fp and not any(fingerprint_matches(existing, fp) for existing in available):
+                    raise ValueError(f"Fingerprint {fp} wurde in {name} nicht gefunden.")
+        if fp:
+            master_match = master_keyring_match(fp)
+            if master_match:
+                fp = normalize_fingerprint(master_match.get("primary_fingerprint") or fp)
+            elif name and (APP_KEYRING_DIR / name).exists():
+                import_keyring_into_master(APP_KEYRING_DIR / name)
+                master_match = master_keyring_match(fp)
+                if master_match:
+                    fp = normalize_fingerprint(master_match.get("primary_fingerprint") or fp)
+            if not fingerprint_in_master(fp):
+                raise ValueError(f"Fingerprint {fp} ist nicht im Master-Keyring vorhanden.")
+        key = (name, fp)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({"filename": name, "fingerprint": fp, "assigned_at": now_iso()})
+    assignments = mirror_keyring_assignment_settings()
+    if cleaned:
+        assignments[str(mirror_id)] = cleaned
+    else:
+        assignments.pop(str(mirror_id), None)
+    save_mirror_keyring_assignment_settings(assignments)
+
+
+def assigned_fingerprints_for_mirror(mirror_id: int) -> List[str]:
+    fps: List[str] = []
+    for item in mirror_keyring_assignment_items(mirror_id):
+        if item.get("fingerprint") and not item.get("filename"):
+            candidates = [item["fingerprint"]]
+        else:
+            path = APP_KEYRING_DIR / item.get("filename", "")
+            if not path.exists():
+                continue
+            if item.get("fingerprint"):
+                candidates = [item["fingerprint"]]
+            else:
+                candidates = key_fingerprints_from_keyring_file(path)
+        for fp in candidates:
+            clean = normalize_fingerprint(fp)
+            if clean and clean not in fps:
+                fps.append(clean)
+    return fps
+
+
+def profile_keyring_path_for_mirror(mirror: Dict[str, Any]) -> Path:
+    mirror_id = int(mirror.get("id") or 0)
+    safe_name = secure_filename(mirror.get("name") or f"mirror-{mirror_id}") or f"mirror-{mirror_id}"
+    return PROFILE_KEYRING_DIR / f"mirror-{mirror_id}-{safe_name}.gpg"
+
+
+def rebuild_profile_keyring(mirror_id: int) -> Path:
+    mirror = get_mirror(mirror_id)
+    if not mirror:
+        raise ValueError("Mirror-Profil nicht gefunden.")
+    items = mirror_keyring_assignment_items(mirror_id)
+    generated = profile_keyring_path_for_mirror(mirror)
+    if not items:
+        clear_managed_keyring_assignments(mirror_id, clear_db_fields=True)
+        raise ValueError("Diesem Profil sind keine Keyrings zugeordnet.")
+
+    selected_fps: List[str] = []
+    for item in items:
+        if item.get("fingerprint") and not item.get("filename"):
+            fp = normalize_fingerprint(item["fingerprint"])
+            if not fingerprint_in_master(fp):
+                raise ValueError(f"Fingerprint {fp} ist nicht im Master-Keyring vorhanden.")
+            if fp not in selected_fps:
+                selected_fps.append(fp)
+            continue
+        path = (APP_KEYRING_DIR / item["filename"]).resolve(strict=False)
+        base = APP_KEYRING_DIR.resolve(strict=False)
+        if base != path and base not in path.parents:
+            raise ValueError("Ungültiger Keyring-Pfad.")
+        if not path.exists():
+            raise ValueError(f"Zugeordneter Keyring fehlt: {path.name}")
+        file_fps = import_keyring_into_master(path)
+        if item.get("fingerprint"):
+            fp = item["fingerprint"]
+            if not any(fingerprint_matches(existing, fp) for existing in file_fps):
+                raise ValueError(f"Fingerprint {fp} wurde in {path.name} nicht gefunden.")
+            if fp not in selected_fps:
+                selected_fps.append(fp)
+        else:
+            # Kompatibilität für alte Dateizuordnungen: ohne Fingerprint werden alle Keys der Datei exportiert.
+            for fp in file_fps:
+                if fp not in selected_fps:
+                    selected_fps.append(fp)
+
+    PROFILE_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
+    generated.write_bytes(export_fingerprints_from_master(selected_fps, armor=False))
+    try:
+        generated.chmod(0o644)
+    except OSError:
+        pass
+    expected = selected_fps[0] if len(selected_fps) == 1 else ""
+    with db() as con:
+        con.execute(
+            "UPDATE mirrors SET keyring=?, keyring_fingerprint=?, updated_at=? WHERE id=?",
+            (str(generated), expected, now_iso(), mirror_id),
+        )
+    return generated
+
+
+def save_mirror_keyring_assignments_and_rebuild(mirror_id: int, filenames: Iterable[str]) -> Path:
+    parsed = [parse_assignment_value(value) for value in filenames]
+    set_mirror_keyring_assignment_items(mirror_id, parsed)
+    return rebuild_profile_keyring(mirror_id)
+
+
+def assign_master_fingerprints_to_mirror(mirror_id: Optional[int], fingerprints: Iterable[str]) -> None:
+    if not mirror_id:
+        return
+    resolved: List[str] = []
+    for fingerprint in fingerprints:
+        fp = normalize_fingerprint(fingerprint)
+        if not fp:
+            continue
+        primary = matching_master_fingerprint(fp)
+        if not primary:
+            raise ValueError(f"Fingerprint {fp} ist nicht im Master-Keyring vorhanden.")
+        if primary not in resolved:
+            resolved.append(primary)
+    if not resolved:
+        raise ValueError("Kein Fingerprint für die Zuordnung angegeben.")
+    current = mirror_keyring_assignment_items(int(mirror_id))
+    for fp in resolved:
+        if not any((not item.get("filename")) and fingerprint_matches(item.get("fingerprint", ""), fp) for item in current):
+            current.append({"filename": "", "fingerprint": fp})
+    set_mirror_keyring_assignment_items(int(mirror_id), current)
+    rebuild_profile_keyring(int(mirror_id))
+
+
+def assign_master_fingerprint_to_mirror(mirror_id: Optional[int], fingerprint: str) -> None:
+    assign_master_fingerprints_to_mirror(mirror_id, [fingerprint])
+
+
+def assign_keyring_filename_to_mirror(mirror_id: Optional[int], filename: str, fingerprint: str = "") -> None:
+    if not mirror_id:
+        return
+    current = mirror_keyring_assignment_items(int(mirror_id))
+    name = secure_filename(filename or "")
+    fp = normalize_fingerprint(fingerprint or "")
+    if not name:
+        raise ValueError("Ungültiger Keyring-Dateiname.")
+    if not any(item.get("filename") == name and item.get("fingerprint", "") == fp for item in current):
+        current.append({"filename": name, "fingerprint": fp})
+    set_mirror_keyring_assignment_items(int(mirror_id), current)
+    rebuild_profile_keyring(int(mirror_id))
+
+
+def unassign_keyring_filename_from_mirror(mirror_id: int, filename: str, fingerprint: str = "") -> None:
+    raw_name = str(filename or "").strip()
+    name = secure_filename(raw_name)
+    if raw_name in {"Master-Keyring", "master", "__master__"} or name in {"Master-Keyring", "master", "__master__"}:
+        name = ""
+    fp = normalize_fingerprint(fingerprint or "")
+    current = []
+    for item in mirror_keyring_assignment_items(int(mirror_id)):
+        if name and item.get("filename") != name:
+            current.append(item)
+            continue
+        if not name and item.get("filename"):
+            current.append(item)
+            continue
+        if fp and not fingerprint_matches(item.get("fingerprint", ""), fp):
+            current.append(item)
+    if current:
+        set_mirror_keyring_assignment_items(int(mirror_id), current)
+        rebuild_profile_keyring(int(mirror_id))
+    else:
+        clear_managed_keyring_assignments(int(mirror_id), clear_db_fields=True)
+
+
+def assigned_keyring_rows_for_mirror(mirror_id: int) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for item in mirror_keyring_assignment_items(int(mirror_id)):
+        name = item.get("filename") or ""
+        fp_selected = normalize_fingerprint(item.get("fingerprint") or "")
+        if fp_selected and not name:
+            matches = [k for k in master_key_rows() if fingerprint_matches(k.get("fingerprint") or "", fp_selected)]
+            key = matches[0] if matches else {"fingerprint": fp_selected, "display_name": fp_selected[-16:], "uids": []}
+            rows.append({
+                "name": "Master-Keyring",
+                "path": str(MASTER_KEYRING_PATH),
+                "missing": 0 if matches else 1,
+                "display_name": key.get("display_name") or fp_selected[-16:],
+                "active": 1,
+                "fingerprints": [fp_selected],
+                "selected_fingerprint": fp_selected,
+                "legacy_whole_file": 0,
+                "key_entries": [key] if matches else [],
+                "master_assignment": 1,
+            })
+            continue
+        path = APP_KEYRING_DIR / name
+        if not path.exists():
+            rows.append({"name": name, "path": str(path), "missing": 1, "fingerprints": [], "selected_fingerprint": fp_selected, "display_name": name})
+            continue
+        details = parse_keyring_details(path)
+        meta = keyring_metadata_for(path.name)
+        entries = details.get("keys") or []
+        selected_entries = []
+        if fp_selected:
+            for key in entries:
+                if fingerprint_matches(key.get("fingerprint") or "", fp_selected):
+                    selected_entries.append(key)
+        else:
+            selected_entries = entries
+        rows.append({
+            "name": path.name,
+            "path": str(path),
+            "missing": 0,
+            "display_name": meta.get("display_name") or path.stem,
+            "active": 1 if meta.get("active", 1) else 0,
+            "fingerprints": [fp_selected] if fp_selected else (details.get("fingerprints") or key_fingerprints(path)),
+            "selected_fingerprint": fp_selected,
+            "legacy_whole_file": 0 if fp_selected else 1,
+            "key_entries": selected_entries,
+        })
+    return rows
+
+
+def mirror_choices_for_keyring_forms() -> List[Dict[str, Any]]:
+    return list_mirrors()
+
+
+def keyring_used_by(path: Path) -> List[Dict[str, Any]]:
+    migrate_legacy_keyring_assignments()
+    path_s = str(path)
+    name = path.name
+    result: Dict[int, Dict[str, Any]] = {}
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT id, name, enabled, keyring, keyring_fingerprint
+            FROM mirrors
+            WHERE keyring = ? OR keyring LIKE ?
+            ORDER BY name COLLATE NOCASE
+            """,
+            (path_s, f"%/{name}"),
+        ).fetchall()
+    for row in rows:
+        item = row_to_dict(row)
+        item["usage_type"] = "direkt"
+        result[int(item["id"])] = item
+    assignments = mirror_keyring_assignment_settings()
+    if isinstance(assignments, dict):
+        with db() as con:
+            for mirror_id_s, items in assignments.items():
+                if not isinstance(items, list):
+                    continue
+                found = False
+                for entry in items:
+                    entry_name = secure_filename(entry.get("filename") if isinstance(entry, dict) else str(entry or ""))
+                    if entry_name == name:
+                        found = True
+                        break
+                if not found:
+                    continue
+                try:
+                    mirror_id = int(mirror_id_s)
+                except Exception:
+                    continue
+                if mirror_id in result:
+                    result[mirror_id]["usage_type"] = "direkt + zugeordnet"
+                    continue
+                row = con.execute("SELECT id, name, enabled, keyring, keyring_fingerprint FROM mirrors WHERE id=?", (mirror_id,)).fetchone()
+                if row:
+                    item = row_to_dict(row)
+                    item["usage_type"] = "zugeordnet"
+                    result[mirror_id] = item
+    return sorted(result.values(), key=lambda m: (str(m.get("name") or "").lower(), int(m.get("id") or 0)))
+
+
+def parse_keyring_details(path: Path) -> Dict[str, Any]:
+    """Read archive/import key files with all supported GPG read paths.
+
+    Archive files and the Master-Keyring use comparable parsing, with Master metadata as fallback for archive display.
+    This avoids missing subkeys in the error diagnosis when `--show-keys` sees
+    less than GnuPG's normalized keyring/import view.
+    """
+    if not path.exists():
+        return {"keys": [], "fingerprints": [], "subkey_fingerprints": [], "all_fingerprints": [], "warnings": [], "raw": ""}
+    show_details = parse_gpg_colon_output(gpg_show_key_output(path))
+    keyring_details = parse_gpg_colon_output(gpg_keyring_list_output(path))
+    # Temporary import is the most normalized view for exported public-key
+    # blocks.  It also catches cases where a file contains multiple keys and
+    # only some subkeys were visible in the fast `--show-keys` path.
+    import_details = parse_gpg_colon_output(gpg_imported_keyfile_list_output(path))
+    return merge_gpg_detail_sets(show_details, keyring_details, import_details)
+
+
+def export_keyring_armored_bytes(path: Path) -> bytes:
+    tmp_home = Path(tempfile.mkdtemp(prefix="debmirror-key-export-", dir=str(APP_DATA_DIR)))
+    try:
+        tmp_home.chmod(0o700)
+        imp = subprocess.run(
+            ["gpg", "--batch", "--homedir", str(tmp_home), "--import", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if imp.returncode != 0:
+            raise RuntimeError((imp.stderr.decode("utf-8", "replace") or "Key konnte nicht importiert werden.").strip())
+        exp = subprocess.run(
+            ["gpg", "--batch", "--homedir", str(tmp_home), "--armor", "--export"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if exp.returncode != 0 or not exp.stdout:
+            raise RuntimeError((exp.stderr.decode("utf-8", "replace") or "Key konnte nicht exportiert werden.").strip())
+        return exp.stdout
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def export_keyring_selected_key_bytes(path: Path, fingerprint: str, armor: bool = False) -> bytes:
+    fp = normalize_fingerprint(fingerprint)
+    if not fp:
+        raise ValueError("Kein Fingerprint angegeben.")
+    available = [normalize_fingerprint(item) for item in key_fingerprints(path)]
+    if not any(fingerprint_matches(item, fp) for item in available):
+        raise ValueError("Dieser Fingerprint wurde im Keyring nicht gefunden.")
+    tmp_home = Path(tempfile.mkdtemp(prefix="debmirror-key-single-", dir=str(APP_DATA_DIR)))
+    try:
+        tmp_home.chmod(0o700)
+        imp = subprocess.run(
+            ["gpg", "--batch", "--homedir", str(tmp_home), "--import", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if imp.returncode != 0:
+            raise RuntimeError((imp.stderr.decode("utf-8", "replace") or "Key konnte nicht importiert werden.").strip())
+        cmd = ["gpg", "--batch", "--homedir", str(tmp_home)]
+        if armor:
+            cmd.append("--armor")
+        cmd.extend(["--export", fp])
+        exp = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if exp.returncode != 0 or not exp.stdout:
+            raise RuntimeError((exp.stderr.decode("utf-8", "replace") or "Einzelner Key konnte nicht exportiert werden.").strip())
+        return exp.stdout
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def keyring_binary_bytes_for_client(path: Path) -> bytes:
+    if path.suffix.lower() == ".gpg":
+        return path.read_bytes()
+    tmp_home = Path(tempfile.mkdtemp(prefix="debmirror-key-client-", dir=str(APP_DATA_DIR)))
+    try:
+        tmp_home.chmod(0o700)
+        imp = subprocess.run(
+            ["gpg", "--batch", "--homedir", str(tmp_home), "--import", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if imp.returncode != 0:
+            raise RuntimeError((imp.stderr.decode("utf-8", "replace") or "Key konnte nicht importiert werden.").strip())
+        exp = subprocess.run(
+            ["gpg", "--batch", "--homedir", str(tmp_home), "--export"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if exp.returncode != 0 or not exp.stdout:
+            raise RuntimeError((exp.stderr.decode("utf-8", "replace") or "Key konnte nicht als .gpg exportiert werden.").strip())
+        return exp.stdout
+    finally:
+        shutil.rmtree(tmp_home, ignore_errors=True)
+
+
+def client_source_lines(mirror: Dict[str, Any], base_url: str, keyring_filename: str) -> Tuple[str, str]:
+    name = secure_filename(mirror.get("name") or "mirror") or "mirror"
+    base_url = base_url.rstrip("/") + "/"
+    dists = csv_to_list(str(mirror.get("dists") or ""))
+    sections = " ".join(csv_to_list(str(mirror.get("sections") or ""))) or "main"
+    archs = csv_to_list(str(mirror.get("archs") or ""))
+    arch_part = ",".join(archs)
+    signed_by = f"/usr/share/keyrings/{keyring_filename}"
+    types = "deb deb-src" if mirror.get("source_mode") == "source" else "deb"
+    suites = " ".join(dists)
+    deb822 = [
+        f"Types: {types}",
+        f"URIs: {base_url}",
+        f"Suites: {suites}",
+        f"Components: {sections}",
+    ]
+    if arch_part:
+        deb822.append(f"Architectures: {' '.join(archs)}")
+    deb822.append(f"Signed-By: {signed_by}")
+    deb822_text = "\n".join(deb822) + "\n"
+
+    option_parts = []
+    if arch_part:
+        option_parts.append(f"arch={arch_part}")
+    option_parts.append(f"signed-by={signed_by}")
+    opts = "[" + " ".join(option_parts) + "]"
+    list_lines = []
+    for dist in dists:
+        list_lines.append(f"deb {opts} {base_url} {dist} {sections}")
+        if mirror.get("source_mode") == "source":
+            list_lines.append(f"deb-src {opts} {base_url} {dist} {sections}")
+    return deb822_text, "\n".join(list_lines) + "\n"
+
+
 def fingerprint_matches(candidate: str, expected: str) -> bool:
     candidate_n = normalize_fingerprint(candidate)
     expected_n = normalize_fingerprint(expected)
@@ -6077,24 +7513,556 @@ def fingerprint_matches(candidate: str, expected: str) -> bool:
     return candidate_n == expected_n or candidate_n.endswith(expected_n) or expected_n.endswith(candidate_n)
 
 
+def match_from_key_details(details: Dict[str, Any], expected: str) -> Dict[str, Any]:
+    """Resolve a reported key id/fingerprint to the containing primary key.
+
+    gpgv can report a short key ID, a long key ID, a full primary fingerprint
+    or a full signing-subkey fingerprint.  Older versions required a populated
+    full subkey fingerprint before matching; this missed valid matches when GPG
+    exposed only the subkey key_id in one read path.
+    """
+    expected_n = normalize_fingerprint(expected)
+    if not expected_n:
+        return {}
+
+    def candidates(*values: str) -> List[str]:
+        result: List[str] = []
+        for value in values:
+            clean = normalize_fingerprint(value or "")
+            if not clean:
+                continue
+            for candidate in (clean, clean[-16:] if len(clean) >= 16 else "", clean[-8:] if len(clean) >= 8 else ""):
+                if candidate and candidate not in result:
+                    result.append(candidate)
+        return result
+
+    def any_match(values: Iterable[str]) -> bool:
+        return any(fingerprint_matches(value, expected_n) for value in values if value)
+
+    for key in details.get("keys") or []:
+        primary_fp = normalize_fingerprint(key.get("fingerprint") or "")
+        primary_key_id = normalize_fingerprint(key.get("key_id") or "")
+        primary_candidates = candidates(primary_fp, primary_key_id)
+        if any_match(primary_candidates):
+            return {
+                "primary_fingerprint": primary_fp or primary_key_id,
+                "matched_fingerprint": primary_fp or primary_key_id,
+                "matched_key_id": primary_key_id,
+                "matched_type": "Hauptkey",
+                "key": key,
+            }
+        for sub in key.get("subkeys") or []:
+            sub_fp = normalize_fingerprint(sub.get("fingerprint") or "")
+            sub_key_id = normalize_fingerprint(sub.get("key_id") or "")
+            sub_candidates = candidates(sub_fp, sub_key_id)
+            if any_match(sub_candidates):
+                return {
+                    "primary_fingerprint": primary_fp or primary_key_id,
+                    "matched_fingerprint": sub_fp or sub_key_id,
+                    "matched_key_id": sub_key_id,
+                    "matched_type": "Subkey",
+                    "key": key,
+                    "subkey": sub,
+                }
+    return {}
+
+
+def master_keyring_match(expected: str) -> Dict[str, Any]:
+    """Return the primary master key that matches a primary/subkey fp or key-id.
+
+    The matching path is intentionally redundant: parsed Master view, direct
+    all-fingerprint scan and GnuPG query.  This prevents false negatives when
+    gpgv reports only a signing-subkey ID while the Master-Keyring already
+    contains the key.
+    """
+    expected_n = normalize_fingerprint(expected)
+    if not expected_n or not MASTER_KEYRING_PATH.exists():
+        return {}
+    details = master_keyring_details()
+    direct = match_from_key_details(details, expected_n)
+    if direct:
+        direct["match_source"] = "parsed"
+        return direct
+
+    # Last-resort parsed scan over every known primary/subkey fingerprint.
+    for key in details.get("keys") or []:
+        primary_fp = normalize_fingerprint(key.get("fingerprint") or "")
+        primary_key_id = normalize_fingerprint(key.get("key_id") or "")
+        for candidate in [primary_fp, primary_key_id, primary_fp[-16:], primary_fp[-8:], primary_key_id[-16:], primary_key_id[-8:]]:
+            if candidate and fingerprint_matches(candidate, expected_n):
+                return {
+                    "primary_fingerprint": primary_fp or primary_key_id,
+                    "matched_fingerprint": primary_fp or primary_key_id,
+                    "matched_key_id": primary_key_id,
+                    "matched_type": "Hauptkey",
+                    "key": key,
+                    "match_source": "all-fingerprint-scan",
+                }
+        for sub in key.get("subkeys") or []:
+            sub_fp = normalize_fingerprint(sub.get("fingerprint") or "")
+            sub_key_id = normalize_fingerprint(sub.get("key_id") or "")
+            for candidate in [sub_fp, sub_key_id, sub_fp[-16:], sub_fp[-8:], sub_key_id[-16:], sub_key_id[-8:]]:
+                if candidate and fingerprint_matches(candidate, expected_n):
+                    return {
+                        "primary_fingerprint": primary_fp or primary_key_id,
+                        "matched_fingerprint": sub_fp or sub_key_id,
+                        "matched_key_id": sub_key_id,
+                        "matched_type": "Subkey",
+                        "key": key,
+                        "subkey": sub,
+                        "match_source": "all-fingerprint-scan",
+                    }
+
+    queried_details = parse_gpg_colon_output(gpg_keyring_query_output(MASTER_KEYRING_PATH, expected_n))
+    queried = match_from_key_details(queried_details, expected_n)
+    if queried:
+        queried["match_source"] = "gpg-query"
+        return queried
+    return {}
+
+
+def keyring_file_match(path: Path, expected: str) -> Dict[str, Any]:
+    """Return the primary key in an exported/archive key file matching expected.
+
+    Archive files can be exported key blocks or real GnuPG keyrings.  Use the
+    merged generic parser first and then targeted GnuPG queries/imports as a
+    fallback for short key IDs from gpgv.
+    """
+    expected_n = normalize_fingerprint(expected)
+    if not expected_n or not path.exists():
+        return {}
+    details = archive_keyring_details(path)
+    direct = match_from_key_details(details, expected_n)
+    if direct:
+        direct["match_source"] = direct.get("match_source") or "archive-parsed"
+        return direct
+
+    # If the Master-Keyring can resolve the reported key/subkey but the archive
+    # parser only exposes the matching primary key, still show the archive file
+    # as a valid fallback. This avoids confusing cases where a Keyserver import
+    # says the key already exists while the diagnosis lists only the Master hit.
+    master_match = master_keyring_match(expected_n)
+    master_primary = normalize_fingerprint(master_match.get("primary_fingerprint") or "") if master_match else ""
+    archive_candidates = list(details.get("fingerprints") or []) + list(details.get("subkey_fingerprints") or []) + list(details.get("all_fingerprints") or [])
+    if master_primary and any(fingerprint_matches(fp, master_primary) or fingerprint_matches(fp, expected_n) for fp in archive_candidates):
+        result = dict(master_match)
+        result["primary_fingerprint"] = master_primary
+        result["matched_fingerprint"] = normalize_fingerprint(master_match.get("matched_fingerprint") or expected_n)
+        result["matched_type"] = master_match.get("matched_type") or "Master-Abgleich"
+        result["match_source"] = "archive-master-crosscheck"
+        return result
+    # Fallback 1: treat file as a real GnuPG keyring and ask GnuPG to resolve
+    # the expected ID/fingerprint inside it.
+    keyring_query = match_from_key_details(parse_gpg_colon_output(gpg_keyring_query_output(path, expected_n)), expected_n)
+    if keyring_query:
+        keyring_query["match_source"] = "archive-keyring-query"
+        return keyring_query
+    # Fallback 2: import into a temporary GNUPGHOME and query the normalized
+    # imported view.  This catches exported key blocks with signing subkey IDs.
+    imported_query = match_from_key_details(parse_gpg_colon_output(gpg_imported_keyfile_list_output(path, expected_n)), expected_n)
+    if imported_query:
+        imported_query["match_source"] = "archive-import-query"
+        return imported_query
+    return {}
+
+
+def matching_master_fingerprint(expected: str) -> str:
+    """Return the primary master fingerprint matching a key-id/fingerprint."""
+    match = master_keyring_match(expected)
+    return normalize_fingerprint(match.get("primary_fingerprint") or "")
+
+
 def find_matching_keyrings(expected: str) -> List[Dict[str, Any]]:
-    """Find already imported keyrings that contain the expected key id/fingerprint."""
+    """Find already imported keys that match the expected key id/fingerprint.
+
+    Master-Keyring matches are resolved from primary and subkey fingerprints to
+    the primary fingerprint, so assigning a NO_PUBKEY signing subkey creates a
+    correct, minimal profile keyring instead of falling back to an archive file.
+    """
     expected_n = normalize_fingerprint(expected)
     if not expected_n:
         return []
     matches: List[Dict[str, Any]] = []
-    for file in list_keyring_files():
+    seen = set()
+
+    def add_match(item: Dict[str, Any]) -> None:
+        fp = normalize_fingerprint(item.get("fingerprint") or "")
+        key = (item.get("kind") or "", item.get("path") or "", fp, item.get("expected") or expected_n)
+        if fp and key not in seen:
+            seen.add(key)
+            matches.append(item)
+
+    master_match = master_keyring_match(expected_n)
+    if master_match:
+        primary_fp = normalize_fingerprint(master_match.get("primary_fingerprint") or "")
+        add_match({
+            "kind": "master",
+            "path": str(MASTER_KEYRING_PATH),
+            "name": "Master-Keyring",
+            "fingerprints": [primary_fp],
+            "fingerprint": primary_fp,
+            "matched_fingerprint": normalize_fingerprint(master_match.get("matched_fingerprint") or primary_fp),
+            "matched_type": master_match.get("matched_type") or "Hauptkey",
+            "match_source": master_match.get("match_source") or "parsed",
+        })
+    for file in list_keyring_files(include_archived=True):
         p = Path(file)
-        fps = [normalize_fingerprint(fp) for fp in key_fingerprints(p)]
-        matched_fps = [fp for fp in fps if fingerprint_matches(fp, expected_n)]
-        if matched_fps:
-            matches.append({
+        file_match = keyring_file_match(p, expected_n)
+        if file_match:
+            primary_fp = normalize_fingerprint(file_match.get("primary_fingerprint") or "")
+            if primary_fp and fingerprint_in_master(primary_fp):
+                # Prefer direct Master-Keyring assignment when the same primary key
+                # is already imported. The archive file remains visible as fallback.
+                master_by_primary = master_keyring_match(primary_fp) or file_match
+                add_match({
+                    "kind": "master",
+                    "path": str(MASTER_KEYRING_PATH),
+                    "name": "Master-Keyring",
+                    "fingerprints": [primary_fp],
+                    "fingerprint": primary_fp,
+                    "matched_fingerprint": normalize_fingerprint(file_match.get("matched_fingerprint") or primary_fp),
+                    "matched_type": file_match.get("matched_type") or "Hauptkey",
+                    "match_source": master_by_primary.get("match_source") or "archive-crosscheck",
+                })
+            add_match({
+                "kind": "file",
                 "path": str(p),
                 "name": p.name,
-                "fingerprints": matched_fps,
-                "fingerprint": matched_fps[0],
+                "fingerprints": [primary_fp],
+                "fingerprint": primary_fp,
+                "matched_fingerprint": normalize_fingerprint(file_match.get("matched_fingerprint") or primary_fp),
+                "matched_type": file_match.get("matched_type") or "Hauptkey",
             })
     return matches
+
+def keyring_rows() -> List[Dict[str, Any]]:
+    """Legacy/import-file rows. Hidden from the main UI since v0.1.51."""
+    migrate_legacy_keyring_assignments()
+    rows: List[Dict[str, Any]] = []
+    for file in list_keyring_files():
+        p = Path(file)
+        details = parse_keyring_details(p)
+        for entry in details.get("keys") or []:
+            entry["master_present"] = fingerprint_in_master(entry.get("fingerprint") or "")
+        meta = keyring_metadata_for(p.name)
+        rows.append({
+            "path": str(p),
+            "name": p.name,
+            "display_name": meta.get("display_name") or p.stem,
+            "source_url": meta.get("source_url") or "",
+            "notes": meta.get("notes") or "",
+            "active": 1 if meta.get("active", 1) else 0,
+            "size": p.stat().st_size,
+            "fingerprints": details.get("fingerprints") or key_fingerprints(p),
+            "key_entries": details.get("keys") or [],
+            "warnings": details.get("warnings") or [],
+            "master_present": all(fingerprint_in_master(fp) for fp in (details.get("fingerprints") or [])) if (details.get("fingerprints") or []) else False,
+            "used_by": keyring_used_by(p),
+        })
+        rows[-1]["unused"] = not rows[-1]["used_by"]
+    return rows
+
+
+def master_key_used_by(fingerprint: str) -> List[Dict[str, Any]]:
+    fp = normalize_fingerprint(fingerprint)
+    result: Dict[int, Dict[str, Any]] = {}
+    assignments = mirror_keyring_assignment_settings()
+    with db() as con:
+        for mirror_id_s, items in assignments.items() if isinstance(assignments, dict) else []:
+            if not isinstance(items, list):
+                continue
+            matched = False
+            for entry in items:
+                entry_fp = normalize_fingerprint(entry.get("fingerprint") if isinstance(entry, dict) else "")
+                if entry_fp and fingerprint_matches(entry_fp, fp):
+                    matched = True
+                    break
+            if not matched:
+                continue
+            try:
+                mirror_id = int(mirror_id_s)
+            except Exception:
+                continue
+            row = con.execute("SELECT id, name, enabled, keyring, keyring_fingerprint FROM mirrors WHERE id=?", (mirror_id,)).fetchone()
+            if row:
+                item = row_to_dict(row)
+                item["usage_type"] = "zugeordnet"
+                result[int(item["id"])] = item
+        rows = con.execute(
+            "SELECT id, name, enabled, keyring, keyring_fingerprint FROM mirrors WHERE COALESCE(keyring_fingerprint, '') != '' ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        for row in rows:
+            item = row_to_dict(row)
+            if fingerprint_matches(item.get("keyring_fingerprint") or "", fp):
+                item["usage_type"] = "Fingerprint"
+                result[int(item["id"])] = item
+    return sorted(result.values(), key=lambda m: (str(m.get("name") or "").lower(), int(m.get("id") or 0)))
+
+
+def master_key_rows() -> List[Dict[str, Any]]:
+    meta_all = key_fingerprint_metadata_settings()
+    rows: List[Dict[str, Any]] = []
+    for item in master_keyring_details().get("keys") or []:
+        fp = normalize_fingerprint(item.get("fingerprint") or "")
+        meta = meta_all.get(fp) if isinstance(meta_all.get(fp), dict) else {}
+        rows.append({
+            **item,
+            "fingerprint": fp,
+            "display_name": meta.get("display_name") or ((item.get("uids") or [{}])[0].get("uid") if item.get("uids") else (item.get("key_id") or fp[-16:])),
+            "source_url": meta.get("source_url") or "",
+            "notes": meta.get("notes") or "",
+            "metadata": meta,
+            "used_by": master_key_used_by(fp),
+            "assignment_value": assignment_value("", fp),
+        })
+    return rows
+
+
+def archived_keyring_rows() -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for file in list_keyring_files(include_archived=True):
+        p = Path(file)
+        try:
+            in_archive = ARCHIVE_KEYRING_DIR.resolve(strict=False) == p.parent.resolve(strict=False)
+        except Exception:
+            in_archive = False
+        if not in_archive:
+            continue
+        details = archive_keyring_details(p)
+        rows.append({
+            "name": p.name,
+            "path": str(p),
+            "size": p.stat().st_size,
+            "fingerprints": details.get("fingerprints") or [],
+            "subkey_fingerprints": details.get("subkey_fingerprints") or [],
+            "all_fingerprints": details.get("all_fingerprints") or [],
+            "master_supplemented": bool(details.get("master_supplemented")),
+        })
+    return rows
+
+
+def key_fingerprint_metadata_settings() -> Dict[str, Dict[str, Any]]:
+    value = load_settings().get("key_fingerprint_metadata")
+    return value if isinstance(value, dict) else {}
+
+
+def save_key_fingerprint_metadata(filename: str, details: Dict[str, Any], source_url: str = "", display_name: str = "", notes: str = "") -> None:
+    settings = load_settings()
+    all_meta = settings.get("key_fingerprint_metadata") if isinstance(settings.get("key_fingerprint_metadata"), dict) else {}
+    for item in details.get("keys") or []:
+        fp = normalize_fingerprint(item.get("fingerprint") or "")
+        if not fp:
+            continue
+        current = all_meta.get(fp) if isinstance(all_meta.get(fp), dict) else {}
+        current.update({
+            "keyring": filename,
+            "key_id": item.get("key_id") or "",
+            "uids": [uid.get("uid") for uid in item.get("uids") or [] if uid.get("uid")],
+            "algorithm": item.get("algorithm") or "",
+            "length": item.get("length") or "",
+            "created": item.get("created") or "",
+            "expires": item.get("expires") or "",
+            "status": item.get("status") or "unbekannt",
+            "source_url": source_url or current.get("source_url", ""),
+            "display_name": display_name or current.get("display_name", ""),
+            "notes": notes or current.get("notes", ""),
+            "updated_at": now_iso(),
+        })
+        all_meta[fp] = current
+    settings["key_fingerprint_metadata"] = all_meta
+    save_settings(settings)
+
+
+def remove_key_fingerprint_metadata_for_file(filename: str) -> None:
+    settings = load_settings()
+    all_meta = settings.get("key_fingerprint_metadata") if isinstance(settings.get("key_fingerprint_metadata"), dict) else {}
+    changed = False
+    for fp, meta in list(all_meta.items()):
+        if isinstance(meta, dict) and meta.get("keyring") == filename:
+            all_meta.pop(fp, None)
+            changed = True
+    if changed:
+        settings["key_fingerprint_metadata"] = all_meta
+        save_settings(settings)
+
+
+def keyring_duplicate_matches(fingerprints: Iterable[str], exclude_name: str = "") -> List[Dict[str, Any]]:
+    wanted = [normalize_fingerprint(fp) for fp in fingerprints if normalize_fingerprint(fp)]
+    if not wanted:
+        return []
+    matches: List[Dict[str, Any]] = []
+    seen = set()
+    for existing_fp in master_keyring_fingerprints():
+        for fp in wanted:
+            if fingerprint_matches(existing_fp, fp):
+                key = ("Master-Keyring", existing_fp, fp)
+                if key not in seen:
+                    seen.add(key)
+                    matches.append({"name": "Master-Keyring", "path": str(MASTER_KEYRING_PATH), "existing_fingerprint": existing_fp, "fingerprint": fp})
+    for file in list_keyring_files(include_archived=True):
+        p = Path(file)
+        if exclude_name and p.name == exclude_name:
+            continue
+        for existing_fp in [normalize_fingerprint(fp) for fp in key_fingerprints(p)]:
+            for fp in wanted:
+                if fingerprint_matches(existing_fp, fp):
+                    key = (p.name, existing_fp, fp)
+                    if key not in seen:
+                        seen.add(key)
+                        matches.append({"name": p.name, "path": str(p), "existing_fingerprint": existing_fp, "fingerprint": fp})
+    return matches
+
+
+def unique_keyring_path(filename: str, directory: Optional[Path] = None) -> Path:
+    directory = directory or APP_KEYRING_DIR
+    filename = secure_filename(filename or default_keyring_filename("imported"))
+    if not filename:
+        filename = default_keyring_filename("imported")
+    if Path(filename).suffix.lower() not in {".gpg", ".asc", ".key"}:
+        filename += ".gpg"
+    base = directory.resolve(strict=False)
+    candidate = (directory / filename).resolve(strict=False)
+    if base != candidate and base not in candidate.parents:
+        raise ValueError("Ungültiger Keyring-Dateiname.")
+    if not candidate.exists():
+        return candidate
+    stem = candidate.stem
+    suffix = candidate.suffix
+    for idx in range(2, 1000):
+        alt = (directory / f"{stem}-{idx}{suffix}").resolve(strict=False)
+        if not alt.exists():
+            return alt
+    raise ValueError("Kein freier Dateiname für den Keyring gefunden.")
+
+
+def cleanup_key_import_previews(max_age_seconds: int = 86400) -> None:
+    try:
+        now = time.time()
+        KEY_IMPORT_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+        for p in KEY_IMPORT_PREVIEW_DIR.glob("*"):
+            if p.is_file() and now - p.stat().st_mtime > max_age_seconds:
+                p.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def save_key_import_preview(data: bytes, source_name: str, source_url: str = "") -> str:
+    cleanup_key_import_previews()
+    if not data:
+        raise ValueError("Keine Key-Daten vorhanden.")
+    if len(data) > app.config.get("MAX_CONTENT_LENGTH", 16 * 1024 * 1024):
+        raise ValueError("Key-Datei ist zu groß.")
+    token = secrets.token_urlsafe(18)
+    data_path = KEY_IMPORT_PREVIEW_DIR / f"{token}.key"
+    meta_path = KEY_IMPORT_PREVIEW_DIR / f"{token}.json"
+    data_path.write_bytes(data)
+    meta_path.write_text(json.dumps({"source_name": source_name, "source_url": source_url, "created_at": now_iso()}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return token
+
+
+def load_key_import_preview(token: str) -> Tuple[bytes, Dict[str, Any]]:
+    token = re.sub(r"[^A-Za-z0-9_\-]", "", token or "")
+    if not token:
+        raise ValueError("Ungültiger Vorschau-Token.")
+    data_path = KEY_IMPORT_PREVIEW_DIR / f"{token}.key"
+    meta_path = KEY_IMPORT_PREVIEW_DIR / f"{token}.json"
+    if not data_path.exists():
+        raise ValueError("Die Key-Vorschau ist abgelaufen oder nicht mehr vorhanden.")
+    meta: Dict[str, Any] = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+    return data_path.read_bytes(), meta
+
+
+def delete_key_import_preview(token: str) -> None:
+    token = re.sub(r"[^A-Za-z0-9_\-]", "", token or "")
+    if not token:
+        return
+    (KEY_IMPORT_PREVIEW_DIR / f"{token}.key").unlink(missing_ok=True)
+    (KEY_IMPORT_PREVIEW_DIR / f"{token}.json").unlink(missing_ok=True)
+
+
+def keyring_preview_from_bytes(data: bytes, source_name: str, expected: str = "", source_url: str = "") -> Dict[str, Any]:
+    token = save_key_import_preview(data, source_name, source_url)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="debmirror-key-preview-", dir=str(APP_DATA_DIR)))
+    try:
+        suffix = Path(source_name or "key.gpg").suffix or ".key"
+        tmp_path = tmp_dir / f"preview{suffix}"
+        tmp_path.write_bytes(data)
+        details = parse_keyring_details(tmp_path)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    fingerprints = [normalize_fingerprint(fp) for fp in (details.get("fingerprints") or [])]
+    expected_n = normalize_fingerprint(expected)
+    expected_ok = True if not expected_n else any(fingerprint_matches(fp, expected_n) for fp in fingerprints)
+    suggested_base = Path(source_name or "").name or default_keyring_filename(expected_n or (fingerprints[0] if fingerprints else "imported"))
+    suggested_filename = secure_filename(suggested_base) or default_keyring_filename(expected_n or (fingerprints[0] if fingerprints else "imported"))
+    if Path(suggested_filename).suffix.lower() not in {".gpg", ".asc", ".key"}:
+        suggested_filename += ".gpg"
+    duplicates = keyring_duplicate_matches(fingerprints)
+    return {
+        "token": token,
+        "source_name": source_name,
+        "source_url": source_url,
+        "suggested_filename": suggested_filename,
+        "expected": expected_n,
+        "expected_ok": expected_ok,
+        "valid": bool(fingerprints),
+        "fingerprints": fingerprints,
+        "key_entries": details.get("keys") or [],
+        "warnings": details.get("warnings") or [],
+        "duplicates": duplicates,
+    }
+
+
+def save_imported_key_bytes(data: bytes, filename: str, expected: str = "", allow_duplicate: bool = False) -> Path:
+    tmp = Path(tempfile.mkdtemp(prefix="debmirror-key-import-", dir=str(APP_DATA_DIR)))
+    dest: Optional[Path] = None
+    try:
+        candidate = tmp / (secure_filename(filename or "imported.key") or "imported.key")
+        candidate.write_bytes(data)
+        details = parse_keyring_details(candidate)
+        fps = [normalize_fingerprint(fp) for fp in (details.get("fingerprints") or [])]
+        if not fps:
+            raise ValueError("In den importierten Daten wurde kein gültiger OpenPGP-Key erkannt.")
+        expected_n = normalize_fingerprint(expected)
+        if expected_n and not any(fingerprint_matches(fp, expected_n) for fp in fps):
+            raise ValueError("Fingerprint passt nicht. Key wurde nicht gespeichert.")
+        duplicates = keyring_duplicate_matches(fps)
+        if duplicates and not allow_duplicate:
+            names = ", ".join(sorted({d.get("name", "") for d in duplicates if d.get("name")}))
+            raise ValueError(f"Dieser Key ist bereits vorhanden ({names}). Import nur mit Duplikat erlauben möglich.")
+        target_name = secure_filename(filename or default_keyring_filename(expected_n or fps[0]))
+        if b"-----BEGIN PGP PUBLIC KEY BLOCK-----" in data[:256] and Path(target_name).suffix.lower() in {".asc", ".key"}:
+            target_name = str(Path(target_name).with_suffix(".gpg"))
+        dest = unique_keyring_path(target_name, ARCHIVE_KEYRING_DIR)
+        dest.write_bytes(candidate.read_bytes())
+        dest = maybe_dearmor_key_file(dest)
+        import_keyring_into_master(dest)
+        return dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+def render_keyrings_page(prefill_fp: str = "", assign_mirror_id: Optional[int] = None, import_preview: Optional[Dict[str, Any]] = None):
+    migrate_legacy_keyring_assignments()
+    return render_template(
+        "keyrings.html",
+        keyrings=keyring_rows(),
+        master_key_entries=master_key_rows(),
+        archived_keyrings=archived_keyring_rows(),
+        prefill_fp=prefill_fp,
+        assign_mirror_id=assign_mirror_id,
+        import_preview=import_preview,
+        mirror_choices=mirror_choices_for_keyring_forms(),
+        master_keyring_path=str(MASTER_KEYRING_PATH),
+        master_fingerprints=master_keyring_fingerprints(),
+        master_status=master_keyring_status_summary(),
+        master_exists=MASTER_KEYRING_PATH.exists(),
+        master_size=MASTER_KEYRING_PATH.stat().st_size if MASTER_KEYRING_PATH.exists() else 0,
+    )
 
 
 @app.route("/keyrings", methods=["GET", "POST"])
@@ -6103,6 +8071,7 @@ def keyrings():
     prefill_fp = normalize_fingerprint(request.args.get("fingerprint", ""))
     assign_mirror_id = request.args.get("mirror_id", "").strip()
     assign_mirror_id_int = int(assign_mirror_id) if assign_mirror_id.isdigit() else None
+    import_preview: Optional[Dict[str, Any]] = None
     if request.method == "POST":
         action = request.form.get("action")
         assign_to = request.form.get("assign_mirror_id", "").strip()
@@ -6110,51 +8079,238 @@ def keyrings():
         try:
             dest: Optional[Path] = None
             expected = normalize_fingerprint(request.form.get("expected_fingerprint", ""))
-            if action == "assign_existing":
+            allow_duplicate = request.form.get("allow_duplicate") == "on"
+            if action == "preview_upload":
+                file = request.files.get("keyfile")
+                if not file or not file.filename:
+                    raise ValueError("Keine Key-Datei ausgewählt.")
+                import_preview = keyring_preview_from_bytes(file.read(), file.filename, expected, request.form.get("source_url", "").strip())
+                return render_keyrings_page(prefill_fp=expected, assign_mirror_id=assign_to_int, import_preview=import_preview)
+            elif action == "preview_url":
+                url = request.form.get("url", "").strip()
+                if not url.startswith(("https://", "http://")):
+                    raise ValueError("Nur http/https URLs sind erlaubt.")
+                data = urllib.request.urlopen(url, timeout=30).read(16 * 1024 * 1024)
+                source_name = request.form.get("filename", "").strip() or Path(urllib.parse.urlparse(url).path).name or "url-key.gpg"
+                import_preview = keyring_preview_from_bytes(data, source_name, expected, url)
+                return render_keyrings_page(prefill_fp=expected, assign_mirror_id=assign_to_int, import_preview=import_preview)
+            elif action == "preview_text":
+                key_text = request.form.get("key_text", "")
+                if not key_text.strip():
+                    raise ValueError("Kein Key-Text eingefügt.")
+                source_name = request.form.get("filename", "").strip() or default_keyring_filename(expected or "pasted", suffix=".asc")
+                import_preview = keyring_preview_from_bytes(key_text.encode("utf-8"), source_name, expected, request.form.get("source_url", "").strip())
+                return render_keyrings_page(prefill_fp=expected, assign_mirror_id=assign_to_int, import_preview=import_preview)
+            elif action == "import_previewed":
+                token = request.form.get("preview_token", "")
+                data, meta = load_key_import_preview(token)
+                filename = request.form.get("filename", "").strip() or meta.get("source_name") or default_keyring_filename(expected or "imported")
+                dest = save_imported_key_bytes(data, filename, expected, allow_duplicate=allow_duplicate)
+                details = parse_keyring_details(dest)
+                save_keyring_metadata(dest.name, {
+                    "display_name": request.form.get("display_name", "").strip() or dest.stem,
+                    "source_url": request.form.get("source_url", "").strip() or meta.get("source_url", ""),
+                    "notes": request.form.get("notes", "").strip(),
+                    "active": 1,
+                })
+                save_key_fingerprint_metadata(dest.name, details, request.form.get("source_url", "").strip() or meta.get("source_url", ""), request.form.get("display_name", "").strip(), request.form.get("notes", "").strip())
+                assign_keyring_to_mirror(assign_to_int, dest, expected)
+                delete_key_import_preview(token)
+                flash("Key wurde nach Vorschau importiert." + (" Mirror-Profil wurde aktualisiert." if assign_to_int else ""), "success")
+                add_event("info", f"Keyring nach Vorschau importiert: {dest.name}")
+            elif action == "assign_existing":
                 keyring_value = request.form.get("keyring", "").strip()
+                requested_fp = normalize_fingerprint(request.form.get("fingerprint", "")) or expected
                 if not keyring_value:
                     raise ValueError("Kein vorhandener Keyring ausgewählt.")
                 keyring_path = Path(allowed_keyring_path(keyring_value))
                 if not keyring_path.exists():
                     raise ValueError("Der ausgewählte Keyring existiert nicht mehr.")
-                fps = [normalize_fingerprint(fp) for fp in key_fingerprints(keyring_path)]
-                if expected and not any(fingerprint_matches(fp, expected) for fp in fps):
-                    raise ValueError("Der ausgewählte Keyring enthält den erwarteten Fingerprint nicht.")
-                assign_keyring_to_mirror(assign_to_int, keyring_path, expected or (fps[0] if fps else ""))
-                flash("Vorhandener Keyring wurde dem Mirror-Profil zugewiesen.", "success")
-                add_event("info", f"Vorhandener Keyring zugewiesen: {keyring_path.name}")
+                try:
+                    is_master_path = keyring_path.resolve(strict=False) == MASTER_KEYRING_PATH.resolve(strict=False)
+                except Exception:
+                    is_master_path = False
+                if is_master_path:
+                    full_fp = matching_master_fingerprint(requested_fp)
+                    if not full_fp:
+                        raise ValueError("Der erwartete Fingerprint wurde im Master-Keyring nicht gefunden.")
+                    assign_master_fingerprint_to_mirror(assign_to_int, full_fp)
+                    flash("Key aus dem Master-Keyring wurde dem Mirror-Profil zugeordnet und der Profil-Keyring wurde neu erzeugt.", "success")
+                    add_event("info", f"Master-Key zu Profil zugeordnet: {full_fp} -> Mirror #{assign_to_int}")
+                else:
+                    selected_fp = ""
+                    if requested_fp:
+                        file_match = keyring_file_match(keyring_path, requested_fp)
+                        if not file_match:
+                            raise ValueError("Der ausgewählte Keyring enthält den erwarteten Fingerprint nicht.")
+                        selected_fp = normalize_fingerprint(file_match.get("primary_fingerprint") or requested_fp)
+                    else:
+                        fps = [normalize_fingerprint(fp) for fp in key_fingerprints(keyring_path)]
+                        selected_fp = fps[0] if fps else ""
+                    assign_keyring_to_mirror(assign_to_int, keyring_path, selected_fp)
+                    flash("Vorhandener Key wurde dem Mirror-Profil zugeordnet und der Profil-Keyring wurde neu erzeugt.", "success")
+                    add_event("info", f"Vorhandener Key zu Profil zugeordnet: {keyring_path.name} {selected_fp}")
+            elif action == "assign_matching_keys":
+                selected = request.form.getlist("selected_match")
+                single = request.form.get("single_match", "").strip()
+                if single:
+                    selected = [single]
+                if not assign_to_int:
+                    raise ValueError("Kein Mirror-Profil für die Zuordnung angegeben.")
+                if not selected:
+                    raise ValueError("Kein passender Key ausgewählt.")
+                fingerprints_to_assign: List[str] = []
+                for idx in selected:
+                    safe_idx = re.sub(r"[^0-9]", "", str(idx or ""))
+                    if not safe_idx:
+                        continue
+                    kind = request.form.get(f"match_kind_{safe_idx}", "").strip()
+                    match_path = request.form.get(f"match_path_{safe_idx}", "").strip()
+                    match_fp = normalize_fingerprint(request.form.get(f"match_fingerprint_{safe_idx}", ""))
+                    if kind == "master":
+                        primary = matching_master_fingerprint(match_fp)
+                        if not primary:
+                            raise ValueError(f"Fingerprint {match_fp} wurde im Master-Keyring nicht gefunden.")
+                        fingerprints_to_assign.append(primary)
+                    elif kind == "file":
+                        keyring_path = Path(allowed_keyring_path(match_path))
+                        if not keyring_path.exists():
+                            raise ValueError(f"Archiv-Keyring existiert nicht mehr: {keyring_path.name}")
+                        file_match = keyring_file_match(keyring_path, match_fp)
+                        if not file_match:
+                            raise ValueError(f"Fingerprint {match_fp} wurde in {keyring_path.name} nicht gefunden.")
+                        import_keyring_into_master(keyring_path)
+                        primary = matching_master_fingerprint(file_match.get("primary_fingerprint") or match_fp)
+                        if not primary:
+                            raise ValueError(f"Fingerprint {match_fp} konnte nach dem Import nicht im Master-Keyring gefunden werden.")
+                        fingerprints_to_assign.append(primary)
+                    else:
+                        raise ValueError("Unbekannte Key-Quelle in der Fehlerauswertung.")
+                assign_master_fingerprints_to_mirror(assign_to_int, fingerprints_to_assign)
+                flash(f"{len(set(fingerprints_to_assign))} Key(s) wurden dem Mirror-Profil zugeordnet und der Profil-Keyring wurde neu erzeugt.", "success")
+                add_event("info", f"Fehlerauswertung: Keys zu Profil #{assign_to_int} zugeordnet: {', '.join(fingerprints_to_assign)}")
+            elif action == "assign_keyring_to_profile":
+                filename = secure_filename(request.form.get("filename", ""))
+                fingerprint = normalize_fingerprint(request.form.get("fingerprint", ""))
+                profile_id_raw = request.form.get("profile_mirror_id", "").strip()
+                if not fingerprint:
+                    raise ValueError("Kein Fingerprint ausgewählt.")
+                if not profile_id_raw.isdigit():
+                    raise ValueError("Kein Mirror-Profil ausgewählt.")
+                profile_id = int(profile_id_raw)
+                if filename:
+                    assign_keyring_filename_to_mirror(profile_id, filename, fingerprint)
+                else:
+                    assign_master_fingerprint_to_mirror(profile_id, fingerprint)
+                mirror = get_mirror(profile_id) or {"name": f"#{profile_id}"}
+                flash(f"Key wurde dem Profil {mirror.get('name')} zugeordnet.", "success")
+                add_event("info", f"Key zu Profil zugeordnet: {filename} {fingerprint} -> {mirror.get('name')}")
+            elif action == "unassign_keyring_from_profile":
+                filename = secure_filename(request.form.get("filename", ""))
+                fingerprint = normalize_fingerprint(request.form.get("fingerprint", ""))
+                profile_id_raw = request.form.get("profile_mirror_id", "").strip()
+                if not fingerprint or not profile_id_raw.isdigit():
+                    raise ValueError("Fingerprint oder Mirror-Profil fehlt.")
+                profile_id = int(profile_id_raw)
+                unassign_keyring_filename_from_mirror(profile_id, filename, fingerprint)
+                mirror = get_mirror(profile_id) or {"name": f"#{profile_id}"}
+                flash(f"Key-Zuordnung für {mirror.get('name')} entfernt.", "success")
+                add_event("info", f"Key-Zuordnung entfernt: {filename} {fingerprint} -> {mirror.get('name')}")
+            elif action == "rebuild_master_keyring":
+                before_removed = len(removed_master_key_fingerprints())
+                fps = rebuild_master_keyring(include_removed=False)
+                summary = master_keyring_status_summary()
+                extra = f" · {summary.get('subkey_count', 0)} Subkeys" if summary.get('subkey_count', 0) else ""
+                skipped = f" · {before_removed} entfernte Keys weiter ausgeschlossen" if before_removed else ""
+                flash(f"Master-Keyring neu aufgebaut: {len(fps)} Hauptkeys{extra}{skipped}.", "success")
+                add_event("info", f"Master-Keyring neu aufgebaut: {len(fps)} Hauptkeys, Subkeys: {summary.get('subkey_count', 0)}, ausgeschlossen: {before_removed}")
+            elif action == "rebuild_master_keyring_full":
+                removed_before = len(removed_master_key_fingerprints())
+                fps = rebuild_master_keyring(include_removed=True)
+                summary = master_keyring_status_summary()
+                extra = f" · {summary.get('subkey_count', 0)} Subkeys" if summary.get('subkey_count', 0) else ""
+                flash(f"Master-Keyring vollständig aus Archivdateien neu aufgebaut: {len(fps)} Hauptkeys{extra}. Entfernsperren gelöscht: {removed_before}.", "success")
+                add_event("info", f"Master-Keyring vollständig neu aufgebaut: {len(fps)} Hauptkeys, Subkeys: {summary.get('subkey_count', 0)}, gelöschte Sperren: {removed_before}")
+            elif action == "delete_master_key":
+                fingerprint = normalize_fingerprint(request.form.get("fingerprint", ""))
+                removed_fp = remove_master_key(fingerprint)
+                flash(f"Key aus dem Master-Keyring entfernt: {removed_fp}", "success")
+                add_event("warning", f"Master-Key entfernt: {removed_fp}")
+            elif action == "delete_archived_keyring":
+                filename = request.form.get("filename", "")
+                removed_name = delete_archived_keyring_file(filename)
+                flash(f"Archivierte Importdatei gelöscht: {removed_name}", "success")
+                add_event("warning", f"Archivierte Key-Datei gelöscht: {removed_name}")
+            elif action == "rebuild_all_profile_keyrings":
+                migrate_legacy_keyring_assignments()
+                count = 0
+                errors: List[str] = []
+                with db() as con:
+                    mids = [int(r["id"]) for r in con.execute("SELECT id FROM mirrors ORDER BY id").fetchall()]
+                for mid in mids:
+                    if not mirror_keyring_assignment_items(mid):
+                        continue
+                    try:
+                        rebuild_profile_keyring(mid)
+                        count += 1
+                    except Exception as ex:
+                        errors.append(f"#{mid}: {ex}")
+                if errors:
+                    flash(f"{count} Profil-Keyrings neu erzeugt, {len(errors)} Fehler: " + "; ".join(errors[:3]), "warning")
+                else:
+                    flash(f"{count} Profil-Keyrings neu erzeugt.", "success")
+                add_event("info", f"Profil-Keyrings neu erzeugt: {count}, Fehler: {len(errors)}")
+            elif action == "save_metadata":
+                filename = secure_filename(request.form.get("filename", ""))
+                if not filename:
+                    raise ValueError("Kein Keyring ausgewählt.")
+                keyring_path = (APP_KEYRING_DIR / filename).resolve(strict=False)
+                base = APP_KEYRING_DIR.resolve(strict=False)
+                if base != keyring_path and base not in keyring_path.parents:
+                    raise ValueError("Ungültiger Pfad.")
+                if not keyring_path.exists():
+                    raise ValueError("Der Keyring existiert nicht mehr.")
+                save_keyring_metadata(filename, {
+                    "display_name": request.form.get("display_name", "").strip(),
+                    "source_url": request.form.get("source_url", "").strip(),
+                    "notes": request.form.get("notes", "").strip(),
+                    "active": 1 if request.form.get("active") == "on" else 0,
+                })
+                import_keyring_into_master(keyring_path)
+                save_key_fingerprint_metadata(filename, parse_keyring_details(keyring_path), request.form.get("source_url", "").strip(), request.form.get("display_name", "").strip(), request.form.get("notes", "").strip())
+                flash("Keyring-Informationen gespeichert.", "success")
+                add_event("info", f"Keyring-Informationen gespeichert: {filename}")
             elif action == "upload":
                 file = request.files.get("keyfile")
                 if not file or not file.filename:
                     raise ValueError("Keine Key-Datei ausgewählt.")
-                filename = secure_filename(file.filename)
-                if not filename:
-                    raise ValueError("Ungültiger Dateiname.")
-                dest = APP_KEYRING_DIR / filename
-                file.save(dest)
-                dest = maybe_dearmor_key_file(dest)
-                fps = [normalize_fingerprint(fp) for fp in key_fingerprints(dest)]
-                if expected and not any(fp.endswith(expected) or expected.endswith(fp) or fp == expected for fp in fps):
-                    dest.unlink(missing_ok=True)
-                    raise ValueError("Fingerprint passt nicht. Key wurde nicht gespeichert.")
+                dest = save_imported_key_bytes(file.read(), file.filename, expected, allow_duplicate=allow_duplicate)
+                details = parse_keyring_details(dest)
+                save_keyring_metadata(dest.name, {
+                    "display_name": request.form.get("display_name", "").strip() or dest.stem,
+                    "source_url": request.form.get("source_url", "").strip(),
+                    "notes": request.form.get("notes", "").strip(),
+                    "active": 1,
+                })
+                save_key_fingerprint_metadata(dest.name, details, request.form.get("source_url", "").strip(), request.form.get("display_name", "").strip(), request.form.get("notes", "").strip())
                 assign_keyring_to_mirror(assign_to_int, dest, expected)
                 flash("Keyring-Datei gespeichert." + (" Mirror-Profil wurde aktualisiert." if assign_to_int else ""), "success")
                 add_event("info", f"Keyring hochgeladen: {dest.name}")
             elif action == "url":
                 url = request.form.get("url", "").strip()
-                filename = secure_filename(request.form.get("filename", "") or Path(url).name or default_keyring_filename(expected or "imported"))
+                filename = secure_filename(request.form.get("filename", "") or Path(urllib.parse.urlparse(url).path).name or default_keyring_filename(expected or "imported"))
                 if not url.startswith(("https://", "http://")):
                     raise ValueError("Nur http/https URLs sind erlaubt.")
-                if not filename:
-                    raise ValueError("Ungültiger Dateiname.")
                 data = urllib.request.urlopen(url, timeout=30).read(16 * 1024 * 1024)
-                dest = APP_KEYRING_DIR / filename
-                dest.write_bytes(data)
-                dest = maybe_dearmor_key_file(dest)
-                fps = [normalize_fingerprint(fp) for fp in key_fingerprints(dest)]
-                if expected and not any(fp.endswith(expected) or expected.endswith(fp) or fp == expected for fp in fps):
-                    dest.unlink(missing_ok=True)
-                    raise ValueError("Fingerprint passt nicht. Key wurde nicht gespeichert.")
+                dest = save_imported_key_bytes(data, filename, expected, allow_duplicate=allow_duplicate)
+                details = parse_keyring_details(dest)
+                save_keyring_metadata(dest.name, {
+                    "display_name": request.form.get("display_name", "").strip() or dest.name,
+                    "source_url": url,
+                    "notes": request.form.get("notes", "").strip(),
+                    "active": 1,
+                })
+                save_key_fingerprint_metadata(dest.name, details, url, request.form.get("display_name", "").strip(), request.form.get("notes", "").strip())
                 assign_keyring_to_mirror(assign_to_int, dest, expected)
                 flash("Key aus URL importiert." + (" Mirror-Profil wurde aktualisiert." if assign_to_int else ""), "success")
                 add_event("info", f"Keyring aus URL importiert: {dest.name}")
@@ -6163,6 +8319,19 @@ def keyrings():
                 keyserver = request.form.get("keyserver", "hkps://keyserver.ubuntu.com").strip() or "hkps://keyserver.ubuntu.com"
                 filename = secure_filename(request.form.get("filename", "") or default_keyring_filename(fingerprint))
                 dest = import_key_from_keyserver(fingerprint, filename=filename, keyserver=keyserver)
+                details = parse_keyring_details(dest)
+                duplicates = keyring_duplicate_matches(details.get("fingerprints") or [], exclude_name=dest.name)
+                if duplicates and not allow_duplicate:
+                    dest.unlink(missing_ok=True)
+                    names = ", ".join(sorted({d.get("name", "") for d in duplicates if d.get("name")}))
+                    raise ValueError(f"Dieser Key ist bereits vorhanden ({names}). Import nur mit Duplikat erlauben möglich.")
+                save_keyring_metadata(dest.name, {
+                    "display_name": request.form.get("display_name", "").strip() or dest.name,
+                    "source_url": keyserver,
+                    "notes": request.form.get("notes", "").strip(),
+                    "active": 1,
+                })
+                save_key_fingerprint_metadata(dest.name, details, keyserver, request.form.get("display_name", "").strip(), request.form.get("notes", "").strip())
                 assign_keyring_to_mirror(assign_to_int, dest, fingerprint)
                 flash("Key vom Keyserver importiert." + (" Mirror-Profil wurde aktualisiert." if assign_to_int else ""), "success")
                 add_event("info", f"Keyring vom Keyserver importiert: {dest.name}")
@@ -6174,11 +8343,90 @@ def keyrings():
             flash(str(exc), "danger")
         return redirect(url_for("keyrings", fingerprint=request.form.get("expected_fingerprint") or request.form.get("fingerprint", ""), mirror_id=assign_to or ""))
 
-    rows = []
-    for file in list_keyring_files():
-        p = Path(file)
-        rows.append({"path": str(p), "name": p.name, "size": p.stat().st_size, "fingerprints": key_fingerprints(p)})
-    return render_template("keyrings.html", keyrings=rows, prefill_fp=prefill_fp, assign_mirror_id=assign_mirror_id_int)
+    return render_keyrings_page(prefill_fp=prefill_fp, assign_mirror_id=assign_mirror_id_int, import_preview=import_preview)
+
+
+@app.route("/keyrings/master/export-key/<fingerprint>/<fmt>")
+@require_admin
+def master_keyring_export_single_key(fingerprint: str, fmt: str):
+    try:
+        fp = normalize_fingerprint(fingerprint)
+        fmt = (fmt or "").lower()
+        if fmt == "gpg":
+            data = export_fingerprints_from_master([fp], armor=False)
+            download_name = f"master-key-{fp[-16:]}.gpg"
+            mime = "application/octet-stream"
+        elif fmt == "asc":
+            data = export_fingerprints_from_master([fp], armor=True)
+            download_name = f"master-key-{fp[-16:]}.asc"
+            mime = "application/pgp-keys"
+        else:
+            raise ValueError("Unbekanntes Exportformat.")
+        bio = io.BytesIO(data)
+        bio.seek(0)
+        return send_file(bio, mimetype=mime, as_attachment=True, download_name=download_name)
+    except Exception as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("keyrings"))
+
+
+@app.route("/keyrings/<path:filename>/export/<fmt>")
+@require_admin
+def keyring_export(filename: str, fmt: str):
+    try:
+        path = (APP_KEYRING_DIR / secure_filename(filename)).resolve(strict=False)
+        base = APP_KEYRING_DIR.resolve(strict=False)
+        if base != path and base not in path.parents:
+            raise ValueError("Ungültiger Pfad.")
+        if not path.exists():
+            raise ValueError("Keyring nicht gefunden.")
+        fmt = (fmt or "").lower()
+        if fmt == "gpg":
+            data = path.read_bytes() if path.suffix.lower() == ".gpg" else keyring_binary_bytes_for_client(path)
+            download_name = f"{path.stem}.gpg"
+            mime = "application/octet-stream"
+        elif fmt == "asc":
+            data = export_keyring_armored_bytes(path)
+            download_name = f"{path.stem}.asc"
+            mime = "application/pgp-keys"
+        else:
+            raise ValueError("Unbekanntes Exportformat.")
+        bio = io.BytesIO(data)
+        bio.seek(0)
+        return send_file(bio, mimetype=mime, as_attachment=True, download_name=download_name)
+    except Exception as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("keyrings"))
+
+
+@app.route("/keyrings/<path:filename>/export-key/<fingerprint>/<fmt>")
+@require_admin
+def keyring_export_single_key(filename: str, fingerprint: str, fmt: str):
+    try:
+        path = (APP_KEYRING_DIR / secure_filename(filename)).resolve(strict=False)
+        base = APP_KEYRING_DIR.resolve(strict=False)
+        if base != path and base not in path.parents:
+            raise ValueError("Ungültiger Pfad.")
+        if not path.exists():
+            raise ValueError("Keyring nicht gefunden.")
+        fp = normalize_fingerprint(fingerprint)
+        fmt = (fmt or "").lower()
+        if fmt == "gpg":
+            data = export_keyring_selected_key_bytes(path, fp, armor=False)
+            download_name = f"{path.stem}-{fp[-16:]}.gpg"
+            mime = "application/octet-stream"
+        elif fmt == "asc":
+            data = export_keyring_selected_key_bytes(path, fp, armor=True)
+            download_name = f"{path.stem}-{fp[-16:]}.asc"
+            mime = "application/pgp-keys"
+        else:
+            raise ValueError("Unbekanntes Exportformat.")
+        bio = io.BytesIO(data)
+        bio.seek(0)
+        return send_file(bio, mimetype=mime, as_attachment=True, download_name=download_name)
+    except Exception as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("keyrings"))
 
 
 @app.route("/keyrings/<path:filename>/delete", methods=["POST"])
@@ -6189,12 +8437,64 @@ def keyring_delete(filename: str):
         base = APP_KEYRING_DIR.resolve(strict=False)
         if base != path and base not in path.parents:
             raise ValueError("Ungültiger Pfad.")
+        used = keyring_used_by(path)
+        if used:
+            names = ", ".join(m.get("name") or f"#{m.get('id')}" for m in used)
+            raise ValueError(f"Keyring wird noch von Mirror-Profilen verwendet: {names}. Entferne zuerst die Zuordnung im Profil.")
         path.unlink(missing_ok=True)
-        flash("Keyring gelöscht.", "success")
+        settings = load_settings()
+        meta = settings.get("keyring_metadata") if isinstance(settings.get("keyring_metadata"), dict) else {}
+        if path.name in meta:
+            meta.pop(path.name, None)
+            settings["keyring_metadata"] = meta
+            save_settings(settings)
+        remove_key_fingerprint_metadata_for_file(path.name)
+        rebuild_master_keyring()
+        flash("Keyring gelöscht. Master-Keyring wurde neu aufgebaut.", "success")
         add_event("warning", f"Keyring gelöscht: {path.name}")
     except Exception as exc:
         flash(str(exc), "danger")
     return redirect(url_for("keyrings"))
+
+
+@app.route("/mirrors/<int:mirror_id>/client-export", methods=["POST"])
+@require_admin
+def mirror_client_export(mirror_id: int):
+    mirror = get_mirror(mirror_id)
+    if not mirror:
+        flash("Mirror nicht gefunden.", "danger")
+        return redirect(url_for("mirrors_page"))
+    try:
+        if mirror_keyring_assignment_items(mirror_id):
+            keyring_path = rebuild_profile_keyring(mirror_id)
+            mirror = get_mirror(mirror_id) or mirror
+        else:
+            keyring_value = mirror.get("keyring") or ""
+            if not keyring_value:
+                raise ValueError("Für dieses Profil ist kein Keyring hinterlegt.")
+            keyring_path = Path(allowed_keyring_path(keyring_value))
+        if not keyring_path.exists():
+            raise ValueError("Der hinterlegte Keyring existiert nicht mehr.")
+        base_url = request.form.get("client_base_url", "").strip()
+        if not base_url.startswith(("http://", "https://")):
+            raise ValueError("Für den Client-Export muss eine erreichbare http/https Mirror-Basis-URL angegeben werden.")
+        safe_name = secure_filename(mirror.get("name") or f"mirror-{mirror_id}") or f"mirror-{mirror_id}"
+        client_key_name = f"{safe_name}-archive-keyring.gpg"
+        key_bytes = keyring_binary_bytes_for_client(keyring_path)
+        deb822_text, list_text = client_source_lines(mirror, base_url, client_key_name)
+        readme = f"""DebMirror Manager Client-Export\n================================\n\nMirror-Profil: {mirror.get('name')}\nClient-Basis-URL: {base_url.rstrip('/')}/\nKeyring: {client_key_name}\n\nInstallation auf einem Debian/Ubuntu/APT-Client:\n\n1. Key installieren:\n   sudo install -m 0644 keyrings/{client_key_name} /usr/share/keyrings/{client_key_name}\n\n2. Quelle installieren, empfohlen als Deb822-Datei:\n   sudo install -m 0644 sources.list.d/{safe_name}.sources /etc/apt/sources.list.d/{safe_name}.sources\n\n   Alternative klassisch:\n   sudo install -m 0644 sources.list.d/{safe_name}.list /etc/apt/sources.list.d/{safe_name}.list\n\n3. Paketlisten aktualisieren:\n   sudo apt update\n\nHinweis: Die angegebene Client-Basis-URL muss auf den veröffentlichten Mirror zeigen, nicht auf die ursprüngliche Upstream-Quelle.\nDer exportierte Keyring ist profilbezogen und enthält nur die diesem Mirror-Profil zugeordneten Keys.\n"""
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("README-client.txt", readme)
+            zf.writestr(f"keyrings/{client_key_name}", key_bytes)
+            zf.writestr(f"sources.list.d/{safe_name}.sources", deb822_text)
+            zf.writestr(f"sources.list.d/{safe_name}.list", list_text)
+        bio.seek(0)
+        add_event("info", f"Client-Export erstellt: {mirror.get('name')}")
+        return send_file(bio, mimetype="application/zip", as_attachment=True, download_name=f"debmirror-client-{safe_name}-{local_now().strftime('%Y%m%d-%H%M%S')}.zip")
+    except Exception as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("mirror_detail", mirror_id=mirror_id))
 
 
 
@@ -6674,7 +8974,7 @@ def build_config_export() -> Dict[str, Any]:
     for m in list_mirrors():
         mirrors.append({k: m.get(k) for k in EXPORT_MIRROR_COLUMNS if k in m})
     settings = load_settings()
-    safe_settings = {k: v for k, v in settings.items() if k in {"appearance", "max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets"}}
+    safe_settings = {k: v for k, v in settings.items() if k in {"appearance", "max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"}}
     if isinstance(settings.get("notify"), dict):
         notify_export = dict(settings["notify"])
         for field in SECRET_FIELDS:
@@ -6757,7 +9057,7 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
     safe_settings = data.get("settings") or {}
     if isinstance(safe_settings, dict):
         current = load_settings()
-        for key in ("appearance", "notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets"):
+        for key in ("appearance", "notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"):
             if key in safe_settings:
                 current[key] = safe_settings[key]
                 imported["settings"] += 1

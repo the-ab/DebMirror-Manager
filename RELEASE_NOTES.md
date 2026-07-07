@@ -1,5 +1,206 @@
 # Release Notes
 
+## v0.1.63
+
+- Dokumentation und Formatierung geprüft.
+- Doppelte Zwischenüberschrift `Release Notes` vor v0.1.45 entfernt.
+- Versionsüberschriften in dieser Datei auf ein einheitliches Format gebracht.
+- README auf Funktionsbeschreibung geprüft und Versionsstand auf 0.1.63 gesetzt.
+- VERSION auf 0.1.63 gesetzt.
+
+## v0.1.62
+
+- Fehlerdiagnose: Fingerprint-/Key-ID-Auflösung für Master- und Archiv-Keyrings robuster gemacht.
+- NO_PUBKEY, ERRSIG, EXPKEYSIG, REVKEYSIG und BADSIG werden jetzt als Key-relevante Fehler ausgewertet.
+- Master-Keyring-Abgleich nutzt zusätzlich Kurz-ID, Long-ID, Hauptkey-Fingerprint und Subkey-Fingerprint.
+- Archiv-Keyring-Abgleich nutzt bei Master-Treffern auch alle Archiv-Fingerprints/Subkeys als Crosscheck.
+- Behebt Fälle, in denen ein vorhandener Key beim Keyserver-Import als bereits vorhanden erkannt wurde, aber in der Fehlerdiagnose nicht zur Auswahl stand.
+- VERSION auf 0.1.62 gesetzt.
+
+## v0.1.61
+
+- Fehlerdiagnose: Archiv-Keyring-Treffer werden jetzt zusätzlich über den passenden Master-Hauptkey abgeglichen. Wenn ein Subkey im Master erkannt wird und die Archivdatei denselben Hauptkey enthält, wird die Archivdatei weiterhin als Treffer angezeigt.
+- Archivübersicht: Subkey-/Fingerprint-Anzeige wird bei vorhandenem Master-Keyring mit der Master-Sicht ergänzt, damit Archiv- und Master-Anzeige konsistenter sind.
+- Profilansicht: die mobile/kompakte Änderung aus v0.1.60 für den Profil-Keyring-Block wurde zurückgenommen.
+- Profilübersicht: Status-Badges bleiben ohne Zeilenbruch; die Tabelle wurde für mobile Geräte als Kartenansicht optimiert.
+- README bereinigt: die Anleitung enthält keine eingebettete Release-Historie mehr, sondern beschreibt wieder die Funktionen des gesamten Projekts.
+- VERSION auf 0.1.61 gesetzt.
+
+## v0.1.60
+
+- Fehlerdiagnose: Archiv-Keyring-Erkennung robuster gemacht. Archivdateien werden jetzt über mehrere GPG-Lesewege ausgewertet, damit Subkeys/Fingerprints nicht fehlen, wenn sie im Master-Keyring bereits korrekt erkannt werden.
+- Fehlerdiagnose: Archiv-Keyring-Treffer nutzen zusätzliche GPG-Fallbacks für kurze Signing-Subkey-IDs.
+- Profilansicht: Profil-Keyring-Status kompakter dargestellt, ohne Zeilenbruch in der Status-/Aktionszeile.
+- Profilansicht: Profil-Keyring-Block für mobile Ansichten optimiert.
+
+## v0.1.59 - Fehlerdiagnose Master-Keyring-Auswahl korrigiert
+
+- Fehlerdiagnose gleicht fehlende GPG-Key-IDs jetzt zusätzlich per direkter GnuPG-Abfrage gegen den Master-Keyring ab.
+- Behebt Fälle, in denen ein Key im Master-Keyring vorhanden war, aber wegen einer kurzen Signing-Subkey-ID nicht zur Auswahl angeboten wurde.
+- Wenn ein passender Key sowohl im Archiv als auch im Master-Keyring vorhanden ist, wird jetzt bevorzugt der Master-Keyring-Treffer zur direkten Profil-Zuordnung angeboten.
+- Archivtreffer bleiben als Fallback sichtbar.
+- VERSION auf 0.1.59 gesetzt.
+
+## v0.1.58 - Fehlerdiagnose Key-Auswahl bereinigt
+
+- Fehlerdiagnose bei fehlenden GPG-Keys klarer getrennt:
+  - Master-Keyring-Treffer werden in einem eigenen Block angezeigt.
+  - Archiv-Keyring-Treffer werden in einem eigenen Block angezeigt.
+  - erwarteter Fingerprint/Key-ID und tatsächlich gefundener Haupt-/Subkey werden getrennt sichtbar.
+- Mehrfachauswahl vereinfacht:
+  - Einzel-Buttons pro Fingerprint entfernt.
+  - nur noch ein Button „Ausgewählte Keys übernehmen + Profil-Keyring erzeugen“.
+  - ausgewählte Master- und Archivtreffer werden gemeinsam verarbeitet.
+- Checkbox-Auswahl stabilisiert:
+  - manuell abgewählte Treffer bleiben abgewählt, auch wenn die Live-Fehlerdiagnose erneut gerendert wird.
+  - verhindert das automatische erneute Auswählen aller Treffer nach Fokuswechsel/Refresh.
+- VERSION auf 0.1.58 gesetzt.
+
+## v0.1.57 - Fehlerauswertung mit Master-/Subkey-Zuordnung
+
+- Fehlerauswertung bei fehlenden GPG-Keys erweitert:
+  - Master-Keyring-Treffer werden jetzt auch gefunden, wenn im Log nur ein Signing-Subkey oder eine kurze Key-ID gemeldet wird.
+  - der gefundene Subkey wird auf den passenden Hauptkey im Master-Keyring abgebildet.
+  - daraus wird weiterhin ein bereinigter Profil-Keyring erzeugt, nicht der komplette Master-Keyring zugewiesen.
+- Mehrfachzuordnung ergänzt:
+  - mehrere benötigte Fingerprints können in der Fehlerauswertung gemeinsam ausgewählt werden.
+  - ausgewählte Keys werden in einem Schritt dem Mirror-Profil zugeordnet.
+  - danach wird der Profil-Keyring einmal neu erzeugt.
+- Archiv-Treffer werden beim Zuweisen zuerst in den Master-Keyring importiert und danach ebenfalls als Fingerprint-Zuordnung gespeichert.
+- VERSION auf 0.1.57 gesetzt.
+
+## v0.1.56 - Master-Keyring Zählung und Voll-Neuaufbau
+
+- Master-Keyring-Status erweitert:
+  - Hauptkeys, Subkeys und Gesamt-Fingerprints werden getrennt angezeigt.
+  - Archivdateien und daraus erkannte Hauptkey-Fingerprints werden angezeigt.
+  - entfernte/ausgeschlossene Fingerprints werden sichtbar gemacht.
+- Neuer Button „Vollständig neu aufbauen“:
+  - baut den Master-Keyring aus allen Archivdateien neu auf.
+  - entfernt vorherige Entfernsperren, falls bewusst gelöschte Keys wieder importiert werden sollen.
+- Normales „Master-Keyring neu aufbauen“ behält das bisherige Schutzverhalten bei und importiert bewusst entfernte Keys nicht automatisch erneut.
+- Archivübersicht zeigt Hauptkeys und Subkey-Anzahl getrennt an.
+
+## v0.1.55
+
+- Profil-Keyrings: Button „Profil-Keyring gezielt erzeugen“ in „Profil-Keyring erzeugen“ umbenannt.
+- Profil-Keyrings: „Profil-Keyring neu erzeugen“ ist deaktiviert, solange noch kein Profil-Keyring bzw. keine Key-Zuordnung vorhanden ist.
+- Dashboard: Mirror-Status zeigt jetzt „no key“, wenn kein Keyring zugeordnet oder kein Profil-Keyring erzeugt ist.
+- VERSION auf 0.1.55 gesetzt.
+
+## v0.1.54
+
+- Profil-Keyring-Entfernen korrigiert: Master-Fingerprint-Zuordnungen werden jetzt wirklich entfernt, statt durch das alte Feld „Master-Keyring“ wieder erhalten zu bleiben.
+- Profilformular und neue Fingerprint-Zuordnung synchronisiert: Wenn im Profilformular „Kein zusätzlicher Keyring“ gespeichert wird, werden auch die zentralen Profil-Keyring-Zuordnungen und erzeugten Profil-Keyring-Dateien entfernt.
+- Aktuell erzeugte Profil-Keyrings bleiben im Profilformular als ausgewählter Wert sichtbar, damit sie bei normalen Profiländerungen nicht versehentlich entfernt werden.
+- VERSION auf 0.1.54 gesetzt.
+
+## v0.1.53
+
+- Fehlerauswertung bei fehlenden GPG-Keys korrigiert:
+  - Treffer aus dem Master-Keyring werden nicht mehr als komplette Keyring-Datei zugewiesen.
+  - der passende Fingerprint wird direkt dem Mirror-Profil zugeordnet.
+  - danach wird automatisch ein bereinigter Profil-Keyring erzeugt.
+  - behebt die Meldung „Der ausgewählte Keyring enthält den erwarteten Fingerprint nicht.“ beim Klick auf „vorhandenen Keyring zuweisen“.
+- Anzeige in der Fehlerauswertung präzisiert:
+  - Button jetzt „Master-Key zuweisen + Profil-Keyring erzeugen“ bei Master-Treffern.
+  - Archiv-Treffer werden getrennt als Archiv-Key angezeigt.
+- VERSION auf 0.1.53 gesetzt.
+
+## v0.1.52
+
+- Master-Keyring-Verwaltung erweitert:
+  - einzelne Keys können aus dem Master-Keyring entfernt werden.
+  - das Entfernen wird blockiert, wenn der Key noch einem Mirror-Profil zugeordnet ist.
+  - entfernte Fingerprints werden gemerkt und beim späteren Neuaufbau nicht automatisch wieder aus Archivdateien importiert.
+- Archivverwaltung ergänzt:
+  - archivierte Importdateien können jetzt einzeln gelöscht werden.
+  - zugehörige Archiv-Metadaten werden beim Löschen bereinigt.
+  - der aktuelle Master-Keyring bleibt beim Löschen einer Archivdatei unverändert.
+- Keyring-Oberfläche ergänzt:
+  - Button „Aus Master entfernen“ pro Master-Key.
+  - Button „Archivdatei löschen“ pro archivierter Importdatei.
+- VERSION auf 0.1.52 gesetzt.
+
+## v0.1.51
+
+- Master-Keyring-Status korrigiert:
+  - Key-Anzahl und Key-Details werden jetzt mit `gpg --no-default-keyring --keyring ... --list-keys` aus der echten Master-Keyring-Datei gelesen.
+  - dadurch wird nach „Master-Keyring neu aufgebaut“ nicht mehr fälschlich `Keys 0` angezeigt.
+- Keyring-Verwaltung umgestellt:
+  - Hauptübersicht zeigt jetzt die Keys im Master-Keyring.
+  - einzelne Importdateien werden nach dem Import als Archiv-/Quelldateien behandelt.
+  - neue Importdateien werden unter `keyrings/archive/` abgelegt und nicht mehr als aktive Keyrings gelistet.
+- Profil-Zuordnung verbessert:
+  - Zuordnung erfolgt direkt per Fingerprint aus dem Master-Keyring.
+  - Mirror-Detailseite nutzt die Master-Key-Liste für die Fingerprint-Auswahl.
+  - Profil-Keyrings und Client-Exports bleiben dadurch auf die wirklich zugeordneten Keys begrenzt.
+- VERSION auf 0.1.51 gesetzt.
+
+## v0.1.50
+
+- Master-Keyring ergänzt:
+  - alle importierten Keyrings werden zusätzlich in einen zentralen Master-Keyring importiert.
+  - vorhandene Key-Dateien bleiben als Verwaltungs-/Importdateien erhalten.
+  - der Master-Keyring kann in der Keyring-Verwaltung neu aufgebaut werden.
+- Profil-Keyring-Erzeugung umgebaut:
+  - keine einfache Kopie ganzer Keyring-Dateien mehr.
+  - zugeordnete Fingerprints werden gezielt aus dem Master-Keyring exportiert.
+  - Profil-Keyrings enthalten dadurch nur noch die Keys, die dem jeweiligen Mirror-Profil zugeordnet sind.
+  - alte Dateizuordnungen ohne Fingerprint bleiben kompatibel und werden als Altzuordnung angezeigt.
+- Client-Export verbessert:
+  - verwendet den bereinigten Profil-Keyring.
+  - Export-ZIP enthält damit nur die für dieses Mirror-Profil benötigten Keys.
+- Mirror-Detailseite erweitert:
+  - Zuordnung einzelner Fingerprints möglich.
+  - Profil-Keyrings können aus den Fingerprint-Zuordnungen neu erzeugt werden.
+- VERSION auf 0.1.50 gesetzt.
+
+## v0.1.49
+
+- Keyring-Zuordnung zu Mirror-Profilen erweitert:
+  - Keyrings können direkt aus der Keyring-Verwaltung einem Profil zugeordnet werden.
+  - Mirror-Detailseite enthält einen eigenen Block für Profil-Keyrings.
+  - Mehrere Keys pro Profil sind möglich.
+- Automatische Profil-Keyrings ergänzt:
+  - aus den zugeordneten Keys wird ein generierter Profil-Keyring unter `keyrings/profiles/` erstellt.
+  - debmirror verwendet diesen Profil-Keyring automatisch.
+  - Profil-Keyring kann manuell neu erzeugt werden.
+- Migration ergänzt:
+  - alte direkte Keyring-Pfade werden als Profil-Zuordnung sichtbar gemacht.
+  - ungenutzte Keyrings werden markiert.
+  - Zuordnungen werden im Konfig-Export/-Import berücksichtigt.
+- VERSION auf 0.1.49 gesetzt.
+
+## v0.1.48
+
+- Keyring-Import erweitert:
+  - Datei-, URL- und Textimport können vor dem Speichern geprüft werden.
+  - Import-Vorschau zeigt UID, Key-ID, Fingerprint, Algorithmus, Erstellung, Ablauf, Status und Subkeys.
+  - Duplikaterkennung per Fingerprint ergänzt.
+  - Importierte Fingerprints werden zusätzlich als zentrale Metadaten in `settings.json` gepflegt.
+  - vorhandene Keyring-Dateien werden beim Import nicht mehr automatisch überschrieben.
+- VERSION auf 0.1.48 gesetzt.
+
+## v0.1.47
+
+- Keyrings-Seite korrigiert:
+  - Internal Server Error durch Jinja-Konflikt mit `k.keys` behoben.
+  - Key-Detailtabelle nutzt jetzt ein eindeutiges Datenfeld.
+- VERSION auf 0.1.47 gesetzt.
+
+## v0.1.46
+
+- Keyring-Verwaltung erweitert:
+  - UID, Key-ID, Fingerprint, Algorithmus, Erstellung, Ablauf und Status werden angezeigt.
+  - Anzeigename, Quelle, Notiz und Aktiv-Marker können pro Keyring gespeichert werden.
+  - Zuordnung zu Mirror-Profilen wird direkt in der Keyring-Übersicht angezeigt.
+  - einzelne Keyrings und einzelne Hauptkeys können als `.gpg` oder `.asc` exportiert werden.
+- Client-Export pro Mirror-Profil ergänzt:
+  - erzeugt ZIP mit Keyring, Deb822-Quelle, klassischer `.list` und README.
+  - Client-Basis-URL wird beim Export abgefragt.
+- `VERSION` geprüft: 0.1.46.
+
 ## v0.1.45
 
 - Dashboard: Status-Badges mit Job-ID (`aktiv #ID`, `queue #ID`, weitere Jobzustände) sind jetzt direkt anklickbar und öffnen den zugehörigen Job.

@@ -43,18 +43,18 @@
 <section class="card">
   <h2>Profile</h2>
   {% if mirrors %}
-  <table>
+  <table class="mirror-profile-table">
     <thead><tr><th>Name</th><th>Status</th><th>Mirror-Größe</th><th>Repository</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktionen</th></tr></thead>
     <tbody>
     {% for m in mirrors %}
       <tr>
-        <td><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
-        <td>{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
-        <td><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
-        <td><small>{{ m.method }}://{{ m.host }}/{{ m.root_path }}<br>{{ m.dists }} · {{ m.sections }} · {{ m.archs }}</small></td>
-        <td>{{ m.schedule_display }}</td>
-        <td>{% if m.last_job %}<a href="{{ url_for('job_detail', job_id=m.last_job.id) }}"><span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span></a><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
-        <td class="actions compact-actions">
+        <td data-label="Name"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
+        <td data-label="Status" class="status-cell">{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
+        <td data-label="Mirror-Größe"><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
+        <td data-label="Repository"><small>{{ m.method }}://{{ m.host }}/{{ m.root_path }}<br>{{ m.dists }} · {{ m.sections }} · {{ m.archs }}</small></td>
+        <td data-label="Zeitplan">{{ m.schedule_display }}</td>
+        <td data-label="Letzter Job">{% if m.last_job %}<a href="{{ url_for('job_detail', job_id=m.last_job.id) }}"><span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span></a><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
+        <td data-label="Aktionen" class="actions compact-actions">
           <a class="button" href="{{ url_for('mirror_detail', mirror_id=m.id) }}">Öffnen</a>
           {% if is_admin %}<a class="button" href="{{ url_for('mirror_edit', mirror_id=m.id) }}">Bearbeiten</a>{% endif %}
           {% if m.running_job %}

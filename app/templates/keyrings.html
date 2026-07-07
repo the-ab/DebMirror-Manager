@@ -4,7 +4,7 @@
 <div class="page-head">
   <div>
     <h1>Keyrings</h1>
-    <p>Archiv-Keys verwalten. Für debmirror werden importierte ASCII-Keys automatisch nach <code>.gpg</code> konvertiert.</p>
+    <p>Archiv-Keys verwalten, Keys im Master-Keyring sammeln, gezielt Profilen zuordnen und saubere Client-Exports vorbereiten.</p>
   </div>
 </div>
 {% if prefill_fp %}
@@ -14,31 +14,160 @@
   {% if assign_mirror_id %}<p>Nach erfolgreichem Import wird der Keyring automatisch im betroffenen Mirror-Profil hinterlegt.</p>{% endif %}
 </section>
 {% endif %}
+
+<section class="card">
+  <h2>Master-Keyring</h2>
+  <p>Der Master-Keyring sammelt alle importierten Keys. Profil-Keyrings werden daraus gezielt per Fingerprint exportiert, damit pro Mirror nur die benötigten Keys enthalten sind.</p>
+  <dl>
+    <dt>Status</dt><dd>{% if master_exists %}<span class="badge ok">vorhanden</span>{% else %}<span class="badge warning">noch nicht erzeugt</span>{% endif %}</dd>
+    <dt>Pfad</dt><dd><code>{{ master_keyring_path }}</code></dd>
+    <dt>Größe</dt><dd>{{ (master_size / 1024)|round(1) }} KiB</dd>
+    <dt>Hauptkeys</dt><dd>{{ master_status.primary_count }}</dd>
+    <dt>Subkeys</dt><dd>{{ master_status.subkey_count }}</dd>
+    <dt>Fingerprints gesamt</dt><dd>{{ master_status.all_fingerprint_count }}</dd>
+    <dt>Archivdateien</dt><dd>{{ master_status.archive_file_count }} Datei(en), {{ master_status.archive_primary_count }} Hauptkey-Fingerprint(s)</dd>
+    <dt>Ausgeschlossene entfernte Keys</dt><dd>{% if master_status.removed_count %}<span class="badge warning">{{ master_status.removed_count }}</span>{% else %}<span class="badge ok">0</span>{% endif %}</dd>
+  </dl>
+  {% if master_status.removed_count %}
+    <div class="notice warning">
+      Es gibt {{ master_status.removed_count }} zuvor aus dem Master entfernte Fingerprint(s).
+      Beim normalen Neuaufbau werden diese absichtlich wieder ausgeschlossen.
+      Für einen vollständigen Test-Neuaufbau aus allen Archivdateien den Button „Vollständig neu aufbauen“ verwenden.
+    </div>
+  {% endif %}
+  {% if master_status.warnings %}
+    <div class="notice warning"><strong>GPG-Hinweise:</strong><br>{% for w in master_status.warnings %}<code>{{ w }}</code><br>{% endfor %}</div>
+  {% endif %}
+  {% if master_fingerprints %}
+    <p class="hint">{% for fp in master_fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+  {% endif %}
+  <div class="actions compact-actions">
+    <form method="post" class="inline">
+      <input type="hidden" name="action" value="rebuild_master_keyring">
+      <button type="submit">Master-Keyring neu aufbauen</button>
+    </form>
+    <form method="post" class="inline" onsubmit="return confirm('Master-Keyring vollständig aus Archivdateien neu aufbauen und bisherige Entfernsperren löschen? Dadurch können bewusst entfernte Keys wieder importiert werden.');">
+      <input type="hidden" name="action" value="rebuild_master_keyring_full">
+      <button type="submit">Vollständig neu aufbauen</button>
+    </form>
+    <form method="post" class="inline">
+      <input type="hidden" name="action" value="rebuild_all_profile_keyrings">
+      <button type="submit">Alle Profil-Keyrings neu erzeugen</button>
+    </form>
+  </div>
+</section>
+
+{% if import_preview %}
+<section class="card key-preview-card">
+  <h2>Import-Vorschau</h2>
+  <p>Quelle: <code>{{ import_preview.source_name }}</code>{% if import_preview.source_url %}<br>URL: <code>{{ import_preview.source_url }}</code>{% endif %}</p>
+  {% if import_preview.valid %}
+    {% if import_preview.expected and not import_preview.expected_ok %}
+      <div class="notice danger">Der erwartete Fingerprint <code>{{ import_preview.expected }}</code> wurde in diesem Key nicht gefunden. Import ist nicht empfohlen.</div>
+    {% elif import_preview.duplicates %}
+      <div class="notice warning">
+        <strong>Duplikat erkannt:</strong><br>
+        {% for d in import_preview.duplicates %}
+          <code>{{ d.fingerprint }}</code> ist bereits in <code>{{ d.name }}</code> vorhanden.<br>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="notice ok">Key sieht verwendbar aus. Kein vorhandener identischer Fingerprint wurde gefunden.</div>
+    {% endif %}
+    <div class="table-wrap keyring-table-wrap">
+      <table class="keyring-detail-table">
+        <thead><tr><th>Key-ID</th><th>Fingerprint</th><th>UID</th><th>Algorithmus</th><th>Erstellt</th><th>Ablauf</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for key in import_preview.key_entries %}
+          <tr>
+            <td><code>{{ key.key_id or '-' }}</code></td>
+            <td><code>{{ key.fingerprint or '-' }}</code></td>
+            <td>{% if key.uids %}{% for uid in key.uids %}<span title="{{ uid.status }}">{{ uid.uid }}</span><br>{% endfor %}{% else %}-{% endif %}</td>
+            <td>{{ key.algorithm }}{% if key.length %} · {{ key.length }} Bit{% endif %}</td>
+            <td>{{ key.created or '-' }}</td>
+            <td>{{ key.expires or 'kein Ablauf' }}</td>
+            <td><span class="badge {{ key.status_class }}">{{ key.status }}</span></td>
+          </tr>
+          {% for sub in key.subkeys %}
+          <tr class="subkey-row"><td><small>Subkey</small><br><code>{{ sub.key_id or '-' }}</code></td><td><code>{{ sub.fingerprint or '-' }}</code></td><td>-</td><td>{{ sub.algorithm }}{% if sub.length %} · {{ sub.length }} Bit{% endif %}</td><td>{{ sub.created or '-' }}</td><td>{{ sub.expires or 'kein Ablauf' }}</td><td><span class="badge {{ sub.status_class }}">{{ sub.status }}</span></td></tr>
+          {% endfor %}
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <form method="post" class="grid two compact-form">
+      <input type="hidden" name="action" value="import_previewed">
+      <input type="hidden" name="preview_token" value="{{ import_preview.token }}">
+      <input type="hidden" name="expected_fingerprint" value="{{ import_preview.expected or prefill_fp or '' }}">
+      <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
+      <label>Dateiname<input name="filename" value="{{ import_preview.suggested_filename }}"></label>
+      <label>Anzeigename<input name="display_name" placeholder="z. B. Webmin Repository Key"></label>
+      <label>Quelle / URL<input name="source_url" value="{{ import_preview.source_url }}"></label>
+      <label>Notiz<textarea name="notes" rows="2"></textarea></label>
+      {% if import_preview.duplicates %}<label class="check"><input type="checkbox" name="allow_duplicate"> Duplikat trotzdem importieren</label>{% endif %}
+      <div><button class="primary" type="submit" {% if import_preview.expected and not import_preview.expected_ok %}disabled title="Erwarteter Fingerprint passt nicht"{% endif %}>Key importieren</button></div>
+    </form>
+  {% else %}
+    <div class="notice danger">In den geprüften Daten wurde kein gültiger OpenPGP-Key erkannt.</div>
+  {% endif %}
+  {% if import_preview.warnings %}
+    <div class="notice warning"><strong>GPG-Hinweis:</strong><br>{% for w in import_preview.warnings %}<code>{{ w }}</code><br>{% endfor %}</div>
+  {% endif %}
+</section>
+{% endif %}
+
 <div class="grid two">
   <section class="card">
     <h2>Key-Datei hochladen</h2>
     <form method="post" enctype="multipart/form-data">
-      <input type="hidden" name="action" value="upload">
       <label>Key-Datei</label>
       <input type="file" name="keyfile" required>
       <label>Erwarteter Fingerprint optional</label>
       <input name="expected_fingerprint" value="{{ prefill_fp or '' }}" placeholder="ohne Leerzeichen oder mit Leerzeichen möglich">
+      <label>Anzeigename optional</label>
+      <input name="display_name" placeholder="z. B. Webmin Repository Key">
+      <label>Quelle / URL optional</label>
+      <input name="source_url" placeholder="https://...">
+      <label>Notiz optional</label>
+      <textarea name="notes" rows="2" placeholder="z. B. aus Repository-Scanner übernommen"></textarea>
+      <label class="check"><input type="checkbox" name="allow_duplicate"> Duplikate erlauben</label>
       <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
-      <button class="primary" type="submit">Hochladen</button>
+      <button class="primary" type="submit" name="action" value="preview_upload">Vorschau prüfen</button>
+      <button type="submit" name="action" value="upload">Direkt importieren</button>
     </form>
   </section>
   <section class="card">
     <h2>Key aus URL importieren</h2>
     <form method="post">
-      <input type="hidden" name="action" value="url">
       <label>URL</label>
       <input name="url" placeholder="https://..." required>
       <label>Dateiname</label>
       <input name="filename" placeholder="debian-archive-keyring.gpg">
       <label>Erwarteter Fingerprint optional</label>
       <input name="expected_fingerprint" value="{{ prefill_fp or '' }}">
+      <label>Anzeigename optional</label>
+      <input name="display_name" placeholder="z. B. Hersteller Repository Key">
+      <label>Notiz optional</label>
+      <textarea name="notes" rows="2"></textarea>
+      <label class="check"><input type="checkbox" name="allow_duplicate"> Duplikate erlauben</label>
       <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
-      <button class="primary" type="submit">Importieren</button>
+      <button class="primary" type="submit" name="action" value="preview_url">Vorschau prüfen</button>
+      <button type="submit" name="action" value="url">Direkt importieren</button>
+    </form>
+  </section>
+  <section class="card">
+    <h2>ASCII-Key einfügen</h2>
+    <form method="post">
+      <label>ASCII-armored Public Key</label>
+      <textarea name="key_text" rows="8" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
+      <label>Dateiname optional</label>
+      <input name="filename" placeholder="hersteller-key.asc">
+      <label>Erwarteter Fingerprint optional</label>
+      <input name="expected_fingerprint" value="{{ prefill_fp or '' }}">
+      <label>Quelle / URL optional</label>
+      <input name="source_url" placeholder="https://...">
+      <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
+      <button class="primary" type="submit" name="action" value="preview_text">Vorschau prüfen</button>
     </form>
   </section>
   <section class="card">
@@ -51,6 +180,11 @@
       <input name="keyserver" value="hkps://keyserver.ubuntu.com">
       <label>Dateiname optional</label>
       <input name="filename" placeholder="automatisch aus Key-ID">
+      <label>Anzeigename optional</label>
+      <input name="display_name" placeholder="z. B. Debian Archive Key">
+      <label>Notiz optional</label>
+      <textarea name="notes" rows="2"></textarea>
+      <label class="check"><input type="checkbox" name="allow_duplicate"> Duplikate erlauben</label>
       <input type="hidden" name="assign_mirror_id" value="{{ assign_mirror_id or '' }}">
       <button class="primary" type="submit">Vom Keyserver importieren</button>
       <p class="hint">Nur verwenden, wenn der Fingerprint aus einer vertrauenswürdigen Quelle geprüft wurde.</p>
@@ -59,21 +193,127 @@
 </div>
 
 <section class="card">
-  <h2>Vorhandene Keyrings</h2>
-  {% if keyrings %}
-  <table>
-    <thead><tr><th>Name</th><th>Pfad</th><th>Fingerprints</th><th>Aktion</th></tr></thead>
-    <tbody>
-    {% for k in keyrings %}
-      <tr>
-        <td>{{ k.name }}</td>
-        <td><code>{{ k.path }}</code></td>
-        <td>{% if k.fingerprints %}{% for fp in k.fingerprints %}<code>{{ fp }}</code><br>{% endfor %}{% else %}<span class="badge warning">kein Fingerprint erkannt</span>{% endif %}</td>
-        <td><form method="post" action="{{ url_for('keyring_delete', filename=k.name) }}" onsubmit="return confirm('Keyring löschen?');"><button class="danger" type="submit">Löschen</button></form></td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% else %}<p>Noch keine Keyrings vorhanden.</p>{% endif %}
+  <h2>Keys im Master-Keyring</h2>
+  <p class="hint">Diese Liste kommt direkt aus der Master-Keyring-Datei. Importierte Einzeldateien werden nach dem Import nur noch als Archiv-/Quelldateien verwendet und erscheinen hier nicht mehr als aktive Keyrings.</p>
+  {% if master_key_entries %}
+  <div class="keyring-list">
+  {% for key in master_key_entries %}
+    <article class="keyring-card">
+      <div class="keyring-card-head">
+        <div>
+          <h3>{{ key.display_name }}</h3>
+          <p><code>{{ key.fingerprint }}</code></p>
+          {% if key.source_url %}<p>Quelle: <code>{{ key.source_url }}</code></p>{% endif %}
+          {% if key.notes %}<p>{{ key.notes }}</p>{% endif %}
+        </div>
+        <div class="actions compact-actions">
+          <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='gpg') }}">.gpg exportieren</a>
+          <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='asc') }}">.asc exportieren</a>
+          <form method="post" class="inline" onsubmit="return confirm('Diesen Key wirklich aus dem Master-Keyring entfernen?');">
+            <input type="hidden" name="action" value="delete_master_key">
+            <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+            <button class="danger" type="submit" {% if key.used_by %}disabled title="Key ist noch Profilen zugeordnet"{% endif %}>Aus Master entfernen</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="table-wrap keyring-table-wrap">
+        <table class="keyring-detail-table">
+          <thead><tr><th>Key-ID</th><th>Fingerprint</th><th>UID</th><th>Algorithmus</th><th>Erstellt</th><th>Ablauf</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><code>{{ key.key_id or '-' }}</code></td>
+              <td><code>{{ key.fingerprint or '-' }}</code></td>
+              <td>{% if key.uids %}{% for uid in key.uids %}<span title="{{ uid.status }}">{{ uid.uid }}</span><br>{% endfor %}{% else %}-{% endif %}</td>
+              <td>{{ key.algorithm }}{% if key.length %} · {{ key.length }} Bit{% endif %}</td>
+              <td>{{ key.created or '-' }}</td>
+              <td>{{ key.expires or 'kein Ablauf' }}</td>
+              <td><span class="badge {{ key.status_class }}">{{ key.status }}</span></td>
+            </tr>
+            {% for sub in key.subkeys %}
+            <tr class="subkey-row">
+              <td><small>Subkey</small><br><code>{{ sub.key_id or '-' }}</code></td>
+              <td><code>{{ sub.fingerprint or '-' }}</code></td>
+              <td><small>-</small></td>
+              <td>{{ sub.algorithm }}{% if sub.length %} · {{ sub.length }} Bit{% endif %}</td>
+              <td>{{ sub.created or '-' }}</td>
+              <td>{{ sub.expires or 'kein Ablauf' }}</td>
+              <td><span class="badge {{ sub.status_class }}">{{ sub.status }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="keyring-usage">
+        <h4>Profil-Zuordnung</h4>
+        <form method="post" class="inline-form keyring-assign-form">
+          <input type="hidden" name="action" value="assign_keyring_to_profile">
+          <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+          <label>Diesem Profil zuordnen
+            <select name="profile_mirror_id" required>
+              <option value="">Profil wählen</option>
+              {% for mirror in mirror_choices %}
+              <option value="{{ mirror.id }}">{{ mirror.name }}{% if not mirror.enabled %} · inaktiv{% endif %}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Key zuordnen</button>
+        </form>
+
+        <h4>Verwendet von</h4>
+        {% if key.used_by %}
+          <ul class="usage-list">
+          {% for m in key.used_by %}
+            <li>
+              <a href="{{ url_for('mirror_detail', mirror_id=m.id) }}">{{ m.name }}</a>
+              <span class="badge muted">{{ m.usage_type or 'zugeordnet' }}</span>
+              {% if not m.enabled %} <span class="badge muted">Profil inaktiv</span>{% endif %}
+              <form method="post" class="inline" onsubmit="return confirm('Zuordnung zu diesem Profil entfernen?');">
+                <input type="hidden" name="action" value="unassign_keyring_from_profile">
+                <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+                <input type="hidden" name="profile_mirror_id" value="{{ m.id }}">
+                <button class="mini" type="submit">Zuordnung entfernen</button>
+              </form>
+            </li>
+          {% endfor %}
+          </ul>
+        {% else %}
+          <p><span class="badge warning">keinem Mirror-Profil zugeordnet</span></p>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+  </div>
+  {% else %}<p>Noch keine Keys im Master-Keyring vorhanden.</p>{% endif %}
 </section>
+
+{% if archived_keyrings %}
+<section class="card">
+  <details>
+    <summary>Archivierte Importdateien anzeigen</summary>
+    <p class="hint">Diese Dateien bleiben als Import-/Nachweisquelle erhalten. Für Profile und Client-Exports wird der Master-Keyring verwendet.</p>
+    <table>
+      <thead><tr><th>Datei</th><th>Pfad</th><th>Hauptkeys</th><th>Subkeys</th><th>Aktion</th></tr></thead>
+      <tbody>
+      {% for a in archived_keyrings %}
+        <tr>
+          <td><code>{{ a.name }}</code></td>
+          <td><code>{{ a.path }}</code></td>
+          <td>{% for fp in a.fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% else %}-{% endfor %}</td>
+          <td>{% if a.subkey_fingerprints %}{{ a.subkey_fingerprints|length }}{% else %}0{% endif %}</td>
+          <td>
+            <form method="post" class="inline" onsubmit="return confirm('Archivierte Importdatei wirklich löschen? Der aktuelle Master-Keyring bleibt unverändert, ein späterer Neuaufbau nutzt diese Datei dann aber nicht mehr.');">
+              <input type="hidden" name="action" value="delete_archived_keyring">
+              <input type="hidden" name="filename" value="{{ a.name }}">
+              <button class="danger" type="submit">Archivdatei löschen</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</section>
+{% endif %}
 {% endblock %}

@@ -36,6 +36,76 @@
       <dt>Zeitplan</dt><dd>{{ mirror.schedule_mode }} {{ mirror.schedule_time if mirror.schedule_mode in ['daily','weekly'] else '' }}{% if mirror.schedule_mode == 'interval' %}alle {{ mirror.interval_hours }} Stunden{% endif %}</dd>
     </dl>
   </section>
+  {% if is_admin %}
+  <section class="card">
+    <h2>Profil-Keyrings</h2>
+    <p class="hint">Wähle die einzelnen Fingerprints aus, die dieses Profil verwenden darf. Beim Speichern wird aus dem Master-Keyring ein bereinigter Profil-Keyring erzeugt.</p>
+    {% if profile_keyrings %}
+      <ul class="compact-list">
+      {% for k in profile_keyrings %}
+        <li>
+          <strong>{{ k.display_name }}</strong> <code>{{ k.name }}</code>
+          {% if k.missing %}<span class="badge danger">fehlt</span>{% elif not k.active %}<span class="badge muted">inaktiv</span>{% endif %}
+          {% if k.fingerprints %}<br><small>{% for fp in k.fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</small>{% endif %}
+          {% if k.legacy_whole_file %}<br><span class="badge warning">Altzuordnung: alle Keys aus Datei</span>{% endif %}
+          <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="inline" onsubmit="return confirm('Key-Zuordnung entfernen?');">
+            <input type="hidden" name="action" value="remove_assignment">
+            <input type="hidden" name="filename" value="{{ '' if k.master_assignment else k.name }}">
+            <input type="hidden" name="fingerprint" value="{{ k.selected_fingerprint or '' }}">
+            <button class="mini" type="submit">Entfernen</button>
+          </form>
+        </li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p><span class="badge warning">keine Profil-Keyrings zugeordnet</span></p>
+    {% endif %}
+
+    <details>
+      <summary>Zuordnungen bearbeiten</summary>
+      <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="compact-form">
+        <input type="hidden" name="action" value="save_assignments">
+        <div class="checkbox-list">
+        {% for key in keyring_options %}
+          {% set assignment_val = key.assignment_value %}
+          <label class="check key-fingerprint-choice">
+            <input type="checkbox" name="keyring_assignments" value="{{ assignment_val }}" {% if assignment_val in profile_keyring_values %}checked{% endif %}>
+            <code>{{ key.fingerprint }}</code>
+            {% if key.uids %}<small> · {{ key.uids[0].uid }}</small>{% elif key.key_id %}<small> · {{ key.key_id }}</small>{% endif %}
+          </label>
+        {% else %}
+          <span class="badge warning">keine Keys im Master-Keyring vorhanden</span>
+        {% endfor %}
+        </div>
+        <button class="primary" type="submit">Profil-Keyring erzeugen</button>
+      </form>
+      <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="inline">
+        <input type="hidden" name="action" value="rebuild_profile_keyring">
+        {% if profile_keyrings %}
+          <button type="submit">Profil-Keyring neu erzeugen</button>
+        {% else %}
+          <button type="button" disabled title="Es ist noch kein Key zugeordnet. Wähle zuerst mindestens einen Key aus und klicke auf Profil-Keyring erzeugen.">Profil-Keyring neu erzeugen</button>
+        {% endif %}
+      </form>
+      <p class="hint">Aktiver bereinigter debmirror-Keyring: <code>{{ mirror.keyring or '-' }}</code></p>
+    </details>
+  </section>
+  <section class="card">
+    <h2>Client-Export</h2>
+    <p>Erzeugt ein ZIP für APT-Clients mit bereinigtem Profil-Keyring, Deb822-Quelle, klassischer .list-Datei und kurzer Installationsanleitung.</p>
+    {% if mirror.keyring %}
+    <form method="post" action="{{ url_for('mirror_client_export', mirror_id=mirror.id) }}">
+      <label>Client-Basis-URL des veröffentlichten Mirrors</label>
+      <input name="client_base_url" placeholder="z. B. https://mirror.lan/{{ mirror.name|lower }}" required>
+      <p class="hint">Die URL muss auf deinen veröffentlichten Mirror zeigen, nicht auf die Upstream-Quelle {{ mirror.method }}://{{ mirror.host }}/{{ mirror.root_path }}.</p>
+      <button type="submit">Client-Export erstellen</button>
+    </form>
+    {% else %}
+      <p><span class="badge warning">kein Keyring hinterlegt</span></p>
+      <p><a class="button" href="{{ url_for('keyrings', mirror_id=mirror.id) }}">Keyring importieren</a></p>
+    {% endif %}
+  </section>
+  {% endif %}
   <section class="card">
     <h2>Speicher / Größe</h2>
     <dl>

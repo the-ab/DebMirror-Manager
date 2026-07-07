@@ -60,7 +60,21 @@
   });
   function setDiagnosisHtml(html) {
     const wrapper = document.getElementById('diagnosis-wrapper');
-    if (wrapper && typeof html === 'string') wrapper.innerHTML = html;
+    if (!wrapper || typeof html !== 'string') return;
+
+    const checkboxState = {};
+    wrapper.querySelectorAll('input[type="checkbox"][data-diagnosis-match-key]').forEach(function(input) {
+      checkboxState[input.dataset.diagnosisMatchKey] = input.checked;
+    });
+
+    wrapper.innerHTML = html;
+
+    wrapper.querySelectorAll('input[type="checkbox"][data-diagnosis-match-key]').forEach(function(input) {
+      const key = input.dataset.diagnosisMatchKey;
+      if (Object.prototype.hasOwnProperty.call(checkboxState, key)) {
+        input.checked = checkboxState[key];
+      }
+    });
   }
 
   function refreshDiagnosis(attempt) {

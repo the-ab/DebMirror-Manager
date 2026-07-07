@@ -9,35 +9,99 @@
     <h3>Erkannte fehlende Keys</h3>
     {% if diagnosis.matching_keyrings %}
     <div class="notice success">
-      <strong>Passende vorhandene Keyrings gefunden.</strong><br>
-      Die vorhandenen Keyring-Dateien wurden geprüft. Du kannst einen Treffer direkt dem betroffenen Mirror-Profil zuweisen, ohne den Key erneut zu importieren.
+      <strong>Passende vorhandene Keys gefunden.</strong><br>
+      Master-Keyring und Archiv-Keyrings werden getrennt angezeigt. Wähle die benötigten Fingerprints aus und übernimm sie gemeinsam; danach wird automatisch ein bereinigter Profil-Keyring erzeugt.
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Keyring</th><th>Passender Fingerprint</th><th>Aktion</th></tr></thead>
-        <tbody>
-        {% for match in diagnosis.matching_keyrings %}
-          <tr>
-            <td><code>{{ match.name }}</code></td>
-            <td><code>{{ match.fingerprint }}</code></td>
-            <td>
-              <form method="post" action="{{ url_for('keyrings') }}" class="inline-form">
-                <input type="hidden" name="action" value="assign_existing">
-                <input type="hidden" name="keyring" value="{{ match.path }}">
-                <input type="hidden" name="expected_fingerprint" value="{{ match.expected or match.fingerprint }}">
-                <input type="hidden" name="assign_mirror_id" value="{{ job.mirror_id }}">
-                <button type="submit">Vorhandenen Keyring zuweisen</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    <form method="post" action="{{ url_for('keyrings') }}" class="diagnosis-key-form">
+      <input type="hidden" name="action" value="assign_matching_keys">
+      <input type="hidden" name="assign_mirror_id" value="{{ job.mirror_id }}">
+
+      {% set ns = namespace(has_master=false, has_archive=false) %}
+      {% for match in diagnosis.matching_keyrings %}
+        {% if match.kind == 'master' %}{% set ns.has_master = true %}{% endif %}
+        {% if match.kind == 'file' %}{% set ns.has_archive = true %}{% endif %}
+      {% endfor %}
+
+      <div class="diagnosis-key-groups">
+        <div class="diagnosis-key-group">
+          <h4>Master-Keyring</h4>
+          {% if ns.has_master %}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Auswahl</th><th>Erwartet</th><th>Erkannt über</th><th>Zuzuordnender Key</th></tr></thead>
+              <tbody>
+              {% for match in diagnosis.matching_keyrings %}
+                {% if match.kind == 'master' %}
+                  {% set idx = loop.index0 %}
+                  {% set choice_key = match.kind ~ ':' ~ (match.expected or '') ~ ':' ~ (match.fingerprint or '') ~ ':' ~ (match.matched_fingerprint or '') %}
+                  <tr>
+                    <td>
+                      <input type="checkbox" name="selected_match" value="{{ idx }}" checked data-diagnosis-match-key="{{ choice_key }}">
+                      <input type="hidden" name="match_kind_{{ idx }}" value="{{ match.kind }}">
+                      <input type="hidden" name="match_path_{{ idx }}" value="{{ match.path }}">
+                      <input type="hidden" name="match_fingerprint_{{ idx }}" value="{{ match.fingerprint }}">
+                    </td>
+                    <td><code>{{ match.expected or '-' }}</code></td>
+                    <td>
+                      <span class="badge muted">{{ match.matched_type or 'Key' }}</span>
+                      {% if match.matched_fingerprint and match.matched_fingerprint != match.fingerprint %}<br><code>{{ match.matched_fingerprint }}</code>{% endif %}
+                    </td>
+                    <td><code>{{ match.fingerprint }}</code></td>
+                  </tr>
+                {% endif %}
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="hint">Kein passender Fingerprint im Master-Keyring gefunden.</p>
+          {% endif %}
+        </div>
+
+        <div class="diagnosis-key-group">
+          <h4>Archiv-Keyrings</h4>
+          {% if ns.has_archive %}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Auswahl</th><th>Archivdatei</th><th>Erwartet</th><th>Erkannt über</th><th>Zuzuordnender Key</th></tr></thead>
+              <tbody>
+              {% for match in diagnosis.matching_keyrings %}
+                {% if match.kind == 'file' %}
+                  {% set idx = loop.index0 %}
+                  {% set choice_key = match.kind ~ ':' ~ (match.path or '') ~ ':' ~ (match.expected or '') ~ ':' ~ (match.fingerprint or '') ~ ':' ~ (match.matched_fingerprint or '') %}
+                  <tr>
+                    <td>
+                      <input type="checkbox" name="selected_match" value="{{ idx }}" checked data-diagnosis-match-key="{{ choice_key }}">
+                      <input type="hidden" name="match_kind_{{ idx }}" value="{{ match.kind }}">
+                      <input type="hidden" name="match_path_{{ idx }}" value="{{ match.path }}">
+                      <input type="hidden" name="match_fingerprint_{{ idx }}" value="{{ match.fingerprint }}">
+                    </td>
+                    <td><code>{{ match.name }}</code></td>
+                    <td><code>{{ match.expected or '-' }}</code></td>
+                    <td>
+                      <span class="badge muted">{{ match.matched_type or 'Key' }}</span>
+                      {% if match.matched_fingerprint and match.matched_fingerprint != match.fingerprint %}<br><code>{{ match.matched_fingerprint }}</code>{% endif %}
+                    </td>
+                    <td><code>{{ match.fingerprint }}</code></td>
+                  </tr>
+                {% endif %}
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="hint">Kein passender Fingerprint in archivierten Importdateien gefunden.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <p class="hint">Mehrfachauswahl: Es gibt bewusst nur eine Übernehmen-Aktion. Archivtreffer werden zuerst in den Master-Keyring übernommen, danach werden die ausgewählten Fingerprints dem Profil zugeordnet.</p>
+      <button type="submit">Ausgewählte Keys übernehmen + Profil-Keyring erzeugen</button>
+    </form>
     {% else %}
     <div class="notice warning">
       <strong>Kein passender vorhandener Keyring gefunden.</strong><br>
-      Die vorhandenen Keyrings wurden geprüft. Du kannst den fehlenden Key jetzt direkt vom Keyserver importieren oder manuell als Datei/URL hinzufügen.
+      Master-Keyring und Archiv-Keyrings wurden geprüft. Du kannst den fehlenden Key jetzt direkt vom Keyserver importieren oder manuell als Datei/URL hinzufügen.
     </div>
     {% endif %}
     {% for key in diagnosis.missing_keys %}
@@ -55,4 +119,3 @@
   {% endif %}
 </section>
 {% endif %}
-
