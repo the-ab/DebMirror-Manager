@@ -94,10 +94,31 @@
     <h2>Client-Export</h2>
     <p>Erzeugt ein ZIP für APT-Clients mit bereinigtem Profil-Keyring, Deb822-Quelle, klassischer .list-Datei und kurzer Installationsanleitung.</p>
     {% if mirror.keyring %}
-    <form method="post" action="{{ url_for('mirror_client_export', mirror_id=mirror.id) }}">
+    <form method="post" action="{{ url_for('mirror_client_export', mirror_id=mirror.id) }}" class="client-export-form">
       <label>Client-Basis-URL des veröffentlichten Mirrors</label>
       <input name="client_base_url" placeholder="z. B. https://mirror.lan/{{ mirror.name|lower }}" required>
       <p class="hint">Die URL muss auf deinen veröffentlichten Mirror zeigen, nicht auf die Upstream-Quelle {{ mirror.method }}://{{ mirror.host }}/{{ mirror.root_path }}.</p>
+
+      <label>Suites für den Client-Export</label>
+      <div class="checkbox-list client-export-options">
+        {% for dist in client_export_dists %}
+          <label class="inline-check"><input type="checkbox" name="client_dists" value="{{ dist }}" {% if loop.first %}checked{% endif %}> {{ dist }}</label>
+        {% else %}
+          <span class="badge warning">keine Suites im Profil hinterlegt</span>
+        {% endfor %}
+      </div>
+      <p class="hint">Wähle nur die Suites aus, die der Client wirklich nutzen soll. Mehrere Suites gleichzeitig können auf Clients unerwünschte Paketmischungen verursachen.</p>
+
+      <label>Architekturen für den Client-Export</label>
+      <div class="checkbox-list client-export-options">
+        {% for arch in client_export_archs %}
+          <label class="inline-check"><input type="checkbox" name="client_archs" value="{{ arch }}" {% if loop.first %}checked{% endif %}> {{ arch }}</label>
+        {% else %}
+          <span class="badge muted">keine Architektur-Einschränkung im Profil hinterlegt</span>
+        {% endfor %}
+      </div>
+      <p class="hint">Der Export schreibt die Auswahl in Deb822 als <code>Architectures:</code> und in der klassischen Liste als <code>[arch=...]</code>.</p>
+
       <button type="submit">Client-Export erstellen</button>
     </form>
     {% else %}

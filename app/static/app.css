@@ -634,3 +634,23 @@ button.locked-button:disabled {
   .mirror-profile-table td[data-label="Aktionen"] .button,
   .mirror-profile-table td[data-label="Aktionen"] button { margin-top: .15rem; }
 }
+
+/* v0.1.66: Client-Export Auswahl */
+.client-export-form .client-export-options {
+  margin-top: .35rem;
+  margin-bottom: .35rem;
+}
+.client-export-options .inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin: .15rem .55rem .15rem 0;
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .client-export-options .inline-check {
+    display: flex;
+    width: 100%;
+    white-space: normal;
+  }
+}

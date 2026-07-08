@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.65**
+Aktuelle Version: **0.1.66**
 
 ## Grundprinzip
 
@@ -32,7 +32,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.65.zip
+unzip debmirror-manager-v0.1.66.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -235,7 +235,7 @@ Auf der Mirror-Detailseite kann ein Client-Export erzeugt werden. Der Export ent
 - klassische `.list`-Datei
 - README mit Installationsbefehlen für den Client
 
-Der Client-Export verwendet nur den Profil-Keyring des ausgewählten Mirror-Profils und enthält dadurch keine unnötigen Zusatzkeys.
+Der Client-Export verwendet nur den Profil-Keyring des ausgewählten Mirror-Profils und enthält dadurch keine unnötigen Zusatzkeys. Vor dem Export können die Suites und Architekturen ausgewählt werden, die der Client wirklich verwenden soll. Dadurch muss ein Client nicht automatisch alle im Mirror-Profil gespiegelten Suites gleichzeitig als Paketquelle aktivieren.
 
 ## Jobs und Logs
 

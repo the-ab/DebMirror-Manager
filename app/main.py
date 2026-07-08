@@ -4941,6 +4941,8 @@ def mirror_detail(mirror_id: int):
         profile_keyring_names=mirror_keyring_assignment_names(mirror_id),
         profile_keyring_values=[assignment_value(item.get("filename", ""), item.get("fingerprint", "")) for item in mirror_keyring_assignment_items(mirror_id)],
         keyring_options=master_key_rows(),
+        client_export_dists=csv_to_list(str(mirror.get("dists") or "")),
+        client_export_archs=csv_to_list(str(mirror.get("archs") or "")),
     )
 
 
@@ -7490,12 +7492,18 @@ def keyring_binary_bytes_for_client(path: Path) -> bytes:
         shutil.rmtree(tmp_home, ignore_errors=True)
 
 
-def client_source_lines(mirror: Dict[str, Any], base_url: str, keyring_filename: str) -> Tuple[str, str]:
+def client_source_lines(
+    mirror: Dict[str, Any],
+    base_url: str,
+    keyring_filename: str,
+    selected_dists: Optional[List[str]] = None,
+    selected_archs: Optional[List[str]] = None,
+) -> Tuple[str, str]:
     name = secure_filename(mirror.get("name") or "mirror") or "mirror"
     base_url = base_url.rstrip("/") + "/"
-    dists = csv_to_list(str(mirror.get("dists") or ""))
+    dists = selected_dists if selected_dists is not None else csv_to_list(str(mirror.get("dists") or ""))
     sections = " ".join(csv_to_list(str(mirror.get("sections") or ""))) or "main"
-    archs = csv_to_list(str(mirror.get("archs") or ""))
+    archs = selected_archs if selected_archs is not None else csv_to_list(str(mirror.get("archs") or ""))
     arch_part = ",".join(archs)
     signed_by = f"/usr/share/keyrings/{keyring_filename}"
     types = "deb deb-src" if mirror.get("source_mode") == "source" else "deb"
@@ -7522,6 +7530,26 @@ def client_source_lines(mirror: Dict[str, Any], base_url: str, keyring_filename:
         if mirror.get("source_mode") == "source":
             list_lines.append(f"deb-src {opts} {base_url} {dist} {sections}")
     return deb822_text, "\n".join(list_lines) + "\n"
+
+
+def validate_client_export_selection(mirror: Dict[str, Any], selected_dists_raw: List[str], selected_archs_raw: List[str]) -> Tuple[List[str], List[str]]:
+    profile_dists = csv_to_list(str(mirror.get("dists") or ""))
+    profile_archs = csv_to_list(str(mirror.get("archs") or ""))
+    selected_dists_set = {str(v).strip() for v in selected_dists_raw if str(v).strip()}
+    selected_archs_set = {str(v).strip() for v in selected_archs_raw if str(v).strip()}
+    selected_dists = [d for d in profile_dists if d in selected_dists_set]
+    selected_archs = [a for a in profile_archs if a in selected_archs_set]
+    invalid_dists = sorted(selected_dists_set - set(profile_dists))
+    invalid_archs = sorted(selected_archs_set - set(profile_archs))
+    if invalid_dists:
+        raise ValueError("Ungültige Suite-Auswahl für den Client-Export.")
+    if invalid_archs:
+        raise ValueError("Ungültige Architektur-Auswahl für den Client-Export.")
+    if not selected_dists:
+        raise ValueError("Wähle mindestens eine Suite für den Client-Export aus.")
+    if profile_archs and not selected_archs:
+        raise ValueError("Wähle mindestens eine Architektur für den Client-Export aus.")
+    return selected_dists, selected_archs
 
 
 def fingerprint_matches(candidate: str, expected: str) -> bool:
@@ -8508,11 +8536,17 @@ def mirror_client_export(mirror_id: int):
         base_url = request.form.get("client_base_url", "").strip()
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("Für den Client-Export muss eine erreichbare http/https Mirror-Basis-URL angegeben werden.")
+        selected_dists, selected_archs = validate_client_export_selection(
+            mirror,
+            request.form.getlist("client_dists"),
+            request.form.getlist("client_archs"),
+        )
         safe_name = secure_filename(mirror.get("name") or f"mirror-{mirror_id}") or f"mirror-{mirror_id}"
         client_key_name = f"{safe_name}-archive-keyring.gpg"
         key_bytes = keyring_binary_bytes_for_client(keyring_path)
-        deb822_text, list_text = client_source_lines(mirror, base_url, client_key_name)
-        readme = f"""DebMirror Manager Client-Export\n================================\n\nMirror-Profil: {mirror.get('name')}\nClient-Basis-URL: {base_url.rstrip('/')}/\nKeyring: {client_key_name}\n\nInstallation auf einem Debian/Ubuntu/APT-Client:\n\n1. Key installieren:\n   sudo install -m 0644 keyrings/{client_key_name} /usr/share/keyrings/{client_key_name}\n\n2. Quelle installieren, empfohlen als Deb822-Datei:\n   sudo install -m 0644 sources.list.d/{safe_name}.sources /etc/apt/sources.list.d/{safe_name}.sources\n\n   Alternative klassisch:\n   sudo install -m 0644 sources.list.d/{safe_name}.list /etc/apt/sources.list.d/{safe_name}.list\n\n3. Paketlisten aktualisieren:\n   sudo apt update\n\nHinweis: Die angegebene Client-Basis-URL muss auf den veröffentlichten Mirror zeigen, nicht auf die ursprüngliche Upstream-Quelle.\nDer exportierte Keyring ist profilbezogen und enthält nur die diesem Mirror-Profil zugeordneten Keys.\n"""
+        deb822_text, list_text = client_source_lines(mirror, base_url, client_key_name, selected_dists, selected_archs)
+        selected_archs_text = ", ".join(selected_archs) if selected_archs else "keine Einschränkung"
+        readme = f"""DebMirror Manager Client-Export\n================================\n\nMirror-Profil: {mirror.get('name')}\nClient-Basis-URL: {base_url.rstrip('/')}/\nSuites: {', '.join(selected_dists)}\nArchitekturen: {selected_archs_text}\nKeyring: {client_key_name}\n\nInstallation auf einem Debian/Ubuntu/APT-Client:\n\n1. Key installieren:\n   sudo install -m 0644 keyrings/{client_key_name} /usr/share/keyrings/{client_key_name}\n\n2. Quelle installieren, empfohlen als Deb822-Datei:\n   sudo install -m 0644 sources.list.d/{safe_name}.sources /etc/apt/sources.list.d/{safe_name}.sources\n\n   Alternative klassisch:\n   sudo install -m 0644 sources.list.d/{safe_name}.list /etc/apt/sources.list.d/{safe_name}.list\n\n3. Paketlisten aktualisieren:\n   sudo apt update\n\nHinweis: Die angegebene Client-Basis-URL muss auf den veröffentlichten Mirror zeigen, nicht auf die ursprüngliche Upstream-Quelle.\nDer exportierte Keyring ist profilbezogen und enthält nur die diesem Mirror-Profil zugeordneten Keys.\nDer Client-Export enthält nur die oben ausgewählten Suites und Architekturen.\n"""
         bio = io.BytesIO()
         with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("README-client.txt", readme)

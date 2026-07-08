@@ -1,5 +1,13 @@
 # Release Notes
 
+## v0.1.66
+
+- Client-Export: Suites können vor dem Export ausgewählt werden.
+- Client-Export: Architekturen können vor dem Export ausgewählt werden.
+- Exportierte Deb822-`.sources`-Datei und klassische `.list`-Datei enthalten nur die ausgewählten Suites und Architekturen.
+- Client-Export-README enthält die ausgewählten Suites und Architekturen.
+- VERSION auf 0.1.66 gesetzt.
+
 ## v0.1.65
 
 - Profilgenerator: gefundene Repository-Basen sind jetzt auswählbar; Suites, Komponenten und Architekturen werden passend zur ausgewählten Basis gefiltert.
