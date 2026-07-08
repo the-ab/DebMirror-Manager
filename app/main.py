@@ -65,6 +65,7 @@ MASTER_KEYRING_DIR = APP_KEYRING_DIR / "master"
 MASTER_KEYRING_PATH = MASTER_KEYRING_DIR / "debmirror-manager-master.gpg"
 PROFILE_KEYRING_DIR = APP_KEYRING_DIR / "profiles"
 ARCHIVE_KEYRING_DIR = APP_KEYRING_DIR / "archive"
+KEYSERVER_KEYRING_DIR = APP_KEYRING_DIR / "keyserver"
 APP_BACKUP_DIR = Path(os.environ.get("APP_BACKUP_DIR", "/app/backups"))
 IMPORT_SCRIPT_DIR = Path(os.environ.get("IMPORT_SCRIPT_DIR", "/import-scripts"))
 USER_SCRIPT_DIR = Path(os.environ.get("USER_SCRIPT_DIR", "/user-scripts"))
@@ -107,6 +108,7 @@ KEY_IMPORT_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 MASTER_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
 ARCHIVE_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
+KEYSERVER_KEYRING_DIR.mkdir(parents=True, exist_ok=True)
 APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 IMPORT_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 USER_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1979,7 +1981,10 @@ def import_key_from_keyserver(fingerprint: str, filename: Optional[str] = None, 
     filename = secure_filename(filename or default_keyring_filename(fp))
     if not filename.endswith(".gpg"):
         filename += ".gpg"
-    dest = unique_keyring_path(filename, ARCHIVE_KEYRING_DIR)
+    # Keyserver-Imports werden als eigene Quelldateien gespeichert. Dadurch
+    # bleiben sie auch nach einem späteren Master-Keyring-Neuaufbau verfügbar
+    # und gehen nicht verloren, wenn der Master-Keyring selbst vorher geleert wird.
+    dest = unique_keyring_path(filename, KEYSERVER_KEYRING_DIR)
     base = APP_KEYRING_DIR.resolve(strict=False)
     if base != dest and base not in dest.parents:
         raise ValueError("Ungültiger Keyring-Dateiname.")
@@ -4567,12 +4572,15 @@ def scan_apt_repository_url(raw_url: str, max_depth: Any = PROFILE_SCAN_DEFAULT_
         all_suites = unique_suites
         result["repository_roots"] = profile_scan_consolidate_roots(all_suites, selected_base_url)
         selected_base_url = profile_scan_directory_url(all_suites[0].get("repo_base_url") or selected_base_url)
-        result["suites"] = [suite for suite in all_suites if profile_scan_directory_url(suite.get("repo_base_url", "")) == selected_base_url]
+        # Alle gefundenen Suites bleiben im Ergebnis erhalten. Die WebUI filtert
+        # sie anhand der vom Benutzer ausgewählten Repository-Basis.
+        result["suites"] = all_suites
+        result["active_base_url"] = selected_base_url.rstrip("/")
         if profile_scan_directory_url(start_url) != selected_base_url:
             profile_scan_status(result, f"Aktive Repository-Basis auf gefundenen Pfad gesetzt: {selected_base_url.rstrip('/')}", "ok")
         if len(result["repository_roots"]) > 1:
-            result["warnings"].append("Mehrere Repository-Basen gefunden. Für die Profilerzeugung wird zunächst die erste gefundene verwendbare Basis genutzt.")
-            profile_scan_status(result, "Mehrere Repository-Basen erkannt; Auswahl wird in dieser Version als Übersicht angezeigt.", "warning")
+            result["warnings"].append("Mehrere Repository-Basen gefunden. Wähle im Prüfergebnis die gewünschte Basis aus; Suites, Komponenten und Architekturen werden passend dazu gefiltert.")
+            profile_scan_status(result, "Mehrere Repository-Basen erkannt; die gewünschte Basis kann jetzt vor der Profilerzeugung ausgewählt werden.", "warning")
     else:
         profile_scan_status(result, "Kein vollständiges dists/-Repository gefunden. Prüfe flache APT-Strukturen.", "warning")
         for root_url in all_candidate_roots or [profile_scan_directory_url(start_url)]:
@@ -4848,6 +4856,7 @@ def profile_generator():
                     mirror=values,
                     title="Profil aus Repository-Scan speichern",
                     keyrings=list_keyring_files(),
+                    form_action=url_for("mirror_new"),
                     return_url=url_for("profile_generator"),
                     return_label="Zurück zum Generator",
                 )
@@ -4863,6 +4872,7 @@ def profile_generator():
                 mirror=values,
                 title="Profil aus Generator speichern",
                 keyrings=list_keyring_files(),
+                form_action=url_for("mirror_new"),
                 return_url=url_for("profile_generator"),
                 return_label="Zurück zum Generator",
             )
@@ -6188,14 +6198,15 @@ def list_keyring_files(include_archived: bool = False) -> List[str]:
     """Return imported keyring source files.
 
     By default only legacy files directly below APP_KEYRING_DIR are returned.
-    Archived import files are hidden from the normal UI, but are still used
-    when the Master-Keyring is rebuilt. Generated master/profile keyrings are
-    intentionally never returned here.
+    When include_archived=True, all rebuild source directories are included:
+    archive/ for file/URL/text imports and keyserver/ for keys fetched from
+    a keyserver. Generated master/profile keyrings are intentionally never
+    returned here.
     """
     files: List[str] = []
     search_dirs = [APP_KEYRING_DIR]
     if include_archived:
-        search_dirs.append(ARCHIVE_KEYRING_DIR)
+        search_dirs.extend([ARCHIVE_KEYRING_DIR, KEYSERVER_KEYRING_DIR])
     for directory in search_dirs:
         try:
             for p in directory.glob("*"):
@@ -6930,21 +6941,29 @@ def remove_master_key(fingerprint: str) -> str:
     return fp
 
 
-def archived_keyring_path(filename: str) -> Path:
+def archived_keyring_path(filename: str, source_type: str = "") -> Path:
     name = secure_filename(filename or "")
     if not name:
-        raise ValueError("Keine Archivdatei ausgewählt.")
-    path = (ARCHIVE_KEYRING_DIR / name).resolve(strict=False)
-    base = ARCHIVE_KEYRING_DIR.resolve(strict=False)
-    if base != path and base not in path.parents:
-        raise ValueError("Ungültiger Archivpfad.")
-    if not path.exists() or not path.is_file():
-        raise ValueError("Archivdatei nicht gefunden.")
-    return path
+        raise ValueError("Keine Quelldatei ausgewählt.")
+    dirs = []
+    if source_type == "keyserver":
+        dirs = [KEYSERVER_KEYRING_DIR]
+    elif source_type == "archive":
+        dirs = [ARCHIVE_KEYRING_DIR]
+    else:
+        dirs = [ARCHIVE_KEYRING_DIR, KEYSERVER_KEYRING_DIR]
+    for directory in dirs:
+        path = (directory / name).resolve(strict=False)
+        base = directory.resolve(strict=False)
+        if base != path and base not in path.parents:
+            continue
+        if path.exists() and path.is_file():
+            return path
+    raise ValueError("Quelldatei nicht gefunden.")
 
 
-def delete_archived_keyring_file(filename: str) -> str:
-    path = archived_keyring_path(filename)
+def delete_archived_keyring_file(filename: str, source_type: str = "") -> str:
+    path = archived_keyring_path(filename, source_type)
     name = path.name
     path.unlink()
     remove_key_fingerprint_metadata_for_file(name)
@@ -6971,7 +6990,7 @@ def import_keyring_into_master(path: Path) -> List[str]:
 def rebuild_master_keyring(include_removed: bool = False) -> List[str]:
     if include_removed:
         # Vollständiger Neuaufbau: zuvor bewusst aus dem Master entfernte
-        # Fingerprints werden wieder aus den Archivdateien zugelassen.
+        # Fingerprints werden wieder aus allen Quelldateien zugelassen.
         save_removed_master_key_fingerprints([])
     tmp_path = MASTER_KEYRING_PATH.with_suffix(".gpg.tmp")
     tmp_path.unlink(missing_ok=True)
@@ -7820,18 +7839,27 @@ def master_key_rows() -> List[Dict[str, Any]]:
 
 def archived_keyring_rows() -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
+    source_dirs = [(ARCHIVE_KEYRING_DIR, "archive", "Archiv"), (KEYSERVER_KEYRING_DIR, "keyserver", "Keyserver")]
     for file in list_keyring_files(include_archived=True):
         p = Path(file)
-        try:
-            in_archive = ARCHIVE_KEYRING_DIR.resolve(strict=False) == p.parent.resolve(strict=False)
-        except Exception:
-            in_archive = False
-        if not in_archive:
+        source_type = ""
+        source_label = "Archiv"
+        for directory, stype, label in source_dirs:
+            try:
+                if directory.resolve(strict=False) == p.parent.resolve(strict=False):
+                    source_type = stype
+                    source_label = label
+                    break
+            except Exception:
+                continue
+        if not source_type:
             continue
         details = archive_keyring_details(p)
         rows.append({
             "name": p.name,
             "path": str(p),
+            "source_type": source_type,
+            "source_label": source_label,
             "size": p.stat().st_size,
             "fingerprints": details.get("fingerprints") or [],
             "subkey_fingerprints": details.get("subkey_fingerprints") or [],
@@ -7886,19 +7914,20 @@ def remove_key_fingerprint_metadata_for_file(filename: str) -> None:
         save_settings(settings)
 
 
-def keyring_duplicate_matches(fingerprints: Iterable[str], exclude_name: str = "") -> List[Dict[str, Any]]:
+def keyring_duplicate_matches(fingerprints: Iterable[str], exclude_name: str = "", include_master: bool = True) -> List[Dict[str, Any]]:
     wanted = [normalize_fingerprint(fp) for fp in fingerprints if normalize_fingerprint(fp)]
     if not wanted:
         return []
     matches: List[Dict[str, Any]] = []
     seen = set()
-    for existing_fp in master_keyring_fingerprints():
-        for fp in wanted:
-            if fingerprint_matches(existing_fp, fp):
-                key = ("Master-Keyring", existing_fp, fp)
-                if key not in seen:
-                    seen.add(key)
-                    matches.append({"name": "Master-Keyring", "path": str(MASTER_KEYRING_PATH), "existing_fingerprint": existing_fp, "fingerprint": fp})
+    if include_master:
+        for existing_fp in master_keyring_fingerprints():
+            for fp in wanted:
+                if fingerprint_matches(existing_fp, fp):
+                    key = ("Master-Keyring", existing_fp, fp)
+                    if key not in seen:
+                        seen.add(key)
+                        matches.append({"name": "Master-Keyring", "path": str(MASTER_KEYRING_PATH), "existing_fingerprint": existing_fp, "fingerprint": fp})
     for file in list_keyring_files(include_archived=True):
         p = Path(file)
         if exclude_name and p.name == exclude_name:
@@ -8222,14 +8251,14 @@ def keyrings():
                 summary = master_keyring_status_summary()
                 extra = f" · {summary.get('subkey_count', 0)} Subkeys" if summary.get('subkey_count', 0) else ""
                 skipped = f" · {before_removed} entfernte Keys weiter ausgeschlossen" if before_removed else ""
-                flash(f"Master-Keyring neu aufgebaut: {len(fps)} Hauptkeys{extra}{skipped}.", "success")
+                flash(f"Master-Keyring aus allen Quelldateien neu aufgebaut: {len(fps)} Hauptkeys{extra}{skipped}.", "success")
                 add_event("info", f"Master-Keyring neu aufgebaut: {len(fps)} Hauptkeys, Subkeys: {summary.get('subkey_count', 0)}, ausgeschlossen: {before_removed}")
             elif action == "rebuild_master_keyring_full":
                 removed_before = len(removed_master_key_fingerprints())
                 fps = rebuild_master_keyring(include_removed=True)
                 summary = master_keyring_status_summary()
                 extra = f" · {summary.get('subkey_count', 0)} Subkeys" if summary.get('subkey_count', 0) else ""
-                flash(f"Master-Keyring vollständig aus Archivdateien neu aufgebaut: {len(fps)} Hauptkeys{extra}. Entfernsperren gelöscht: {removed_before}.", "success")
+                flash(f"Master-Keyring vollständig aus allen Quelldateien neu aufgebaut: {len(fps)} Hauptkeys{extra}. Entfernsperren gelöscht: {removed_before}.", "success")
                 add_event("info", f"Master-Keyring vollständig neu aufgebaut: {len(fps)} Hauptkeys, Subkeys: {summary.get('subkey_count', 0)}, gelöschte Sperren: {removed_before}")
             elif action == "delete_master_key":
                 fingerprint = normalize_fingerprint(request.form.get("fingerprint", ""))
@@ -8238,9 +8267,10 @@ def keyrings():
                 add_event("warning", f"Master-Key entfernt: {removed_fp}")
             elif action == "delete_archived_keyring":
                 filename = request.form.get("filename", "")
-                removed_name = delete_archived_keyring_file(filename)
-                flash(f"Archivierte Importdatei gelöscht: {removed_name}", "success")
-                add_event("warning", f"Archivierte Key-Datei gelöscht: {removed_name}")
+                source_type = request.form.get("source_type", "")
+                removed_name = delete_archived_keyring_file(filename, source_type)
+                flash(f"Import-/Quelldatei gelöscht: {removed_name}", "success")
+                add_event("warning", f"Key-Quelldatei gelöscht: {removed_name}")
             elif action == "rebuild_all_profile_keyrings":
                 migrate_legacy_keyring_assignments()
                 count = 0
@@ -8320,11 +8350,11 @@ def keyrings():
                 filename = secure_filename(request.form.get("filename", "") or default_keyring_filename(fingerprint))
                 dest = import_key_from_keyserver(fingerprint, filename=filename, keyserver=keyserver)
                 details = parse_keyring_details(dest)
-                duplicates = keyring_duplicate_matches(details.get("fingerprints") or [], exclude_name=dest.name)
+                duplicates = keyring_duplicate_matches(details.get("fingerprints") or [], exclude_name=dest.name, include_master=False)
                 if duplicates and not allow_duplicate:
                     dest.unlink(missing_ok=True)
                     names = ", ".join(sorted({d.get("name", "") for d in duplicates if d.get("name")}))
-                    raise ValueError(f"Dieser Key ist bereits vorhanden ({names}). Import nur mit Duplikat erlauben möglich.")
+                    raise ValueError(f"Dieser Key ist bereits als Quelldatei vorhanden ({names}). Import nur mit Duplikat erlauben möglich.")
                 save_keyring_metadata(dest.name, {
                     "display_name": request.form.get("display_name", "").strip() or dest.name,
                     "source_url": keyserver,
@@ -8333,7 +8363,7 @@ def keyrings():
                 })
                 save_key_fingerprint_metadata(dest.name, details, keyserver, request.form.get("display_name", "").strip(), request.form.get("notes", "").strip())
                 assign_keyring_to_mirror(assign_to_int, dest, fingerprint)
-                flash("Key vom Keyserver importiert." + (" Mirror-Profil wurde aktualisiert." if assign_to_int else ""), "success")
+                flash("Key vom Keyserver importiert und als Keyserver-Quelldatei gespeichert." + (" Mirror-Profil wurde aktualisiert." if assign_to_int else ""), "success")
                 add_event("info", f"Keyring vom Keyserver importiert: {dest.name}")
             else:
                 raise ValueError("Unbekannte Keyring-Aktion.")

@@ -66,13 +66,15 @@
 
   {% if scan_result.repository_roots %}
   <h3>Gefundene Repository-Basen</h3>
+  <p class="hint">Wähle die Basis aus, die für das neue Profil verwendet werden soll. Die darunter angezeigten Suites, Komponenten und Architekturen werden passend zur Auswahl gefiltert.</p>
   <div class="table-scroll">
-    <table class="compact-table">
-      <thead><tr><th>Basis</th><th>Root-Pfad</th><th>Suites</th><th>Komponenten</th><th>Architekturen</th></tr></thead>
+    <table class="compact-table scan-root-table">
+      <thead><tr><th>Auswahl</th><th>Basis</th><th>Root-Pfad</th><th>Suites</th><th>Komponenten</th><th>Architekturen</th></tr></thead>
       <tbody>
       {% for repo_root in scan_result.repository_roots %}
-        <tr>
-          <td><code>{{ repo_root.base_url }}</code>{% if loop.first %}<br><span class="badge ok">für Profil aktiv</span>{% endif %}</td>
+        <tr data-scan-root-row="{{ repo_root.base_url }}">
+          <td><label class="inline-check"><input type="radio" name="repo_base_choice" value="{{ repo_root.base_url }}" data-root-path="{{ repo_root.root_path }}" {% if loop.first %}checked{% endif %}> verwenden</label></td>
+          <td><code>{{ repo_root.base_url }}</code></td>
           <td><code>{{ repo_root.root_path }}</code></td>
           <td>{{ repo_root.suite_count }}</td>
           <td>{{ repo_root.components|join(', ') if repo_root.components else '-' }}</td>
@@ -104,15 +106,15 @@
   {% if scan_result.suites %}
   <form method="post" class="scan-create-form">
     <input type="hidden" name="action" value="create_from_scan">
-    <input type="hidden" name="source_url" value="{{ scan_result.base_url }}">
-    <input type="hidden" name="root_path" value="{{ scan_result.root_path }}">
+    <input type="hidden" name="source_url" id="scan-selected-source-url" value="{{ scan_result.base_url }}">
+    <input type="hidden" name="root_path" id="scan-selected-root-path" value="{{ scan_result.root_path }}">
 
     <div class="form-grid scan-profile-fields">
       <label>Profilname
-        <input name="profile_name" value="{{ scan_result.host }} {{ scan_result.suites[0].name }}">
+        <input name="profile_name" id="scan-profile-name" value="{{ scan_result.host }} {{ scan_result.suites[0].name }}">
       </label>
       <label>Ziel-Suffix unter /mirror
-        <input name="target_suffix" value="{{ (scan_result.host ~ '-' ~ scan_result.root_path ~ '-' ~ scan_result.suites[0].name)|replace('/', '-')|replace('.', '-') }}">
+        <input name="target_suffix" id="scan-target-suffix" value="{{ (scan_result.host ~ '-' ~ scan_result.root_path ~ '-' ~ scan_result.suites[0].name)|replace('/', '-')|replace('.', '-') }}">
       </label>
       <label>Transfer für neues Profil
         <select name="method">
@@ -129,8 +131,8 @@
         <thead><tr><th>Auswahl</th><th>Suite</th><th>Codename</th><th>Komponenten</th><th>Architekturen</th><th>Signatur</th></tr></thead>
         <tbody>
         {% for suite in scan_result.suites %}
-          <tr>
-            <td><label class="inline-check"><input type="checkbox" name="suites" value="{{ suite.name }}" {% if loop.first %}checked{% endif %}> übernehmen</label></td>
+          <tr class="scan-suite-row" data-repo-base="{{ suite.repo_base_url }}" data-suite-name="{{ suite.name }}">
+            <td><label class="inline-check"><input type="checkbox" name="suites" value="{{ suite.name }}" data-repo-base="{{ suite.repo_base_url }}" {% if loop.first %}checked{% endif %}> übernehmen</label></td>
             <td><strong>{{ suite.name }}</strong>{% if suite.suite and suite.suite != suite.name %}<br><small>Suite: {{ suite.suite }}</small>{% endif %}</td>
             <td>{{ suite.codename or '-' }}</td>
             <td>{{ suite.components|join(', ') if suite.components else '-' }}</td>
@@ -146,13 +148,13 @@
       <fieldset>
         <legend>Komponenten</legend>
         {% for component in scan_result.components %}
-          <label class="inline-check"><input type="checkbox" name="components" value="{{ component }}" checked> {{ component }}</label>
+          <label class="inline-check scan-component-option" data-value="{{ component }}"><input type="checkbox" name="components" value="{{ component }}" checked> {{ component }}</label>
         {% endfor %}
       </fieldset>
       <fieldset>
         <legend>Architekturen</legend>
         {% for arch in scan_result.archs %}
-          <label class="inline-check"><input type="checkbox" name="archs" value="{{ arch }}" {% if arch in ['amd64','all'] or loop.first %}checked{% endif %}> {{ arch }}</label>
+          <label class="inline-check scan-arch-option" data-value="{{ arch }}"><input type="checkbox" name="archs" value="{{ arch }}" {% if arch in ['amd64','all'] or loop.first %}checked{% endif %}> {{ arch }}</label>
         {% endfor %}
       </fieldset>
     </div>
@@ -259,6 +261,91 @@
   <h2>Hinweis</h2>
   <p>Der neue Repository-Scan erkennt allgemeine APT-Repositories über Dateien und Verzeichnisstruktur, nicht über feste Namen wie Debian oder Ubuntu. Spezialfälle lassen sich weiterhin über die normale Profilbearbeitung oder den Skript-Import anlegen.</p>
 </section>
+
+
+{% if scan_result and scan_result.suites %}
+<script>
+(function () {
+  const suites = {{ scan_result.suites|tojson }};
+  const roots = {{ scan_result.repository_roots|tojson }};
+  if (!Array.isArray(suites) || !suites.length) return;
+  const rootRadios = Array.from(document.querySelectorAll('input[name="repo_base_choice"]'));
+  const sourceInput = document.getElementById('scan-selected-source-url');
+  const rootPathInput = document.getElementById('scan-selected-root-path');
+  const nameInput = document.getElementById('scan-profile-name');
+  const targetInput = document.getElementById('scan-target-suffix');
+  const suiteRows = Array.from(document.querySelectorAll('.scan-suite-row'));
+  const componentOptions = Array.from(document.querySelectorAll('.scan-component-option'));
+  const archOptions = Array.from(document.querySelectorAll('.scan-arch-option'));
+
+  function rootOfSuite(item) {
+    return String((item && item.repo_base_url) || '').replace(/\/$/, '');
+  }
+  function uniq(values) {
+    const out = [];
+    values.forEach(function (value) {
+      value = String(value || '').trim();
+      if (value && out.indexOf(value) === -1) out.push(value);
+    });
+    return out;
+  }
+  function slug(value) {
+    return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'mirror';
+  }
+  function selectedRoot() {
+    const checked = rootRadios.find(function (radio) { return radio.checked; });
+    return checked ? String(checked.value || '').replace(/\/$/, '') : String((suites[0] && suites[0].repo_base_url) || '').replace(/\/$/, '');
+  }
+  function setOptions(options, allowed, defaults) {
+    options.forEach(function (label) {
+      const input = label.querySelector('input');
+      const value = input ? String(input.value || '') : '';
+      const show = allowed.indexOf(value) !== -1;
+      label.hidden = !show;
+      if (input) {
+        input.disabled = !show;
+        if (!show) {
+          input.checked = false;
+        } else {
+          input.checked = defaults.indexOf(value) !== -1 || (defaults.length === 0 && allowed.indexOf(value) === 0);
+        }
+      }
+    });
+  }
+  function updateForRoot() {
+    const root = selectedRoot();
+    const rootInfo = (roots || []).find(function (item) { return String((item && item.base_url) || '').replace(/\/$/, '') === root; }) || {};
+    const rootSuites = suites.filter(function (item) { return rootOfSuite(item) === root; });
+    if (sourceInput) sourceInput.value = root;
+    if (rootPathInput) rootPathInput.value = rootInfo.root_path || (rootSuites[0] && rootSuites[0].repo_root_path) || '';
+
+    suiteRows.forEach(function (row) {
+      const rowRoot = String(row.getAttribute('data-repo-base') || '').replace(/\/$/, '');
+      const active = rowRoot === root;
+      row.hidden = !active;
+      const input = row.querySelector('input[name="suites"]');
+      if (input) {
+        input.disabled = !active;
+        input.checked = active && rootSuites.length && input.value === rootSuites[0].name;
+      }
+    });
+
+    const comps = uniq([].concat.apply([], rootSuites.map(function (item) { return item.components || []; })));
+    const archs = uniq([].concat.apply([], rootSuites.map(function (item) { return item.archs || []; })));
+    setOptions(componentOptions, comps, comps);
+    const preferredArchs = archs.filter(function (a) { return a === 'amd64' || a === 'all'; });
+    setOptions(archOptions, archs, preferredArchs);
+
+    const firstSuite = rootSuites[0] || suites[0] || {};
+    const host = (function () { try { return new URL(root).host; } catch (e) { return '{{ scan_result.host }}'; } })();
+    if (nameInput) nameInput.value = host + (firstSuite.name ? ' ' + firstSuite.name : '');
+    if (targetInput) targetInput.value = slug(host + '-' + (rootInfo.root_path || '') + '-' + (firstSuite.name || 'repo'));
+  }
+  rootRadios.forEach(function (radio) { radio.addEventListener('change', updateForRoot); });
+  updateForRoot();
+})();
+</script>
+{% endif %}
 
 <script>
 (function () {

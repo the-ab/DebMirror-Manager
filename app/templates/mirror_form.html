@@ -12,7 +12,7 @@
   </div>
 </div>
 
-<form method="post" class="card form-grid">
+<form method="post" action="{{ form_action or request.path }}" class="card form-grid">
   <fieldset>
     <legend>Basis</legend>
     <label>Name</label>

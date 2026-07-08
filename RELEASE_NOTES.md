@@ -1,5 +1,22 @@
 # Release Notes
 
+## v0.1.65
+
+- Profilgenerator: gefundene Repository-Basen sind jetzt auswählbar; Suites, Komponenten und Architekturen werden passend zur ausgewählten Basis gefiltert.
+- Profilgenerator: versteckte Profilwerte wie Source-URL und Root-Pfad werden beim Wechsel der Repository-Basis aktualisiert.
+- Keyserver-Imports werden jetzt zusätzlich als eigene Quelldateien unter `keyrings/keyserver/` gespeichert.
+- Master-Keyring-Neuaufbau liest jetzt Archiv- und Keyserver-Quelldateien ein.
+- Keyrings-Seite: Unterschied zwischen normalem und vollständigem Master-Keyring-Neuaufbau klarer beschrieben.
+- Import-/Quelldatei-Übersicht zeigt jetzt Archiv- und Keyserver-Quellen getrennt an.
+- VERSION auf 0.1.65 gesetzt.
+
+## v0.1.64
+
+- Profilgenerator: vorbereitete Profile speichern jetzt korrekt über den normalen Pfad `/mirrors/new`.
+- Formularziel für aus Repository-Scan und Standardgenerator vorbereitete Profile korrigiert.
+- Behebt den Fall, dass beim Klick auf „Speichern“ erneut nur die Generator-Vorbereitung angezeigt wurde und kein Mirror-Profil angelegt wurde.
+- VERSION auf 0.1.64 gesetzt.
+
 ## v0.1.63
 
 - Dokumentation und Formatierung geprüft.

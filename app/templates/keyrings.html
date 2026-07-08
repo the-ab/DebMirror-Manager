@@ -25,14 +25,14 @@
     <dt>Hauptkeys</dt><dd>{{ master_status.primary_count }}</dd>
     <dt>Subkeys</dt><dd>{{ master_status.subkey_count }}</dd>
     <dt>Fingerprints gesamt</dt><dd>{{ master_status.all_fingerprint_count }}</dd>
-    <dt>Archivdateien</dt><dd>{{ master_status.archive_file_count }} Datei(en), {{ master_status.archive_primary_count }} Hauptkey-Fingerprint(s)</dd>
+    <dt>Quelldateien</dt><dd>{{ master_status.archive_file_count }} Datei(en), {{ master_status.archive_primary_count }} Hauptkey-Fingerprint(s)</dd>
     <dt>Ausgeschlossene entfernte Keys</dt><dd>{% if master_status.removed_count %}<span class="badge warning">{{ master_status.removed_count }}</span>{% else %}<span class="badge ok">0</span>{% endif %}</dd>
   </dl>
   {% if master_status.removed_count %}
     <div class="notice warning">
       Es gibt {{ master_status.removed_count }} zuvor aus dem Master entfernte Fingerprint(s).
       Beim normalen Neuaufbau werden diese absichtlich wieder ausgeschlossen.
-      Für einen vollständigen Test-Neuaufbau aus allen Archivdateien den Button „Vollständig neu aufbauen“ verwenden.
+      Für einen vollständigen Test-Neuaufbau aus allen Quelldateien den Button „Vollständig neu aufbauen“ verwenden.
     </div>
   {% endif %}
   {% if master_status.warnings %}
@@ -41,12 +41,13 @@
   {% if master_fingerprints %}
     <p class="hint">{% for fp in master_fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
   {% endif %}
+  <div class="notice info"><strong>Unterschied:</strong> „Master-Keyring neu aufbauen“ liest alle Quelldateien aus <code>archive/</code> und <code>keyserver/</code> neu ein, behält aber bewusst entfernte Fingerprints ausgeschlossen. „Vollständig neu aufbauen“ liest dieselben Quelldateien ein und löscht zusätzlich diese Entfernsperren.</div>
   <div class="actions compact-actions">
     <form method="post" class="inline">
       <input type="hidden" name="action" value="rebuild_master_keyring">
       <button type="submit">Master-Keyring neu aufbauen</button>
     </form>
-    <form method="post" class="inline" onsubmit="return confirm('Master-Keyring vollständig aus Archivdateien neu aufbauen und bisherige Entfernsperren löschen? Dadurch können bewusst entfernte Keys wieder importiert werden.');">
+    <form method="post" class="inline" onsubmit="return confirm('Master-Keyring vollständig aus allen Quelldateien neu aufbauen und bisherige Entfernsperren löschen? Dadurch können bewusst entfernte Keys wieder importiert werden.');">
       <input type="hidden" name="action" value="rebuild_master_keyring_full">
       <button type="submit">Vollständig neu aufbauen</button>
     </form>
@@ -291,22 +292,24 @@
 {% if archived_keyrings %}
 <section class="card">
   <details>
-    <summary>Archivierte Importdateien anzeigen</summary>
-    <p class="hint">Diese Dateien bleiben als Import-/Nachweisquelle erhalten. Für Profile und Client-Exports wird der Master-Keyring verwendet.</p>
+    <summary>Import-/Quelldateien anzeigen</summary>
+    <p class="hint">Diese Dateien bleiben als Quelle für den Master-Keyring erhalten. Datei-/URL-/Text-Imports liegen unter <code>archive/</code>, Keyserver-Imports unter <code>keyserver/</code>. Für Profile und Client-Exports wird der Master-Keyring verwendet.</p>
     <table>
-      <thead><tr><th>Datei</th><th>Pfad</th><th>Hauptkeys</th><th>Subkeys</th><th>Aktion</th></tr></thead>
+      <thead><tr><th>Quelle</th><th>Datei</th><th>Pfad</th><th>Hauptkeys</th><th>Subkeys</th><th>Aktion</th></tr></thead>
       <tbody>
       {% for a in archived_keyrings %}
         <tr>
+          <td><span class="badge muted">{{ a.source_label }}</span></td>
           <td><code>{{ a.name }}</code></td>
           <td><code>{{ a.path }}</code></td>
           <td>{% for fp in a.fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% else %}-{% endfor %}</td>
           <td>{% if a.subkey_fingerprints %}{{ a.subkey_fingerprints|length }}{% else %}0{% endif %}</td>
           <td>
-            <form method="post" class="inline" onsubmit="return confirm('Archivierte Importdatei wirklich löschen? Der aktuelle Master-Keyring bleibt unverändert, ein späterer Neuaufbau nutzt diese Datei dann aber nicht mehr.');">
+            <form method="post" class="inline" onsubmit="return confirm('Import-/Quelldatei wirklich löschen? Der aktuelle Master-Keyring bleibt unverändert, ein späterer Neuaufbau nutzt diese Datei dann aber nicht mehr.');">
               <input type="hidden" name="action" value="delete_archived_keyring">
               <input type="hidden" name="filename" value="{{ a.name }}">
-              <button class="danger" type="submit">Archivdatei löschen</button>
+              <input type="hidden" name="source_type" value="{{ a.source_type }}">
+              <button class="danger" type="submit">Quelldatei löschen</button>
             </form>
           </td>
         </tr>

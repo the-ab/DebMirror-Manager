@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.63**
+Aktuelle Version: **0.1.65**
 
 ## Grundprinzip
 
@@ -20,7 +20,7 @@ updates/                                      Update-ZIPs im Projektordner
 backup/                                       update.sh-Backups im Projektordner
 /docker_data/debmirror-manager/data           SQLite-Datenbank und settings.json
 /docker_data/debmirror-manager/logs           WebUI- und Job-Logs
-/docker_data/debmirror-manager/keyrings       GPG-Keyrings, Master-Keyring, Archiv und Profil-Keyrings
+/docker_data/debmirror-manager/keyrings       GPG-Keyrings, Master-Keyring, Archiv, Keyserver-Quellen und Profil-Keyrings
 /docker_data/debmirror-manager/import-scripts Import alter debmirror-Skripte
 /docker_data/debmirror-manager/user-scripts   eigene Benutzerskripte
 /docker_data/debmirror-manager/backup         WebUI-Vollbackups
@@ -32,7 +32,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.63.zip
+unzip debmirror-manager-v0.1.65.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -128,7 +128,7 @@ Die Prüfung erkennt unter anderem:
 
 Die Verzeichnistiefe ist einstellbar; Standard ist `5`, maximal `10`. Während der Prüfung zeigt ein Live-Statusfenster die geprüften Verzeichnisse, `dists/`-Pfade, Release-Dateien, Packages-Dateien und GPG-Key-Kandidaten. Der Scan kann über **Prüfung stoppen** abgebrochen werden.
 
-Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner zuerst HTTPS und bei Bedarf zusätzlich HTTP. Wenn an der Hauptadresse kein Repository gefunden wird, werden die Suchpfad-Variablen aus **System -> Generator-Einstellungen** relativ zur eingegebenen Adresse geprüft, z. B. `deb`, `debian`, `repo`, `repository`, `apt`, `packages`, `mirror`, `download` oder `public`. Bleibt auch das ohne Treffer, wird je Suchvariable zusätzlich ein direkt angehängtes `dists/` geprüft.
+Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner zuerst HTTPS und bei Bedarf zusätzlich HTTP. Wenn an der Hauptadresse kein Repository gefunden wird, werden die Suchpfad-Variablen aus **System -> Generator-Einstellungen** relativ zur eingegebenen Adresse geprüft, z. B. `deb`, `debian`, `repo`, `repository`, `apt`, `packages`, `mirror`, `download` oder `public`. Bleibt auch das ohne Treffer, wird je Suchvariable zusätzlich ein direkt angehängtes `dists/` geprüft. Werden mehrere Repository-Basen gefunden, kann die gewünschte Basis im Prüfergebnis ausgewählt werden; Suites, Komponenten und Architekturen werden danach passend zu dieser Basis gefiltert.
 
 ## Benutzerskripte
 
@@ -170,8 +170,8 @@ Die Keyring-Verwaltung arbeitet mit drei Ebenen:
 ```text
 Master-Keyring
 ├── zentrale Arbeitsdatei mit allen verwalteten Keys
-Archiv
-├── importierte Originaldateien als Quelle/Backup
+Archiv / Keyserver-Quellen
+├── importierte Originaldateien und Keyserver-Exports als Quelle/Backup
 Profil-Keyrings
 └── automatisch erzeugte Keyrings pro Mirror-Profil mit nur den zugeordneten Keys
 ```
@@ -188,8 +188,8 @@ Die Oberfläche zeigt Hauptkeys, Subkeys, Gesamt-Fingerprints, Größe, Pfad und
 
 Es gibt zwei Neuaufbau-Arten:
 
-- **Master-Keyring neu aufbauen**: baut aus Archivdateien neu auf, lässt bewusst entfernte Keys weiter ausgeschlossen.
-- **Vollständig neu aufbauen**: baut aus allen Archivdateien neu auf und hebt vorherige Entfernsperren auf.
+- **Master-Keyring neu aufbauen**: baut aus allen Quelldateien neu auf, also aus `archive/` und `keyserver/`, lässt bewusst entfernte Keys aber weiter ausgeschlossen.
+- **Vollständig neu aufbauen**: baut aus denselben Quelldateien neu auf und hebt zusätzlich vorherige Entfernsperren auf.
 
 ### Import
 
@@ -202,7 +202,7 @@ Keys können importiert werden über:
 
 Vor dem Import wird eine Vorschau angezeigt mit UID, Key-ID, Fingerprint, Algorithmus, Schlüssellänge, Erstellungsdatum, Ablaufdatum, Status und Subkeys. Bereits vorhandene Fingerprints werden als Duplikate erkannt; ein Import ist dann nur bewusst mit **Duplikate erlauben** möglich.
 
-Neue Importdateien werden im Archiv abgelegt und zusätzlich in den Master-Keyring übernommen. Archivdateien können einzeln gelöscht werden; das Löschen einer Archivdatei entfernt nicht automatisch den aktuell vorhandenen Master-Key.
+Neue Datei-/URL-/Text-Importe werden im Archiv abgelegt und zusätzlich in den Master-Keyring übernommen. Keyserver-Importe werden zusätzlich als eigene Quelldateien unter `keyrings/keyserver/` gespeichert. Archiv- und Keyserver-Quelldateien können einzeln gelöscht werden; das Löschen einer Quelldatei entfernt nicht automatisch den aktuell vorhandenen Master-Key.
 
 ### Profil-Keyrings
 
