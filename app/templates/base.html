@@ -56,7 +56,7 @@
           <a class="side-link {% if request.endpoint in ['jobs','job_detail'] %}active{% endif %}" href="{{ url_for('jobs') }}"><span>Jobs / Logs</span><small>Warteschlange und Ausgaben</small></a>
           <a class="side-link {% if request.endpoint == 'schedules_page' %}active{% endif %}" href="{{ url_for('schedules_page') }}"><span>Zeitpläne</span><small>Globale und Profil-Zeitpläne</small></a>
           <a class="side-link {% if request.endpoint == 'healthchecks_page' %}active{% endif %}" href="{{ url_for('healthchecks_page') }}"><span>Healthchecks</span><small>Lokale Client-URLs prüfen</small></a>
-          {% if is_admin %}<a class="side-link {% if request.endpoint == 'notifications_page' %}active{% endif %}" href="{{ url_for('notifications_page') }}"><span>Benachrichtigung</span><small>Mail, Telegram, Discord</small></a>{% endif %}
+          {% if is_admin %}<a class="side-link {% if request.endpoint == 'notifications_page' %}active{% endif %}" href="{{ url_for('notifications_page') }}"><span>Benachrichtigungen</span><small>Mail, Telegram, Discord</small></a>{% endif %}
         </div>
       </details>
 

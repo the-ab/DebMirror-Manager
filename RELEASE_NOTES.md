@@ -1,5 +1,27 @@
 # Release Notes
 
+## v0.1.68
+
+- Release-ZIP enthält das Projekt jetzt im obersten Ordner `debmirror-manager/`; normales `unzip` erzeugt dadurch direkt den Projektordner.
+- `update.sh` bleibt mit alten flachen und neuen ZIPs mit Projektordner kompatibel.
+- Vollbackups speichern Dateirechte zusätzlich in `permissions.json`.
+- Restore wendet Unix-Rechte aus ZIP-Metadaten und `permissions.json` wieder an; ausführbare Benutzerskripte bleiben dadurch ausführbar.
+- Kompatibilitäts-Fallback für ältere oder neu gepackte Backups ergänzt, deren Skript-Rechte fehlen.
+- Navigation und Seitenbeschriftungen geprüft und vereinheitlicht, unter anderem `Benachrichtigungen` und `Generator-Einstellungen`.
+- README-Navigation an die tatsächlichen Menübereiche angepasst und Backup-/Restore-Beschreibung ergänzt.
+- VERSION auf 0.1.68 gesetzt.
+
+## v0.1.67
+
+- Benachrichtigungs-Geheimwerte verwenden jetzt einen separaten persistenten Datenschlüssel unter `data/notification-secrets.key` statt ausschließlich `APP_SECRET_KEY`.
+- Vollbackups sichern den Datenschlüssel und Restores spielen ihn vor `settings.json` wieder ein.
+- Bestehende `enc:v1`-Geheimwerte werden beim Start auf das neue backup-sichere Format migriert, sofern sie noch entschlüsselbar sind.
+- Backups werden abgebrochen, wenn gespeicherte Benachrichtigungs-Geheimwerte nicht entschlüsselt werden können.
+- Benachrichtigungsseite zeigt einen Warnhinweis bei nicht lesbaren Geheimwerten.
+- Dashboard-Healthchecks zeigen zusätzlich die zuletzt gemessene Latenz.
+- Master-Keyring-Liste kompakter gestaltet: filterbare, einklappbare Hauptkey-Einträge mit Detailansicht.
+- VERSION auf 0.1.67 gesetzt.
+
 ## v0.1.66
 
 - Client-Export: Suites können vor dem Export ausgewählt werden.

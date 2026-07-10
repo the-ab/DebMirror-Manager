@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.66**
+Aktuelle Version: **0.1.68**
 
 ## Grundprinzip
 
@@ -18,7 +18,7 @@ Aktuelle Version: **0.1.66**
 ```text
 updates/                                      Update-ZIPs im Projektordner
 backup/                                       update.sh-Backups im Projektordner
-/docker_data/debmirror-manager/data           SQLite-Datenbank und settings.json
+/docker_data/debmirror-manager/data           SQLite-Datenbank, settings.json und notification-secrets.key
 /docker_data/debmirror-manager/logs           WebUI- und Job-Logs
 /docker_data/debmirror-manager/keyrings       GPG-Keyrings, Master-Keyring, Archiv, Keyserver-Quellen und Profil-Keyrings
 /docker_data/debmirror-manager/import-scripts Import alter debmirror-Skripte
@@ -32,7 +32,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.66.zip
+unzip debmirror-manager-v0.1.68.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -60,10 +60,10 @@ cp /pfad/zur/debmirror-manager-vNEU.zip updates/
 
 Die Hauptnavigation ist in Bereiche gegliedert:
 
-- **Dashboard**: zentrale Übersicht, Warteschlange, Status, letzte Jobs und Healthchecks.
-- **Mirror**: Profile, Profilgenerator, Benutzerskripte, Skript-Import, Zeitpläne und Healthchecks.
-- **Betrieb**: Jobs, Ereignisse, Benachrichtigungen und laufende Auswertungen.
-- **System**: Einstellungen, Generator-Einstellungen, Keyrings, Backup/Wiederherstellen, Konfig Export/Import, Benutzer und API.
+- **Übersicht**: Dashboard, Speicher, Warteschlange, Status, letzte Jobs, Ereignisse und Healthchecks.
+- **Mirror**: Profile, Profilgenerator, Benutzerskripte, Skript-Import und Keyrings.
+- **Betrieb**: Jobs/Logs, Zeitpläne, Healthchecks und Benachrichtigungen.
+- **System**: Einstellungen, Generator-Einstellungen, Backup/Wiederherstellen, Konfig Export/Import, Benutzer und API.
 
 ## Dashboard
 
@@ -177,6 +177,8 @@ Profil-Keyrings
 ```
 
 ### Master-Keyring
+
+Die WebUI zeigt die Master-Keys in einer kompakten, filterbaren Liste. Jeder Hauptkey kann für Details, Subkeys, Export und Profil-Zuordnung aufgeklappt werden.
 
 Der Master-Keyring liegt unter:
 
@@ -311,11 +313,11 @@ Healthchecks prüfen lokale Repository-URLs wie:
 http://mirror.local/debian/dists/bookworm/Release
 ```
 
-Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen.
+Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Auf dem Dashboard werden Status, letzte Prüfung, URL und die zuletzt gemessene Latenz angezeigt.
 
 ## Benachrichtigungen
 
-Unter **Betrieb -> Benachrichtigung** können SMTP-Mail, Telegram und Discord konfiguriert werden. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Gespeichert werden diese Werte verschlüsselt, sofern der Container mit dem normalen Image inklusive `cryptography` läuft.
+Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Dieser Schlüssel liegt im persistenten Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor den Benachrichtigungseinstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
 
 ## Systembereiche
 
@@ -329,7 +331,7 @@ Verwaltet Generator-Daten und Suchpfad-Variablen für den Profilgenerator.
 
 ### Backup / Wiederherstellen
 
-Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, Keyrings, Import-Skripte und Benutzerskripte. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
+Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, der separate Verschlüsselungs-Schlüssel für Benachrichtigungs-Zugangsdaten, Keyrings, Import-Skripte und Benutzerskripte. Beim Restore wird der Verschlüsselungs-Schlüssel vor `settings.json` eingespielt, damit SMTP-, Telegram- und Discord-Geheimwerte nach einem Serverwechsel weiter entschlüsselt werden können. Dateirechte der gesicherten Dateien werden mitgeführt und beim Wiederherstellen erneut gesetzt; dadurch bleiben Benutzerskripte ausführbar. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
 
 ### Konfig Export/Import
 
@@ -362,7 +364,7 @@ API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeic
 - API-Tokens werden nur gehasht gespeichert
 - Key-Fingerprints sollten gegen Hersteller-/Projekt-Dokumentation geprüft werden
 
-Wichtig: Für die Entschlüsselung von Benachrichtigungs-Geheimwerten wird `APP_SECRET_KEY` verwendet. Dieser Wert muss bei Migration oder Restore erhalten bleiben.
+Wichtig: Ab v0.1.67 verwendet die Anwendung für Benachrichtigungs-Geheimwerte nicht mehr ausschließlich `APP_SECRET_KEY`, sondern den persistenten Schlüssel `/app/data/notification-secrets.key`. Er ist Bestandteil neu erstellter Vollbackups. Alte Backups ohne diesen Schlüssel können verschlüsselte Zugangsdaten nach einer Neuinstallation nur dann lesen, wenn der damalige `APP_SECRET_KEY` noch vorhanden ist; andernfalls müssen die betroffenen Geheimwerte einmal neu gesetzt und danach erneut gesichert werden.
 
 ## Notfall: Admin-Passwort zurücksetzen
 

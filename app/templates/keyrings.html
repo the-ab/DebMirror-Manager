@@ -194,98 +194,129 @@
 </div>
 
 <section class="card">
-  <h2>Keys im Master-Keyring</h2>
-  <p class="hint">Diese Liste kommt direkt aus der Master-Keyring-Datei. Importierte Einzeldateien werden nach dem Import nur noch als Archiv-/Quelldateien verwendet und erscheinen hier nicht mehr als aktive Keyrings.</p>
+  <div class="section-head master-key-section-head">
+    <div>
+      <h2>Keys im Master-Keyring</h2>
+      <p class="hint">Kompakte Übersicht direkt aus der Master-Keyring-Datei. Details, Subkeys, Export und Profil-Zuordnung lassen sich pro Key aufklappen.</p>
+    </div>
+    {% if master_key_entries %}<span class="badge muted">{{ master_key_entries|length }} Hauptkeys</span>{% endif %}
+  </div>
   {% if master_key_entries %}
-  <div class="keyring-list">
+  <div class="master-key-toolbar">
+    <label class="master-key-filter-label">Keys filtern
+      <input id="masterKeyFilter" type="search" placeholder="Name, Key-ID oder Fingerprint">
+    </label>
+    <div class="actions compact-actions">
+      <button type="button" id="masterKeysExpand">Alle öffnen</button>
+      <button type="button" id="masterKeysCollapse">Alle schließen</button>
+    </div>
+  </div>
+  <div class="master-key-compact-list" id="masterKeyList">
   {% for key in master_key_entries %}
-    <article class="keyring-card">
-      <div class="keyring-card-head">
-        <div>
-          <h3>{{ key.display_name }}</h3>
-          <p><code>{{ key.fingerprint }}</code></p>
-          {% if key.source_url %}<p>Quelle: <code>{{ key.source_url }}</code></p>{% endif %}
-          {% if key.notes %}<p>{{ key.notes }}</p>{% endif %}
+    <details class="master-key-entry" data-key-search="{{ (key.display_name ~ ' ' ~ (key.key_id or '') ~ ' ' ~ (key.fingerprint or '') ~ ' ' ~ (key.source_url or ''))|lower }}">
+      <summary class="master-key-summary">
+        <span class="master-key-summary-main">
+          <strong>{{ key.display_name }}</strong>
+          <code>{{ key.key_id or key.fingerprint[-16:] }}</code>
+        </span>
+        <span class="master-key-summary-meta">
+          <span class="badge {{ key.status_class }}">{{ key.status }}</span>
+          <span class="badge muted">{{ key.subkeys|length }} Subkey(s)</span>
+          {% if key.used_by %}<span class="badge ok">{{ key.used_by|length }} Profil(e)</span>{% else %}<span class="badge warning">ungenutzt</span>{% endif %}
+        </span>
+      </summary>
+      <div class="master-key-body">
+        <div class="master-key-body-head">
+          <div class="master-key-identity">
+            <p><strong>Fingerprint:</strong> <code>{{ key.fingerprint }}</code></p>
+            {% if key.uids %}<p><strong>UID:</strong> {% for uid in key.uids %}<span title="{{ uid.status }}">{{ uid.uid }}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>{% endif %}
+            {% if key.source_url %}<p><strong>Quelle:</strong> <code>{{ key.source_url }}</code></p>{% endif %}
+            {% if key.notes %}<p><strong>Notiz:</strong> {{ key.notes }}</p>{% endif %}
+          </div>
+          <div class="actions compact-actions master-key-actions">
+            <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='gpg') }}">.gpg</a>
+            <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='asc') }}">.asc</a>
+            <form method="post" class="inline" onsubmit="return confirm('Diesen Key wirklich aus dem Master-Keyring entfernen?');">
+              <input type="hidden" name="action" value="delete_master_key">
+              <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+              <button class="danger" type="submit" {% if key.used_by %}disabled title="Key ist noch Profilen zugeordnet"{% endif %}>Aus Master entfernen</button>
+            </form>
+          </div>
         </div>
-        <div class="actions compact-actions">
-          <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='gpg') }}">.gpg exportieren</a>
-          <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='asc') }}">.asc exportieren</a>
-          <form method="post" class="inline" onsubmit="return confirm('Diesen Key wirklich aus dem Master-Keyring entfernen?');">
-            <input type="hidden" name="action" value="delete_master_key">
-            <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
-            <button class="danger" type="submit" {% if key.used_by %}disabled title="Key ist noch Profilen zugeordnet"{% endif %}>Aus Master entfernen</button>
-          </form>
-        </div>
-      </div>
 
-      <div class="table-wrap keyring-table-wrap">
-        <table class="keyring-detail-table">
-          <thead><tr><th>Key-ID</th><th>Fingerprint</th><th>UID</th><th>Algorithmus</th><th>Erstellt</th><th>Ablauf</th><th>Status</th></tr></thead>
-          <tbody>
-            <tr>
-              <td><code>{{ key.key_id or '-' }}</code></td>
-              <td><code>{{ key.fingerprint or '-' }}</code></td>
-              <td>{% if key.uids %}{% for uid in key.uids %}<span title="{{ uid.status }}">{{ uid.uid }}</span><br>{% endfor %}{% else %}-{% endif %}</td>
-              <td>{{ key.algorithm }}{% if key.length %} · {{ key.length }} Bit{% endif %}</td>
-              <td>{{ key.created or '-' }}</td>
-              <td>{{ key.expires or 'kein Ablauf' }}</td>
-              <td><span class="badge {{ key.status_class }}">{{ key.status }}</span></td>
-            </tr>
-            {% for sub in key.subkeys %}
-            <tr class="subkey-row">
-              <td><small>Subkey</small><br><code>{{ sub.key_id or '-' }}</code></td>
-              <td><code>{{ sub.fingerprint or '-' }}</code></td>
-              <td><small>-</small></td>
-              <td>{{ sub.algorithm }}{% if sub.length %} · {{ sub.length }} Bit{% endif %}</td>
-              <td>{{ sub.created or '-' }}</td>
-              <td>{{ sub.expires or 'kein Ablauf' }}</td>
-              <td><span class="badge {{ sub.status_class }}">{{ sub.status }}</span></td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="keyring-usage">
-        <h4>Profil-Zuordnung</h4>
-        <form method="post" class="inline-form keyring-assign-form">
-          <input type="hidden" name="action" value="assign_keyring_to_profile">
-          <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
-          <label>Diesem Profil zuordnen
-            <select name="profile_mirror_id" required>
-              <option value="">Profil wählen</option>
-              {% for mirror in mirror_choices %}
-              <option value="{{ mirror.id }}">{{ mirror.name }}{% if not mirror.enabled %} · inaktiv{% endif %}</option>
+        <div class="table-wrap keyring-table-wrap compact-master-key-table">
+          <table class="keyring-detail-table">
+            <thead><tr><th>Typ</th><th>Key-ID</th><th>Fingerprint</th><th>Algorithmus</th><th>Erstellt</th><th>Ablauf</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Hauptkey</td>
+                <td><code>{{ key.key_id or '-' }}</code></td>
+                <td><code>{{ key.fingerprint or '-' }}</code></td>
+                <td>{{ key.algorithm }}{% if key.length %} · {{ key.length }} Bit{% endif %}</td>
+                <td>{{ key.created or '-' }}</td>
+                <td>{{ key.expires or 'kein Ablauf' }}</td>
+                <td><span class="badge {{ key.status_class }}">{{ key.status }}</span></td>
+              </tr>
+              {% for sub in key.subkeys %}
+              <tr class="subkey-row">
+                <td>Subkey</td>
+                <td><code>{{ sub.key_id or '-' }}</code></td>
+                <td><code>{{ sub.fingerprint or '-' }}</code></td>
+                <td>{{ sub.algorithm }}{% if sub.length %} · {{ sub.length }} Bit{% endif %}</td>
+                <td>{{ sub.created or '-' }}</td>
+                <td>{{ sub.expires or 'kein Ablauf' }}</td>
+                <td><span class="badge {{ sub.status_class }}">{{ sub.status }}</span></td>
+              </tr>
               {% endfor %}
-            </select>
-          </label>
-          <button type="submit">Key zuordnen</button>
-        </form>
+            </tbody>
+          </table>
+        </div>
 
-        <h4>Verwendet von</h4>
-        {% if key.used_by %}
-          <ul class="usage-list">
-          {% for m in key.used_by %}
-            <li>
-              <a href="{{ url_for('mirror_detail', mirror_id=m.id) }}">{{ m.name }}</a>
-              <span class="badge muted">{{ m.usage_type or 'zugeordnet' }}</span>
-              {% if not m.enabled %} <span class="badge muted">Profil inaktiv</span>{% endif %}
-              <form method="post" class="inline" onsubmit="return confirm('Zuordnung zu diesem Profil entfernen?');">
-                <input type="hidden" name="action" value="unassign_keyring_from_profile">
-                <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
-                <input type="hidden" name="profile_mirror_id" value="{{ m.id }}">
-                <button class="mini" type="submit">Zuordnung entfernen</button>
-              </form>
-            </li>
-          {% endfor %}
-          </ul>
-        {% else %}
-          <p><span class="badge warning">keinem Mirror-Profil zugeordnet</span></p>
-        {% endif %}
+        <div class="keyring-usage master-key-usage-grid">
+          <div>
+            <h4>Profil zuordnen</h4>
+            <form method="post" class="inline-form keyring-assign-form">
+              <input type="hidden" name="action" value="assign_keyring_to_profile">
+              <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+              <label>Mirror-Profil
+                <select name="profile_mirror_id" required>
+                  <option value="">Profil wählen</option>
+                  {% for mirror in mirror_choices %}
+                  <option value="{{ mirror.id }}">{{ mirror.name }}{% if not mirror.enabled %} · inaktiv{% endif %}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <button type="submit">Key zuordnen</button>
+            </form>
+          </div>
+          <div>
+            <h4>Verwendet von</h4>
+            {% if key.used_by %}
+              <ul class="usage-list compact-list">
+              {% for m in key.used_by %}
+                <li>
+                  <a href="{{ url_for('mirror_detail', mirror_id=m.id) }}">{{ m.name }}</a>
+                  <span class="badge muted">{{ m.usage_type or 'zugeordnet' }}</span>
+                  {% if not m.enabled %}<span class="badge muted">inaktiv</span>{% endif %}
+                  <form method="post" class="inline" onsubmit="return confirm('Zuordnung zu diesem Profil entfernen?');">
+                    <input type="hidden" name="action" value="unassign_keyring_from_profile">
+                    <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
+                    <input type="hidden" name="profile_mirror_id" value="{{ m.id }}">
+                    <button class="mini" type="submit">Entfernen</button>
+                  </form>
+                </li>
+              {% endfor %}
+              </ul>
+            {% else %}
+              <p><span class="badge warning">keinem Mirror-Profil zugeordnet</span></p>
+            {% endif %}
+          </div>
+        </div>
       </div>
-    </article>
+    </details>
   {% endfor %}
   </div>
+  <p id="masterKeyFilterEmpty" class="hint" hidden>Keine Keys passen zum Filter.</p>
   {% else %}<p>Noch keine Keys im Master-Keyring vorhanden.</p>{% endif %}
 </section>
 
@@ -319,4 +350,28 @@
   </details>
 </section>
 {% endif %}
+<script>
+(function () {
+  const filter = document.getElementById('masterKeyFilter');
+  const list = document.getElementById('masterKeyList');
+  if (!filter || !list) return;
+  const entries = Array.from(list.querySelectorAll('.master-key-entry'));
+  const empty = document.getElementById('masterKeyFilterEmpty');
+  function applyFilter() {
+    const needle = filter.value.trim().toLowerCase();
+    let visible = 0;
+    entries.forEach(function (entry) {
+      const match = !needle || (entry.dataset.keySearch || '').indexOf(needle) >= 0;
+      entry.hidden = !match;
+      if (match) visible += 1;
+    });
+    if (empty) empty.hidden = visible !== 0;
+  }
+  filter.addEventListener('input', applyFilter);
+  const expand = document.getElementById('masterKeysExpand');
+  const collapse = document.getElementById('masterKeysCollapse');
+  if (expand) expand.addEventListener('click', function () { entries.forEach(function (entry) { if (!entry.hidden) entry.open = true; }); });
+  if (collapse) collapse.addEventListener('click', function () { entries.forEach(function (entry) { entry.open = false; }); });
+})();
+</script>
 {% endblock %}

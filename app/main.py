@@ -76,6 +76,7 @@ IMPORT_HOST_MIRROR_PATHS = [
 DB_PATH = APP_DATA_DIR / "debmirror-manager.sqlite3"
 WEBUI_ERROR_LOG = APP_LOG_DIR / "webui-error.log"
 SETTINGS_PATH = APP_DATA_DIR / "settings.json"
+NOTIFICATION_SECRET_KEY_PATH = APP_DATA_DIR / "notification-secrets.key"
 SCHEDULER_SCAN_SECONDS = int(os.environ.get("SCHEDULER_SCAN_SECONDS", "60"))
 JOB_STOP_GRACE_SECONDS = int(os.environ.get("JOB_STOP_GRACE_SECONDS", "20"))
 DEFAULT_MAX_PARALLEL_JOBS = int(os.environ.get("MAX_PARALLEL_JOBS", "1"))
@@ -130,6 +131,7 @@ PROFILE_SCAN_JOBS: Dict[str, Dict[str, Any]] = {}
 PROFILE_SCAN_JOBS_LOCK = threading.Lock()
 PROFILE_SCAN_JOB_TTL_SECONDS = 3600
 PROFILE_SCAN_JOB_MAX_ENTRIES = 40
+NOTIFICATION_SECRET_KEY_LOCK = threading.Lock()
 
 
 def _normalized_size_path(path_value: str) -> str:
@@ -647,18 +649,58 @@ def save_dashboard_layout_settings(layout: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 SECRET_FIELDS = {"smtp_password", "telegram_bot_token", "discord_webhook_url"}
-SECRET_PREFIX = "enc:v1:"
+LEGACY_SECRET_PREFIX = "enc:v1:"
+SECRET_PREFIX = "enc:v2:"
 
 
 def encryption_available() -> bool:
-    return Fernet is not None and bool(app.secret_key)
+    return Fernet is not None
 
 
-def fernet_instance() -> Optional[Any]:
-    if not encryption_available():
+def _legacy_fernet_instance() -> Optional[Any]:
+    if Fernet is None or not app.secret_key:
         return None
     key = base64.urlsafe_b64encode(hashlib.sha256(str(app.secret_key).encode("utf-8")).digest())
     return Fernet(key)
+
+
+def _persistent_fernet_instance(create: bool = False) -> Optional[Any]:
+    """Return the persistent notification-secret cipher.
+
+    The key lives in APP_DATA_DIR so it survives container recreation and is
+    included in full backups.  It is deliberately separate from APP_SECRET_KEY,
+    because APP_SECRET_KEY belongs to the installation's .env and may change
+    after a clean reinstall.
+    """
+    if Fernet is None:
+        return None
+    try:
+        if NOTIFICATION_SECRET_KEY_PATH.exists():
+            key = NOTIFICATION_SECRET_KEY_PATH.read_bytes().strip()
+            return Fernet(key)
+        if not create:
+            return None
+        with NOTIFICATION_SECRET_KEY_LOCK:
+            if NOTIFICATION_SECRET_KEY_PATH.exists():
+                key = NOTIFICATION_SECRET_KEY_PATH.read_bytes().strip()
+                return Fernet(key)
+            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            tmp = NOTIFICATION_SECRET_KEY_PATH.with_suffix(".tmp")
+            tmp.write_bytes(key + b"\n")
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                pass
+            tmp.replace(NOTIFICATION_SECRET_KEY_PATH)
+            try:
+                NOTIFICATION_SECRET_KEY_PATH.chmod(0o600)
+            except OSError:
+                pass
+            return Fernet(key)
+    except Exception as exc:
+        log_webui_exception("notification secret key", exc)
+        return None
 
 
 def encrypt_secret(value: str) -> str:
@@ -667,11 +709,15 @@ def encrypt_secret(value: str) -> str:
         return ""
     if value.startswith(SECRET_PREFIX):
         return value
-    f = fernet_instance()
+    if value.startswith(LEGACY_SECRET_PREFIX):
+        plain = decrypt_secret(value)
+        if not plain:
+            return value
+        value = plain
+    f = _persistent_fernet_instance(create=True)
     if not f:
-        # Fallback only if cryptography is unexpectedly unavailable. The UI does
-        # not display secret values, but true encryption requires cryptography.
-        return value
+        # Do not silently downgrade newly entered credentials to plaintext.
+        raise RuntimeError("Benachrichtigungs-Geheimwert konnte nicht verschlüsselt werden.")
     return SECRET_PREFIX + f.encrypt(value.encode("utf-8")).decode("ascii")
 
 
@@ -679,24 +725,49 @@ def decrypt_secret(value: str) -> str:
     value = value or ""
     if not value:
         return ""
-    if not value.startswith(SECRET_PREFIX):
-        return value
-    f = fernet_instance()
-    if not f:
-        return ""
-    token = value[len(SECRET_PREFIX):]
-    try:
-        return f.decrypt(token.encode("ascii")).decode("utf-8")
-    except Exception:
-        return ""
+    if value.startswith(SECRET_PREFIX):
+        f = _persistent_fernet_instance(create=False)
+        if not f:
+            return ""
+        token = value[len(SECRET_PREFIX):]
+        try:
+            return f.decrypt(token.encode("ascii")).decode("utf-8")
+        except Exception:
+            return ""
+    if value.startswith(LEGACY_SECRET_PREFIX):
+        f = _legacy_fernet_instance()
+        if not f:
+            return ""
+        token = value[len(LEGACY_SECRET_PREFIX):]
+        try:
+            return f.decrypt(token.encode("ascii")).decode("utf-8")
+        except Exception:
+            return ""
+    return value
+
+
+def notification_secret_storage_status() -> Dict[str, Any]:
+    raw = load_settings().get("notify") or {}
+    unreadable: List[str] = []
+    if isinstance(raw, dict):
+        for field in SECRET_FIELDS:
+            value = str(raw.get(field) or "")
+            if value.startswith((SECRET_PREFIX, LEGACY_SECRET_PREFIX)) and not decrypt_secret(value):
+                unreadable.append(field)
+    return {
+        "key_present": NOTIFICATION_SECRET_KEY_PATH.exists(),
+        "key_path": str(NOTIFICATION_SECRET_KEY_PATH),
+        "unreadable_fields": unreadable,
+        "readable": not unreadable,
+    }
 
 
 def migrate_notification_secret_storage() -> None:
-    """Encrypt existing notification secrets and remove legacy admin secrets.
+    """Migrate notification secrets to a backup-safe persistent data key.
 
-    This keeps settings.json from exposing SMTP passwords, Telegram bot tokens,
-    Discord webhooks and legacy admin password hashes. User accounts remain in
-    SQLite with hashed passwords.
+    v1 values were derived from APP_SECRET_KEY and could become unreadable after
+    a clean reinstall.  v2 values use notification-secrets.key in APP_DATA_DIR;
+    full backups include that key and restore it together with settings.json.
     """
     try:
         settings = load_settings()
@@ -705,9 +776,17 @@ def migrate_notification_secret_storage() -> None:
         if isinstance(notify, dict):
             for field in SECRET_FIELDS:
                 value = str(notify.get(field) or "")
-                if value and not value.startswith(SECRET_PREFIX):
-                    notify[field] = encrypt_secret(value)
+                if not value or value.startswith(SECRET_PREFIX):
+                    continue
+                plain = decrypt_secret(value) if value.startswith(LEGACY_SECRET_PREFIX) else value
+                if plain:
+                    notify[field] = encrypt_secret(plain)
                     changed = True
+                elif value.startswith(LEGACY_SECRET_PREFIX):
+                    log_webui_exception(
+                        "migrate notification secret",
+                        RuntimeError(f"Legacy-Geheimwert {field} konnte nicht entschlüsselt werden."),
+                    )
         # Once the users table exists, legacy single-admin values are no longer
         # needed in settings.json. The username in SQLite remains visible because
         # it is the login identifier; passwords are stored only as hashes.
@@ -721,6 +800,8 @@ def migrate_notification_secret_storage() -> None:
             except Exception:
                 pass
         if changed:
+            settings["notification_secret_storage_version"] = 2
+            settings["notification_secret_storage_updated_at"] = now_iso()
             save_settings(settings)
     except Exception as exc:
         log_webui_exception("migrate_notification_secret_storage", exc)
@@ -8814,6 +8895,12 @@ def sqlite_snapshot(dest: Path) -> None:
 
 
 def add_dir_to_zip(zf: zipfile.ZipFile, source_dir: Path, arc_prefix: str) -> int:
+    """Add a directory tree while keeping Unix mode bits in the ZIP entries.
+
+    Python's ZipFile.write already stores the source mode in external_attr.  The
+    restore path additionally applies those bits explicitly because extractall()
+    intentionally does not restore executable permissions on Unix.
+    """
     count = 0
     if not source_dir.exists():
         return count
@@ -8824,24 +8911,51 @@ def add_dir_to_zip(zf: zipfile.ZipFile, source_dir: Path, arc_prefix: str) -> in
     return count
 
 
+def backup_permission_map(paths: Iterable[Tuple[Path, str]]) -> Dict[str, int]:
+    """Return portable file-mode metadata for files included in a backup."""
+    result: Dict[str, int] = {}
+    for source_dir, arc_prefix in paths:
+        if not source_dir.exists():
+            continue
+        for path in source_dir.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                arcname = f"{arc_prefix}/{path.relative_to(source_dir).as_posix()}"
+                result[arcname] = stat.S_IMODE(path.stat().st_mode) & 0o777
+    return result
+
+
 def create_full_backup(label: str = "manual") -> Path:
+    migrate_notification_secret_storage()
+    secret_status = notification_secret_storage_status()
+    if secret_status["unreadable_fields"]:
+        fields = ", ".join(secret_status["unreadable_fields"])
+        raise ValueError(f"Backup abgebrochen: Benachrichtigungs-Geheimwerte können nicht entschlüsselt werden ({fields}). Werte neu setzen und erneut sichern.")
     APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backup_path = APP_BACKUP_DIR / safe_backup_name(label)
     tmp_db = APP_DATA_DIR / f"backup-db-{secrets.token_hex(6)}.sqlite3"
     sqlite_snapshot(tmp_db)
+    permission_sources = [
+        (APP_KEYRING_DIR, "keyrings"),
+        (IMPORT_SCRIPT_DIR, "import-scripts"),
+        (USER_SCRIPT_DIR, "user-scripts"),
+    ]
+    permissions = backup_permission_map(permission_sources)
     manifest = {
         "format": BACKUP_FORMAT,
         "app_version": APP_VERSION,
         "created_at": now_iso(),
         "label": label,
-        "includes": ["database", "settings", "config_export", "keyrings", "import_scripts", "user_scripts"],
+        "includes": ["database", "settings", "notification_secret_key", "config_export", "keyrings", "import_scripts", "user_scripts", "file_permissions"],
     }
     try:
         with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+            zf.writestr("permissions.json", json.dumps(permissions, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
             zf.writestr("config_export.json", json.dumps(build_config_export(), indent=2, ensure_ascii=False) + "\n")
             if SETTINGS_PATH.exists():
                 zf.write(SETTINGS_PATH, "settings.json")
+            if NOTIFICATION_SECRET_KEY_PATH.exists():
+                zf.write(NOTIFICATION_SECRET_KEY_PATH, "secrets/notification-secrets.key")
             zf.write(tmp_db, "database/debmirror-manager.sqlite3")
             add_dir_to_zip(zf, APP_KEYRING_DIR, "keyrings")
             add_dir_to_zip(zf, IMPORT_SCRIPT_DIR, "import-scripts")
@@ -8875,11 +8989,25 @@ def safe_extract_zip_to_tmp(uploaded_path: Path) -> Path:
     tmp = APP_DATA_DIR / "restore-tmp" / secrets.token_hex(8)
     tmp.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(uploaded_path) as zf:
-        for info in zf.infolist():
+        infos = zf.infolist()
+        for info in infos:
             name = info.filename
             if not name or name.startswith("/") or ".." in Path(name).parts:
                 raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
         zf.extractall(tmp)
+        # ZipFile.extractall() restores file contents but not Unix permission bits.
+        # Apply the safe rwx subset recorded by ZipFile.write so executable user
+        # scripts also work after restoring backups created by older versions.
+        for info in infos:
+            mode = (info.external_attr >> 16) & 0o777
+            if not mode:
+                continue
+            extracted = tmp / info.filename
+            if extracted.exists() and not extracted.is_symlink():
+                try:
+                    extracted.chmod(mode)
+                except OSError:
+                    pass
     return tmp
 
 
@@ -8915,7 +9043,7 @@ def copy_table_rows(src_db: Path, table: str, replace: bool = False) -> int:
 
 def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include_users: bool = True) -> Dict[str, int]:
     tmp = safe_extract_zip_to_tmp(zip_path)
-    result = {"mirrors": 0, "healthchecks": 0, "schedules": 0, "users": 0, "api_tokens": 0, "keyrings": 0, "import_scripts": 0, "user_scripts": 0, "settings": 0}
+    result = {"mirrors": 0, "healthchecks": 0, "schedules": 0, "users": 0, "api_tokens": 0, "keyrings": 0, "import_scripts": 0, "user_scripts": 0, "settings": 0, "secret_key": 0, "permissions": 0}
     try:
         manifest_path = tmp / "manifest.json"
         if manifest_path.exists():
@@ -8945,10 +9073,47 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                 result["mirrors"] = imported.get("mirrors", 0)
                 result["healthchecks"] = imported.get("healthchecks", 0)
                 result["settings"] = imported.get("settings", 0)
+        restored_secret_key = tmp / "secrets" / "notification-secrets.key"
+        if restored_secret_key.exists():
+            key_bytes = restored_secret_key.read_bytes().strip()
+            if Fernet is None:
+                raise ValueError("Verschlüsselungsbibliothek fehlt; Benachrichtigungs-Schlüssel kann nicht geprüft werden.")
+            try:
+                Fernet(key_bytes)
+            except Exception as exc:
+                raise ValueError("Benachrichtigungs-Schlüssel im Backup ist ungültig.") from exc
+            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp_key = NOTIFICATION_SECRET_KEY_PATH.with_suffix(".restore-tmp")
+            tmp_key.write_bytes(key_bytes + b"\n")
+            try:
+                tmp_key.chmod(0o600)
+            except OSError:
+                pass
+            tmp_key.replace(NOTIFICATION_SECRET_KEY_PATH)
+            try:
+                NOTIFICATION_SECRET_KEY_PATH.chmod(0o600)
+            except OSError:
+                pass
+            result["secret_key"] = 1
         if (tmp / "settings.json").exists():
             shutil.copy2(tmp / "settings.json", SETTINGS_PATH)
             result["settings"] += 1
-        for folder, dest, key in [(tmp / "keyrings", APP_KEYRING_DIR, "keyrings"), (tmp / "import-scripts", IMPORT_SCRIPT_DIR, "import_scripts"), (tmp / "user-scripts", USER_SCRIPT_DIR, "user_scripts")]:
+        permission_map: Dict[str, int] = {}
+        permissions_path = tmp / "permissions.json"
+        if permissions_path.exists():
+            try:
+                raw_permissions = json.loads(permissions_path.read_text(encoding="utf-8"))
+                if isinstance(raw_permissions, dict):
+                    for arcname, mode in raw_permissions.items():
+                        if isinstance(arcname, str):
+                            permission_map[arcname] = int(mode) & 0o777
+            except Exception as exc:
+                add_event("warning", f"Dateirechte-Metadaten im Backup konnten nicht gelesen werden: {exc}")
+        for folder, dest, key, arc_prefix in [
+            (tmp / "keyrings", APP_KEYRING_DIR, "keyrings", "keyrings"),
+            (tmp / "import-scripts", IMPORT_SCRIPT_DIR, "import_scripts", "import-scripts"),
+            (tmp / "user-scripts", USER_SCRIPT_DIR, "user_scripts", "user-scripts"),
+        ]:
             if folder.exists():
                 if replace and dest.exists():
                     for pth in dest.iterdir():
@@ -8963,7 +9128,32 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                         out = dest / rel
                         out.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, out)
+                        arcname = f"{arc_prefix}/{rel.as_posix()}"
+                        mode = permission_map.get(arcname)
+                        if mode is None:
+                            # Backups before v0.1.68 have no permissions.json, but
+                            # their ZIP entries usually still contain Unix modes.
+                            mode = stat.S_IMODE(src.stat().st_mode) & 0o777
+                        if key == "user_scripts" and not (mode & 0o111):
+                            # Compatibility fallback for backups produced or
+                            # repacked on systems that stripped Unix ZIP attrs.
+                            try:
+                                first_line = src.open("rb").readline(256)
+                            except OSError:
+                                first_line = b""
+                            if first_line.startswith(b"#!"):
+                                mode |= 0o755
+                        if mode:
+                            try:
+                                out.chmod(mode & 0o777)
+                                result["permissions"] += 1
+                            except OSError:
+                                pass
                         result[key] += 1
+        migrate_notification_secret_storage()
+        secret_status = notification_secret_storage_status()
+        if secret_status["unreadable_fields"]:
+            add_event("warning", "Backup wiederhergestellt, aber Benachrichtigungs-Geheimwerte konnten nicht vollständig entschlüsselt werden.")
         add_event("warning", f"Backup wiederhergestellt: {zip_path.name}")
         return result
     finally:
@@ -9189,7 +9379,12 @@ def notification_form_settings() -> Dict[str, Any]:
     for field in SECRET_FIELDS:
         cfg[field + "_set"] = bool(str(raw.get(field) or ""))
         cfg[field] = ""
+    storage = notification_secret_storage_status()
     cfg["encryption_available"] = encryption_available()
+    cfg["secret_key_present"] = storage["key_present"]
+    cfg["secret_storage_readable"] = storage["readable"]
+    cfg["unreadable_secret_fields"] = storage["unreadable_fields"]
+    cfg["secret_key_path"] = storage["key_path"]
     return cfg
 
 
