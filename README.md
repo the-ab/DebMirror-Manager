@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.68**
+Aktuelle Version: **0.1.75**
 
 ## Grundprinzip
 
@@ -32,7 +32,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.68.zip
+unzip debmirror-manager-v0.1.75.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -63,7 +63,7 @@ Die Hauptnavigation ist in Bereiche gegliedert:
 - **Übersicht**: Dashboard, Speicher, Warteschlange, Status, letzte Jobs, Ereignisse und Healthchecks.
 - **Mirror**: Profile, Profilgenerator, Benutzerskripte, Skript-Import und Keyrings.
 - **Betrieb**: Jobs/Logs, Zeitpläne, Healthchecks und Benachrichtigungen.
-- **System**: Einstellungen, Generator-Einstellungen, Backup/Wiederherstellen, Konfig Export/Import, Benutzer und API.
+- **System**: Einstellungen, Generator-Einstellungen, Backup/Wiederherstellen, Konfig Export/Import, Benutzerverwaltung und API.
 
 ## Dashboard
 
@@ -74,12 +74,26 @@ Wichtige Bereiche:
 - **Speicher**: Auslastung des Mirror-Basisverzeichnisses.
 - **Warteschlange**: laufende/wartende Jobs sowie laufende, wartende oder vorgemerkte Größenberechnungen.
 - **Profile / Benutzerskripte**: zweigeteilte Schnellübersicht; die Überschriften sind direkt anklickbar.
-- **Mirror-Profile / Benutzerskripte**: gemeinsame Tabelle mit Art, Status, Größe, Zeitplan, letztem Job und Aktion.
+- **Mirror-Profile / Benutzerskripte**: gemeinsame Tabelle mit Art, Status, Größe, Zeitplan, letztem Job und Aktion. Der letzte Job ist vollständig anklickbar und öffnet direkt die zugehörige Job-/Logseite. Name, Status, Art und Größe können über die jeweilige Spaltenüberschrift auf- oder absteigend sortiert werden.
 - **Letzte Jobs**: jüngste Jobs mit Status, Quelle, Dauer und Exit-Code.
 - **Ereignisse**: aktuelle System- und WebUI-Meldungen.
 - **Healthchecks**: zuletzt geprüfte Mirror-URLs.
 
 Über **Dashboard bearbeiten** können Blöcke mit der Maus verschoben und über den Griff unten rechts in Breite und Höhe angepasst werden. Das Layout wird zentral in `settings.json` gespeichert und gilt dadurch browserübergreifend.
+
+Neben jeder Mirror-Größe und jeder konfigurierten Benutzerskript-Zielgröße befindet sich für Admin-Benutzer ein Aktualisieren-Button. Das gilt im Dashboard, in der Profilübersicht, in der Mirror-Detailansicht und in der Benutzerskript-Übersicht. Über **↻ Alle** in der Dashboard-Spalte **Größe** werden alle vorhandenen konfigurierten Mirror- und Skript-Zielverzeichnisse gemeinsam aktualisiert. Doppelt konfigurierte Pfade werden nur einmal berechnet; nicht vorhandene Verzeichnisse werden übersprungen. Die Berechnungen laufen im Hintergrund beziehungsweise nacheinander über die Größenwarteschlange und blockieren keinen Seitenaufruf. Status und Zeitpunkt werden an allen Stellen einheitlich dargestellt:
+
+```text
+aktuell                      Seit der letzten Prüfung wurde kein echter Job für dieses Ziel beendet
+veraltet                     Nach der letzten Prüfung wurde ein echter Job beendet
+wird aktualisiert            Neuberechnung läuft; der Wert der letzten Prüfung bleibt sichtbar
+wartet / vorgemerkt          Berechnung wartet auf Kapazität oder das Ruhefenster
+noch nicht berechnet         für das Ziel existiert noch kein Prüfwert
+Fehler / Zeitüberschreitung  letzte Berechnung ist fehlgeschlagen
+letzte Prüfung               Zeitpunkt der zuletzt abgeschlossenen Größenberechnung
+```
+
+„Veraltet“ wird nicht mehr allein durch das Alter des Cache-Eintrags gesetzt. Der Status erscheint nur, wenn nach der letzten Größenprüfung ein nicht als Dry-Run ausgeführter Mirror- oder Benutzerskript-Job tatsächlich gestartet und beendet wurde. Ein Tooltip erklärt die jeweilige Bedeutung. Der interne Statuswert bleibt für API und Programmlogik unverändert.
 
 Statuswerte in der gemeinsamen Tabelle **Mirror-Profile / Benutzerskripte**:
 
@@ -94,6 +108,8 @@ error      Start nicht möglich, z. B. Pflichtwerte fehlen oder Skript ist nicht
 
 ## Mirror-Profile
 
+Die Profilübersicht bietet neben jedem Größenwert einen kompakten Refresh-Button. Die Spalten **Name**, **Status**, **Mirror-Größe** und **Repository** sind durch Anklicken der Überschrift sortierbar. Ein zweiter Klick kehrt die Sortierreihenfolge um. Bei der Größen-Spalte wird intern der Bytewert verwendet, damit zum Beispiel `900 MiB` korrekt vor `2 GiB` einsortiert wird.
+
 Mirror-Profile enthalten alle Werte, die für einen `debmirror`-Lauf benötigt werden:
 
 - Methode: `rsync`, `http`, `https` oder `ftp`
@@ -103,12 +119,44 @@ Mirror-Profile enthalten alle Werte, die für einen `debmirror`-Lauf benötigt w
 - Architekturen
 - Zielverzeichnis unter `/mirror`
 - Quellpakete optional aktivierbar
-- zusätzliche debmirror-Optionen
+- zusätzliche debmirror-Optionen über kontrollierte Auswahlfelder
+- manuelle Zusatzoptionen im validierten Expertenfeld
+- optionale Remote-Anmeldung mit verschlüsselt gespeichertem Passwort
+- Rsync-Extras `doc`, `indices`, `tools`, `trace` oder `none`
+- Include-/Exclude-Patterns mit RegEx-Beispielen
 - GPG-/Keyring-Zuordnung
 - Profilzeitplan
 - Aktiv-Status
 
 Deaktivierte Profile können nicht normal gestartet werden, weder manuell noch per Zeitplan oder API. Dry-Runs bleiben möglich. In Listen wird ein gesperrter Start als deaktivierter/durchgestrichener Start-Button dargestellt.
+
+### debmirror-Optionen im Profil
+
+Die wichtigsten Werte wie Transfermethode, Host, Root-Pfad, Suites, Komponenten, Architekturen, Quellpakete, Keyring, Cleanup, Diff-Modus, Timeout und Include-/Exclude-Patterns besitzen eigene Formularfelder. Weitere profilgeeignete debmirror-Optionen werden über eine kontrollierte Auswahlliste aktiviert. Optionen mit Parameter zeigen direkt daneben ein Eingabefeld, zum Beispiel:
+
+```text
+--proxy=http://proxy.example:3128/
+--rsync-options=-aIL --partial --bwlimit=50000
+--state-cache-days=7
+--exclude-field=Package=^linux-image-debug
+```
+
+`Rsync Extra` ist getrennt davon und bietet ausschließlich die von debmirror unterstützten Werte `doc`, `indices`, `tools`, `trace` und `none`. `none` kann nicht mit weiteren Rsync-Extras kombiniert werden. Frühere Profile, bei denen ein Rsync-Parameter versehentlich in `Rsync Extra` gespeichert wurde, werden beim Bearbeiten als `--rsync-options` übernommen.
+
+Include- und Exclude-Patterns sind kommagetrennte Perl-RegEx. Beispiele:
+
+```text
+Include: /Translation-(de|en).*
+Exclude: /Translation-.*,/.*-dbg_.*
+```
+
+Sicherheitskritische Optionen wie `--no-check-gpg` und `--disable-ssl-verification` sind sichtbar gekennzeichnet. Für seltene oder neuere debmirror-Optionen gibt es zusätzlich **Manuelle Zusatzoptionen (Expertenmodus)**. Das Feld akzeptiert nur lange Optionen, führt sie ohne Shell als einzelne Prozessargumente aus und blockiert Basisoptionen, Zugangsdaten, `--config-file` sowie bereits in der Auswahlliste vorhandene Flags. Optionen mit Wert werden im Format `--option=wert` eingetragen.
+
+Die Profilprüfung verhindert oder bereinigt widersprüchliche Kombinationen: `--passive` nur bei FTP, deaktivierte TLS-Prüfung nur bei HTTPS, Rsync-Paketoptionen nur bei Hauptmethode Rsync, `--gzip-options` nur bei aktivem Diff-Modus, `--slow-cpu` nur mit `diff=none`, genau ein Bereinigungsmodus sowie keine Keyring-/Fingerprint-Zuordnung bei `--no-check-gpg`. `Rsync Extra=none` sperrt Rsync-Optionen, wenn die Hauptmethode ebenfalls nicht Rsync ist. Für Rsync werden Host und Modulpfad zentral geprüft; Ports gehören entweder in die Rsync-Option `--port=...` oder bei SSH in das separate SSH-Port-Feld. Zeitplan-Uhrzeiten müssen als gültiges `HH:MM` angegeben werden. Diese Regeln werden im Formular, im Backend sowie beim Skript- und Konfigurationsimport angewendet.
+
+Für geschützte HTTP/HTTPS- oder FTP-Quellen besitzt das Profil optionale Felder für Remote-Benutzer und Remote-Passwort. Das Passwort wird verschlüsselt in der SQLite-Datenbank gespeichert und im Formular nie zurückgegeben. Beim Jobstart erzeugt die Anwendung dafür eine temporäre debmirror-Konfigurationsdatei mit Dateimodus `0600`; Job-Datenbank, gespeicherter Befehl und Logs enthalten kein Klartextpasswort. Bei der Methode `rsync` sind Benutzer/Passwort-Felder gesperrt.
+
+Für geschützte Rsync-Quellen steht stattdessen **Rsync-Modul über SSH-Schlüssel** bereit. debmirror verwendet Rsync-Ziele im Format `host::modul`; die Anwendung ergänzt dafür eine explizite SSH-Remote-Shell mit privatem Schlüssel, `BatchMode`, `IdentitiesOnly`, eigenem SSH-Port und persistenter `known_hosts`-Datei. Unterstützt wird damit ein Rsync-Modul über eine SSH-Remote-Shell. Ein allgemeiner Dateipfad wie `user@host:/srv/mirror` kann mit debmirror nicht als Mirror-Profil verwendet werden; dafür ist ein Benutzerskript geeigneter. Private Schlüssel müssen für unbeaufsichtigte Jobs ohne Passphrase vorliegen, werden geprüft und mit Modus `0600` gespeichert.
 
 ## Profilgenerator
 
@@ -128,7 +176,13 @@ Die Prüfung erkennt unter anderem:
 
 Die Verzeichnistiefe ist einstellbar; Standard ist `5`, maximal `10`. Während der Prüfung zeigt ein Live-Statusfenster die geprüften Verzeichnisse, `dists/`-Pfade, Release-Dateien, Packages-Dateien und GPG-Key-Kandidaten. Der Scan kann über **Prüfung stoppen** abgebrochen werden.
 
-Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner zuerst HTTPS und bei Bedarf zusätzlich HTTP. Wenn an der Hauptadresse kein Repository gefunden wird, werden die Suchpfad-Variablen aus **System -> Generator-Einstellungen** relativ zur eingegebenen Adresse geprüft, z. B. `deb`, `debian`, `repo`, `repository`, `apt`, `packages`, `mirror`, `download` oder `public`. Bleibt auch das ohne Treffer, wird je Suchvariable zusätzlich ein direkt angehängtes `dists/` geprüft. Werden mehrere Repository-Basen gefunden, kann die gewünschte Basis im Prüfergebnis ausgewählt werden; Suites, Komponenten und Architekturen werden danach passend zu dieser Basis gefiltert.
+Wird eine Adresse ohne Protokoll eingegeben, prüft der Scanner zuerst HTTPS und ohne Zugangsdaten bei Bedarf zusätzlich HTTP. Sind HTTP/FTP-Zugangsdaten gesetzt, wird aus Sicherheitsgründen kein automatischer Wechsel von HTTPS auf unverschlüsseltes HTTP durchgeführt; HTTP muss dann ausdrücklich angegeben werden. Der Bereich für Benutzername und Passwort ist standardmäßig eingeklappt. HTTP/HTTPS-Scans unterstützen Basic Auth und FTP-Scans Benutzer/Passwort.
+
+Eine ausdrücklich angegebene `rsync://`-Adresse wird nicht nur auf Erreichbarkeit geprüft: Der Generator liest gezielt `dists/` sowie die dortigen `InRelease`-/`Release`-Dateien und kann daraus Suites, Komponenten und Architekturen für ein neues Profil übernehmen. Ein abweichender Port für einen direkten Rsync-Daemon wird beim vorbereiteten Profil über `--rsync-options` übernommen.
+
+Die separate Rsync-Prüfung kann ein Rsync-Modul zusätzlich über SSH-Schlüssel testen. Dafür werden SSH-Benutzer, privater Schlüssel, SSH-Port und Hostschlüsselverhalten angegeben. SSH-Passwörter und Rsync-Daemon-Passwörter werden nicht unterstützt. HTTP/FTP-Zugangsdaten und Rsync-SSH-Anmeldung sind gegenseitig ausgeschlossen und werden bei unpassendem Protokoll bereits im Formular deaktiviert sowie im Backend abgewiesen. Zugangsdaten in der Repository-URL sind ebenfalls nicht zulässig. SSH-Werte werden nur in ein vorbereitetes Rsync-Profil übernommen.
+
+Wenn an der Hauptadresse kein Repository gefunden wird, werden die Suchpfad-Variablen aus **System -> Generator-Einstellungen** relativ zur eingegebenen Adresse geprüft, z. B. `deb`, `debian`, `repo`, `repository`, `apt`, `packages`, `mirror`, `download` oder `public`. Bleibt auch das ohne Treffer, wird je Suchvariable zusätzlich ein direkt angehängtes `dists/` geprüft. Werden mehrere Repository-Basen gefunden, kann die gewünschte Basis im Prüfergebnis ausgewählt werden; Suites, Komponenten und Architekturen werden danach passend zu dieser Basis gefiltert. Beim Scan verwendete Zugangsdaten können verschlüsselt an das vorbereitete Profil übergeben oder im Profil neu gesetzt werden.
 
 ## Benutzerskripte
 
@@ -144,7 +198,7 @@ Funktionen:
 - Zielverzeichnis nur für Größenberechnung
 - manuelle Größenberechnung nur für dieses eine Skriptziel
 
-Beim Löschen eines Skripts wird der gespeicherte Aktiv-Status auf inaktiv gesetzt.
+Beim Löschen eines Skripts wird der gespeicherte Aktiv-Status auf inaktiv gesetzt. Die Skriptübersicht wechselt auf kleinen Displays in eine Kartenansicht, damit Zielverzeichnis, Status und Aktionen ohne horizontales Verschieben bedienbar bleiben.
 
 ## Skript-Import
 
@@ -178,7 +232,9 @@ Profil-Keyrings
 
 ### Master-Keyring
 
-Die WebUI zeigt die Master-Keys in einer kompakten, filterbaren Liste. Jeder Hauptkey kann für Details, Subkeys, Export und Profil-Zuordnung aufgeklappt werden.
+Der obere Master-Keyring-Block zeigt Status, Hauptkeys, Subkeys, Fingerprints, Quelldateien, Dateigröße und ausgeschlossene Keys in einer kompakten Kennzahlenübersicht. Pfad, vollständige Fingerprint-Liste und die Erläuterung der beiden Neuaufbau-Arten sind standardmäßig eingeklappt. Die Aktionen zum normalen Neuaufbau, vollständigen Neuaufbau und Neuerzeugen aller Profil-Keyrings bleiben direkt erreichbar.
+
+Darunter zeigt die WebUI die einzelnen Master-Keys in einer kompakten, filterbaren Liste. Jeder Hauptkey kann für Details, Subkeys, Export und Profil-Zuordnung aufgeklappt werden.
 
 Der Master-Keyring liegt unter:
 
@@ -272,17 +328,20 @@ Die Job-Zeitplanliste steht direkt unter **Aktuelle Regeln**, damit gespeicherte
 
 ## Größenberechnung
 
-Die Größenberechnung nutzt einen Cache und wird nicht automatisch für alle Profile gestartet.
+Die Größenberechnung nutzt einen Cache. Die automatische Berechnung nach Zeitplan-Jobs bleibt zielbezogen; zusätzlich kann ein Administrator im Dashboard alle vorhandenen konfigurierten Zielverzeichnisse bewusst gemeinsam aktualisieren.
 
 Regeln:
 
-- manuelle Größenberechnung betrifft nur das ausgewählte Profil oder Skriptziel
+- einzelner Refresh betrifft nur das ausgewählte Profil oder Skriptziel
+- **↻ Alle** im Dashboard fordert eine Berechnung aller vorhandenen, eindeutig aufgelösten Mirror- und Skript-Zielverzeichnisse an
 - manuell gestartete Jobs lösen keine automatische Größenberechnung aus
 - automatische Größenberechnung entsteht nur nach beendeten Zeitplan-Jobs
 - pro beendetem Zeitplan-Job wird nur das betroffene Profil oder Skriptziel vorgemerkt
 - Berechnung startet nur, wenn keine Jobs laufen oder warten
 - eingestelltes Ruhefenster wird berücksichtigt
 - laufende oder wartende Größenberechnungen werden in der Warteschlange sichtbar
+- ein Größenwert wird nur dann als **veraltet** markiert, wenn nach seiner letzten Prüfung ein echter, nicht als Dry-Run ausgeführter Job für dasselbe Ziel beendet wurde
+- die Cache-Gültigkeit steuert weiterhin automatische Aktualisierungen, markiert einen Wert aber nicht allein wegen seines Alters als veraltet
 
 Wichtige Einstellungen:
 
@@ -313,11 +372,11 @@ Healthchecks prüfen lokale Repository-URLs wie:
 http://mirror.local/debian/dists/bookworm/Release
 ```
 
-Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Auf dem Dashboard werden Status, letzte Prüfung, URL und die zuletzt gemessene Latenz angezeigt.
+Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Auf dem Dashboard werden Status, letzte Prüfung, URL und die zuletzt gemessene Latenz angezeigt. Die Healthcheck-Liste und das Bearbeitungsformular sind für schmale Displays kompakt angeordnet.
 
 ## Benachrichtigungen
 
-Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Dieser Schlüssel liegt im persistenten Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor den Benachrichtigungseinstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
+Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Derselbe persistente Schlüssel schützt auch gespeicherte Remote-Passwörter von Mirror-Profilen. Er liegt im Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor Datenbank und Einstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
 
 ## Systembereiche
 
@@ -327,17 +386,22 @@ Zentrale Einstellungen für Darstellung, Jobs, Warteschlange, Log-Aufbewahrung, 
 
 ### Generator-Einstellungen
 
-Verwaltet Generator-Daten und Suchpfad-Variablen für den Profilgenerator.
+Die Seite ist in zwei gleichwertige Bereiche geteilt: links **Suchpfad-Variablen**, rechts **Generator-Konfiguration**. Auf schmalen Displays werden beide Blöcke untereinander dargestellt.
+
+- **Suchpfad-Variablen**: ein relativer Pfad pro Zeile; nur Pfade innerhalb der geprüften Basisadresse sind zulässig. Speichern und Zurücksetzen wirken ausschließlich auf diese Liste. Die eingebauten Standardwerte werden unter dem Eingabefeld dauerhaft als Text angezeigt und müssen nicht aufgeklappt werden.
+- **Generator-Konfiguration**: JSON-Definition der vorbereiteten Distributionsgruppen mit `label`, `method`, `host`, `root_path`, `releases`, `components` und `archs`. Speichern und Zurücksetzen wirken ausschließlich auf die JSON-Konfiguration.
+
+Beide Eingaben werden serverseitig validiert. Fehler in einem Block verändern den jeweils anderen Block nicht.
 
 ### Backup / Wiederherstellen
 
-Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, der separate Verschlüsselungs-Schlüssel für Benachrichtigungs-Zugangsdaten, Keyrings, Import-Skripte und Benutzerskripte. Beim Restore wird der Verschlüsselungs-Schlüssel vor `settings.json` eingespielt, damit SMTP-, Telegram- und Discord-Geheimwerte nach einem Serverwechsel weiter entschlüsselt werden können. Dateirechte der gesicherten Dateien werden mitgeführt und beim Wiederherstellen erneut gesetzt; dadurch bleiben Benutzerskripte ausführbar. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
+Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, der separate Verschlüsselungs-Schlüssel für Benachrichtigungs- und Mirror-Zugangsdaten, Keyrings, Import-Skripte, Benutzerskripte sowie die verwalteten SSH-Privatschlüssel und `known_hosts`. Beim Restore wird der Verschlüsselungs-Schlüssel vor Datenbank und `settings.json` eingespielt. SSH-Verzeichnisse werden mit Modus `0700`, private Schlüssel und `known_hosts` mit `0600` wiederhergestellt. Vor dem Backup werden gespeicherte Geheimwerte geprüft; bei nicht entschlüsselbaren Werten wird das Backup abgebrochen. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
 
 ### Konfig Export/Import
 
-Exportiert und importiert Konfigurationsdaten wie Mirror-Profile, Healthchecks, Zeitpläne, Generator-Konfiguration und nicht-sensitive Einstellungen. Geheimwerte aus Benachrichtigungen werden nicht exportiert.
+Exportiert und importiert Konfigurationsdaten wie Mirror-Profile, Healthchecks, Zeitpläne, Generator-Konfiguration und nicht-sensitive Einstellungen. Benachrichtigungs-Geheimwerte, Remote-Passwörter und der Inhalt privater SSH-Schlüssel werden nicht in den normalen Konfigurations-Export aufgenommen. SSH-Profilzuordnungen werden exportiert; nach einem reinen Konfigurationsimport muss der referenzierte Schlüssel vorhanden sein. Für einen vollständigen Serverwechsel ist das Vollbackup vorgesehen.
 
-### Benutzer
+### Benutzerverwaltung
 
 Rollen:
 
@@ -346,11 +410,28 @@ admin  volle Verwaltung
 user   rein betrachtender Zugriff
 ```
 
-Normale Benutzer dürfen keine kritischen Änderungen durchführen und keine Jobs starten oder stoppen.
+Normale Benutzer dürfen keine kritischen Änderungen durchführen und keine Jobs starten oder stoppen. Im Bereich **System -> Benutzerverwaltung** befinden sich zusätzlich der eigene Admin-Zugang, die Passwortänderung und der Hinweis zum Shell-Notfallskript.
 
 ### API
 
-API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeichert. Erste REST-Endpunkte liefern Status, Mirror, Jobs, Healthchecks und Benutzerskripte.
+API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeichert. Tokens können aktiviert, deaktiviert und gelöscht werden. Die REST-Schnittstelle umfasst:
+
+```text
+GET  /api/v1/status
+GET  /api/v1/mirrors
+GET  /api/v1/mirrors/<id>
+POST /api/v1/mirrors/<id>/run
+GET  /api/v1/jobs
+GET  /api/v1/jobs/<id>
+POST /api/v1/jobs/<id>/stop
+GET  /api/v1/user-scripts
+POST /api/v1/user-scripts/<name>/run
+GET  /api/v1/schedules
+GET  /api/v1/healthchecks
+POST /api/v1/healthchecks/<id>/run
+```
+
+Schreibende API-Aktionen prüfen dieselben Aktiv-, Rollen-, Speicher- und Konfliktsperren wie die WebUI. Verschlüsselte Passwörter und Inhalte privater SSH-Schlüssel werden nicht ausgegeben.
 
 ## Sicherheit
 
@@ -360,11 +441,11 @@ API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeic
 - Benutzerrollen trennen Admin- und Lesezugriff
 - Benutzerpasswörter werden gehasht gespeichert
 - Legacy-Adminwerte werden aus `settings.json` entfernt und in die SQLite-Benutzerverwaltung migriert
-- Benachrichtigungs-Geheimwerte werden verschlüsselt gespeichert
+- Benachrichtigungs-Geheimwerte und Remote-Passwörter werden verschlüsselt gespeichert
 - API-Tokens werden nur gehasht gespeichert
 - Key-Fingerprints sollten gegen Hersteller-/Projekt-Dokumentation geprüft werden
 
-Wichtig: Ab v0.1.67 verwendet die Anwendung für Benachrichtigungs-Geheimwerte nicht mehr ausschließlich `APP_SECRET_KEY`, sondern den persistenten Schlüssel `/app/data/notification-secrets.key`. Er ist Bestandteil neu erstellter Vollbackups. Alte Backups ohne diesen Schlüssel können verschlüsselte Zugangsdaten nach einer Neuinstallation nur dann lesen, wenn der damalige `APP_SECRET_KEY` noch vorhanden ist; andernfalls müssen die betroffenen Geheimwerte einmal neu gesetzt und danach erneut gesichert werden.
+Wichtig: Ab v0.1.67 verwendet die Anwendung für verschlüsselte Geheimwerte nicht mehr ausschließlich `APP_SECRET_KEY`, sondern den persistenten Schlüssel `/app/data/notification-secrets.key`. Ab v0.1.70 schützt dieser Schlüssel zusätzlich Remote-Passwörter von Mirror-Profilen. Er ist Bestandteil neu erstellter Vollbackups. Alte Backups ohne diesen Schlüssel können verschlüsselte Zugangsdaten nach einer Neuinstallation nur dann lesen, wenn der damalige `APP_SECRET_KEY` noch vorhanden ist; andernfalls müssen die betroffenen Geheimwerte einmal neu gesetzt und danach erneut gesichert werden.
 
 ## Notfall: Admin-Passwort zurücksetzen
 

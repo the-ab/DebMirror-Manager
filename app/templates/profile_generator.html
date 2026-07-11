@@ -15,7 +15,7 @@
   <h2>Repository-Adresse prüfen</h2>
   <p class="hint">Die Prüfung ist nicht auf Debian oder Ubuntu beschränkt. Sie sucht allgemein nach APT-Strukturen wie <code>dists/</code>, <code>Release</code>, <code>InRelease</code>, <code>Packages</code> und möglichen GPG-Key-Dateien.</p>
   <p class="hint">Wenn an der Hauptadresse nichts gefunden wird, werden automatisch Suchpfad-Variablen relativ zur eingegebenen Adresse geprüft, zum Beispiel <code>deb/</code>, <code>debian/</code>, <code>repo/</code> oder <code>repository/</code>.</p>
-  <form method="post" class="grid-form" id="repository-scan-form">
+  <form method="post" enctype="multipart/form-data" class="grid-form" id="repository-scan-form">
     <input type="hidden" name="action" value="scan_url">
     <label>Repository-Adresse
       <input name="scan_url" value="{{ scan_url or '' }}" placeholder="https://repo.example.org/packages" required>
@@ -24,6 +24,37 @@
       <input name="scan_depth" type="number" min="0" max="{{ max_scan_depth }}" value="{{ scan_depth if scan_depth is defined else default_scan_depth }}">
       <small>Default: {{ default_scan_depth }}. Höhere Werte prüfen mehr Unterverzeichnisse, können aber länger dauern.</small>
     </label>
+    <details class="option-picker scan-auth-picker">
+      <summary>Optionale Zugangsdaten für HTTP/HTTPS oder FTP</summary>
+      <label>Benutzername
+        <input name="scan_username" value="{{ scan_auth_username or '' }}" autocomplete="username" placeholder="optional">
+      </label>
+      <label>Passwort
+        <input type="password" name="scan_password" value="" autocomplete="new-password" placeholder="{% if scan_auth_password_set %}für diesen Scan hinterlegt{% else %}optional{% endif %}">
+      </label>
+      <small>HTTP/HTTPS wird mit Basic Auth geprüft, FTP über die FTP-Anmeldung. Diese Felder werden bei einem Rsync-Scan nicht verwendet.</small>
+    </details>
+    <details class="option-picker scan-rsync-ssh-picker" {% if scan_ssh_values.rsync_ssh_enabled %}open{% endif %}>
+      <summary>Optionale SSH-Schlüsselanmeldung für ein Rsync-Modul</summary>
+      <label class="check"><input type="checkbox" name="scan_rsync_ssh_enabled" {% if scan_ssh_values.rsync_ssh_enabled %}checked{% endif %}> Rsync-Modul über SSH prüfen</label>
+      <label>SSH-Benutzer
+        <input name="scan_rsync_ssh_user" value="{{ scan_ssh_values.rsync_ssh_user or '' }}" placeholder="z. B. mirror">
+      </label>
+      <label>Vorhandener privater Schlüssel
+        <select name="scan_rsync_ssh_key">
+          <option value="">Keinen Schlüssel auswählen</option>
+          {% for item in ssh_private_keys %}<option value="{{ item.name }}" {% if scan_ssh_values.rsync_ssh_key == item.name %}selected{% endif %}>{{ item.name }}{% if item.fingerprint %} – {{ item.fingerprint }}{% endif %}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Neuen privaten Schlüssel hochladen
+        <input type="file" name="scan_rsync_ssh_key_upload" accept=".key,.pem,.openssh,application/octet-stream,text/plain">
+      </label>
+      <label>SSH-Port
+        <input type="number" min="1" max="65535" name="scan_rsync_ssh_port" value="{{ scan_ssh_values.rsync_ssh_port or 22 }}">
+      </label>
+      <label class="check"><input type="checkbox" name="scan_rsync_ssh_accept_new_host_key" {% if scan_ssh_values.rsync_ssh_accept_new_host_key is not defined or scan_ssh_values.rsync_ssh_accept_new_host_key %}checked{% endif %}> Neuen Hostschlüssel beim ersten Verbindungsaufbau übernehmen</label>
+      <small>Der Scan verwendet keine SSH-Passwörter. Erwartet wird ein Rsync-Modulpfad, kein allgemeiner SSH-Dateipfad. Der private Schlüssel bleibt im persistenten Anwendungsdatenverzeichnis und kann anschließend in das vorbereitete Profil übernommen werden.</small>
+    </details>
     <div class="form-info scan-path-info">
       <strong>Suchpfad-Variablen:</strong> werden aus den Generator-Einstellungen verwendet.
       <small>Die Prüfung hängt diese Werte relativ an die eingegebene Adresse an, z. B. <code>https://host/basis/</code> + <code>deb</code> = <code>https://host/basis/deb/</code>.</small>
@@ -106,8 +137,16 @@
   {% if scan_result.suites %}
   <form method="post" class="scan-create-form">
     <input type="hidden" name="action" value="create_from_scan">
+    <input type="hidden" name="scan_token" value="{{ scan_token or '' }}">
+    {% if scan_result._auth_password_enc %}<input type="hidden" name="prepared_scan_password" value="{{ scan_result._auth_password_enc }}">{% endif %}
+    <input type="hidden" name="prepared_rsync_ssh_enabled" value="{{ scan_ssh_values.rsync_ssh_enabled or scan_result._rsync_ssh_enabled or 0 }}">
+    <input type="hidden" name="prepared_rsync_ssh_user" value="{{ scan_ssh_values.rsync_ssh_user or scan_result._rsync_ssh_user or '' }}">
+    <input type="hidden" name="prepared_rsync_ssh_key" value="{{ scan_ssh_values.rsync_ssh_key or scan_result._rsync_ssh_key or '' }}">
+    <input type="hidden" name="prepared_rsync_ssh_port" value="{{ scan_ssh_values.rsync_ssh_port or scan_result._rsync_ssh_port or 22 }}">
+    <input type="hidden" name="prepared_rsync_ssh_accept_new_host_key" value="{{ scan_ssh_values.rsync_ssh_accept_new_host_key if scan_ssh_values.rsync_ssh_accept_new_host_key is defined else scan_result._rsync_ssh_accept_new_host_key or 1 }}">
     <input type="hidden" name="source_url" id="scan-selected-source-url" value="{{ scan_result.base_url }}">
     <input type="hidden" name="root_path" id="scan-selected-root-path" value="{{ scan_result.root_path }}">
+    <input type="hidden" name="scan_rsync_available" value="{{ 1 if scan_result.rsync_available else 0 }}">
 
     <div class="form-grid scan-profile-fields">
       <label>Profilname
@@ -119,9 +158,13 @@
       <label>Transfer für neues Profil
         <select name="method">
           {% for transfer in scan_result.transfers %}
-            {% if transfer.method in ['https','http','rsync','ftp'] %}<option value="{{ transfer.method }}" {% if transfer.available and transfer.method == scan_result.method %}selected{% endif %}>{{ transfer.method }}{% if not transfer.available %} (nicht bestätigt){% endif %}</option>{% endif %}
+            {% if transfer.method in ['https','http','rsync','ftp'] %}<option value="{{ transfer.method }}" {% if transfer.available and transfer.method == scan_result.method %}selected{% endif %} {% if not transfer.available %}disabled{% endif %}>{{ transfer.method }}{% if not transfer.available %} (nicht bestätigt){% endif %}</option>{% endif %}
           {% endfor %}
         </select>
+      </label>
+      <label>HTTP/FTP-Benutzer für das Profil
+        <input name="profile_remote_user" value="{{ scan_auth_username or scan_result._auth_username or '' }}" placeholder="optional">
+        <small>Wird nur übernommen, wenn als Transfer HTTP, HTTPS oder FTP gewählt wird. Bei Rsync werden ausschließlich die vorbereiteten SSH-Schlüsselwerte für ein Rsync-Modul verwendet.</small>
       </label>
     </div>
 
@@ -502,6 +545,65 @@
         resetButtons();
       });
   });
+})();
+</script>
+
+<script>
+(function () {
+  var form = document.getElementById('repository-scan-form');
+  if (!form) return;
+  var urlField = form.querySelector('input[name="scan_url"]');
+  var authPicker = form.querySelector('.scan-auth-picker');
+  var authFields = authPicker ? Array.from(authPicker.querySelectorAll('input')) : [];
+  var sshPicker = form.querySelector('.scan-rsync-ssh-picker');
+  var sshEnabled = form.querySelector('input[name="scan_rsync_ssh_enabled"]');
+  var sshFields = sshPicker ? Array.from(sshPicker.querySelectorAll('input, select')).filter(function (field) { return field !== sshEnabled; }) : [];
+
+  function isExplicitRsyncUrl() {
+    return /^\s*rsync:\/\//i.test(urlField ? urlField.value : '');
+  }
+
+  function clearFields(fields) {
+    fields.forEach(function (field) {
+      if (field.type === 'checkbox') field.checked = false;
+      else if (field.type === 'file') field.value = '';
+      else field.value = '';
+    });
+  }
+
+  function syncScanAccessFields(source) {
+    var isRsync = isExplicitRsyncUrl();
+    authFields.forEach(function (field) { field.disabled = isRsync; });
+    if (isRsync && source === 'url') clearFields(authFields);
+
+    if (sshEnabled) {
+      sshEnabled.disabled = !isRsync;
+      if (!isRsync) sshEnabled.checked = false;
+    }
+    sshFields.forEach(function (field) { field.disabled = !isRsync || !sshEnabled || !sshEnabled.checked; });
+    if (!isRsync && source === 'url') clearFields(sshFields);
+
+    if (sshEnabled && sshEnabled.checked) {
+      clearFields(authFields);
+      authFields.forEach(function (field) { field.disabled = true; });
+    }
+  }
+
+  if (urlField) {
+    urlField.addEventListener('input', function () { syncScanAccessFields('url'); });
+    urlField.addEventListener('change', function () { syncScanAccessFields('url'); });
+  }
+  authFields.forEach(function (field) {
+    field.addEventListener('input', function () {
+      if (field.value && sshEnabled && sshEnabled.checked) {
+        sshEnabled.checked = false;
+        syncScanAccessFields('auth');
+      }
+    });
+  });
+  if (sshEnabled) sshEnabled.addEventListener('change', function () { syncScanAccessFields('ssh'); });
+  form.addEventListener('submit', function () { syncScanAccessFields('submit'); });
+  syncScanAccessFields('initial');
 })();
 </script>
 {% endblock %}

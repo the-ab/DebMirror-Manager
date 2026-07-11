@@ -68,7 +68,7 @@
           <a class="side-link {% if request.endpoint == 'profile_generator_settings' %}active{% endif %}" href="{{ url_for('profile_generator_settings') }}"><span>Generator-Einstellungen</span><small>Suchpfade und Generator</small></a>
           <a class="side-link {% if request.endpoint == 'backups_page' %}active{% endif %}" href="{{ url_for('backups_page') }}"><span>Backup / Wiederherstellen</span><small>Sichern und zurückspielen</small></a>
           <a class="side-link {% if request.endpoint == 'config_page' %}active{% endif %}" href="{{ url_for('config_page') }}"><span>Konfig Export/Import</span><small>Profile und Einstellungen</small></a>
-          <a class="side-link {% if request.endpoint == 'users_page' %}active{% endif %}" href="{{ url_for('users_page') }}"><span>Benutzer</span><small>Admin und Ansicht-Benutzer</small></a>
+          <a class="side-link {% if request.endpoint == 'users_page' %}active{% endif %}" href="{{ url_for('users_page') }}"><span>Benutzerverwaltung</span><small>Benutzer, Rollen, Admin-Zugang</small></a>
           <a class="side-link {% if request.endpoint == 'api_tokens_page' %}active{% endif %}" href="{{ url_for('api_tokens_page') }}"><span>API</span><small>Tokens und REST-Schnittstelle</small></a>
         </div>
       </details>
@@ -107,6 +107,52 @@
       if (!item.open) return;
       document.querySelectorAll('.side-nav details.side-section[open]').forEach(function (other) {
         if (other !== item) other.removeAttribute('open');
+      });
+    });
+  });
+
+  function normalizeSortValue(value, type) {
+    if (type === 'number') {
+      var number = Number(value);
+      return Number.isFinite(number) ? number : -1;
+    }
+    return String(value || '').trim().toLocaleLowerCase('de');
+  }
+
+  function sortTable(table, header) {
+    var body = table.tBodies && table.tBodies[0];
+    if (!body) return;
+    var headers = Array.from(table.querySelectorAll('thead th.sortable-column'));
+    var columnIndex = Array.from(header.parentElement.children).indexOf(header);
+    var type = header.dataset.sortType || 'text';
+    var ascending = header.getAttribute('aria-sort') !== 'ascending';
+    var rows = Array.from(body.rows).map(function (row, index) {
+      var cell = row.cells[columnIndex];
+      var raw = cell ? (cell.dataset.sortValue !== undefined ? cell.dataset.sortValue : cell.textContent) : '';
+      return { row: row, index: index, value: normalizeSortValue(raw, type) };
+    });
+
+    rows.sort(function (left, right) {
+      if (left.value < right.value) return ascending ? -1 : 1;
+      if (left.value > right.value) return ascending ? 1 : -1;
+      return left.index - right.index;
+    });
+    rows.forEach(function (item) { body.appendChild(item.row); });
+    headers.forEach(function (item) { item.setAttribute('aria-sort', 'none'); });
+    header.setAttribute('aria-sort', ascending ? 'ascending' : 'descending');
+  }
+
+  document.querySelectorAll('table[data-sortable-table]').forEach(function (table) {
+    table.querySelectorAll('thead th.sortable-column').forEach(function (header) {
+      header.addEventListener('click', function (event) {
+        if (event.target.closest('button, a, input, select, textarea, form')) return;
+        sortTable(table, header);
+      });
+      header.addEventListener('keydown', function (event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (event.target.closest('button, a, input, select, textarea, form')) return;
+        event.preventDefault();
+        sortTable(table, header);
       });
     });
   });

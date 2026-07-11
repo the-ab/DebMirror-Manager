@@ -9,29 +9,34 @@
   <a class="button" href="{{ url_for('profile_generator') }}">Zurück zum Generator</a>
 </div>
 
-<section class="card">
-  <h2>Suchpfad-Variablen</h2>
-  <p class="hint">Diese relativen Pfade werden automatisch geprüft, wenn an der eingegebenen Hauptadresse kein verwendbares Repository gefunden wurde. Ein Eintrag pro Zeile, zum Beispiel <code>deb</code>, <code>debian</code>, <code>repo</code> oder <code>repository</code>.</p>
-  <form method="post">
-    <textarea name="scan_path_variables" rows="12" class="mono-textarea">{{ scan_path_variables }}</textarea>
-    <small>Maximal {{ max_scan_path_variables }} Einträge. Es sind nur relative Pfade innerhalb der geprüften Basisadresse erlaubt.</small>
-    <div class="form-actions">
-      <button class="primary" type="submit" name="action" value="save_scan_paths">Suchpfad-Variablen speichern</button>
-      <button type="submit" name="action" value="reset_scan_paths" onclick="return confirm('Suchpfad-Variablen wirklich auf Standard zurücksetzen?');">Auf Standard zurücksetzen</button>
+<div class="grid two generator-settings-grid">
+  <section class="card generator-settings-card">
+    <h2>Suchpfad-Variablen</h2>
+    <p class="hint">Diese relativen Pfade werden automatisch geprüft, wenn an der eingegebenen Hauptadresse kein verwendbares Repository gefunden wurde. Ein Eintrag pro Zeile, zum Beispiel <code>deb</code>, <code>debian</code>, <code>repo</code> oder <code>repository</code>.</p>
+    <form method="post">
+      <textarea name="scan_path_variables" rows="20" class="mono-textarea">{{ scan_path_variables }}</textarea>
+      <small>Maximal {{ max_scan_path_variables }} Einträge. Es sind nur relative Pfade innerhalb der geprüften Basisadresse erlaubt.</small>
+      <div class="form-actions generator-settings-actions">
+        <button class="primary" type="submit" name="action" value="save_scan_paths">Suchpfade speichern</button>
+        <button type="submit" name="action" value="reset_scan_paths" onclick="return confirm('Suchpfad-Variablen wirklich auf Standard zurücksetzen?');">Standard</button>
+      </div>
+    </form>
+    <div class="generator-default-values">
+      <strong>Standardwerte:</strong>
+      <p class="hint">{{ default_scan_path_variables|join(', ') }}</p>
     </div>
-  </form>
-  <p class="hint">Standardwerte: {{ default_scan_path_variables|join(', ') }}</p>
-</section>
+  </section>
 
-<section class="card">
-  <h2>Generator-Konfiguration</h2>
-  <p class="hint">JSON-Format. Jede Distribution benötigt sinnvolle Werte für <code>label</code>, <code>method</code>, <code>host</code>, <code>root_path</code>, <code>releases</code>, <code>components</code> und <code>archs</code>. Fehlende Standardgruppen werden automatisch aus den Defaults ergänzt.</p>
-  <form method="post">
-    <textarea name="generator_json" rows="28" class="mono-textarea">{{ generator_json }}</textarea>
-    <div class="form-actions">
-      <button class="primary" type="submit">Generator-Konfiguration speichern</button>
-      <button type="submit" name="action" value="reset" onclick="return confirm('Generator wirklich auf Standard zurücksetzen?');">Auf Standard zurücksetzen</button>
-    </div>
-  </form>
-</section>
+  <section class="card generator-settings-card">
+    <h2>Generator-Konfiguration</h2>
+    <p class="hint">JSON-Format. Jede Distribution benötigt sinnvolle Werte für <code>label</code>, <code>method</code>, <code>host</code>, <code>root_path</code>, <code>releases</code>, <code>components</code> und <code>archs</code>. Fehlende Standardgruppen werden automatisch aus den Defaults ergänzt.</p>
+    <form method="post">
+      <textarea name="generator_json" rows="20" class="mono-textarea">{{ generator_json }}</textarea>
+      <div class="form-actions generator-settings-actions">
+        <button class="primary" type="submit">Konfiguration speichern</button>
+        <button type="submit" name="action" value="reset" onclick="return confirm('Generator wirklich auf Standard zurücksetzen?');">Standard</button>
+      </div>
+    </form>
+  </section>
+</div>
 {% endblock %}

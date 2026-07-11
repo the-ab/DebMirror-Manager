@@ -5,27 +5,6 @@
 
 <div class="grid two settings-grid">
   <section class="card settings-card">
-    <h2>Admin-Zugang</h2>
-    <dl>
-      <dt>Quelle</dt><dd>{{ auth_config.source }}</dd>
-      <dt>Benutzer</dt><dd>{{ auth_config.username }}</dd>
-      <dt>Settings-Datei</dt><dd><code>{{ settings_path }}</code></dd>
-    </dl>
-    <form method="post">
-      <input type="hidden" name="action" value="change_password">
-      <label>Aktuelles Passwort</label>
-      <input type="password" name="current_password" required>
-      <label>Benutzername</label>
-      <input name="username" value="{{ auth_config.username }}" required>
-      <label>Neues Passwort</label>
-      <input type="password" name="password" minlength="8" required>
-      <label>Neues Passwort wiederholen</label>
-      <input type="password" name="password2" minlength="8" required>
-      <button class="primary" type="submit">Zugang ändern</button>
-    </form>
-  </section>
-
-  <section class="card settings-card">
     <h2>Ports</h2>
     <dl>
       <dt>WebUI Host-Port</dt><dd><code>{{ webui_port }}</code></dd>
@@ -171,11 +150,4 @@
   <p class="hint">Wenn kein neueres ZIP in <code>{{ update_dir }}/</code> liegt, fragt <code>./update.sh</code> jetzt, ob trotzdem ein Backup/Rebuild durchgeführt werden soll. Mit <code>./update.sh --rebuild</code> wird dieser Rebuild direkt erzwungen.</p>
 </section>
 
-<section class="card settings-card">
-  <h2>Passwort über Shell zurücksetzen</h2>
-  <p>Falls du nicht mehr in die WebUI kommst, setze den Zugang direkt auf dem Server zurück:</p>
-  <pre class="code">cd debmirror-manager
-./set-admin-password.sh</pre>
-  <p>Die Änderung wird direkt in der SQLite-Benutzerverwaltung gespeichert. Dadurch funktioniert das Skript auch als Notlösung, wenn die WebUI-Anmeldung nicht mehr möglich ist.</p>
-</section>
 {% endblock %}

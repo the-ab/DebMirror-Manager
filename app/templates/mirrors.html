@@ -43,15 +43,33 @@
 <section class="card">
   <h2>Profile</h2>
   {% if mirrors %}
-  <table class="mirror-profile-table">
-    <thead><tr><th>Name</th><th>Status</th><th>Mirror-Größe</th><th>Repository</th><th>Zeitplan</th><th>Letzter Job</th><th>Aktionen</th></tr></thead>
+  <table class="mirror-profile-table sortable-table" data-sortable-table>
+    <thead><tr>
+      <th class="sortable-column" data-sort-key="name" data-sort-type="text" tabindex="0" aria-sort="none" title="Nach Name sortieren">Name</th>
+      <th class="sortable-column" data-sort-key="status" data-sort-type="text" tabindex="0" aria-sort="none" title="Nach Status sortieren">Status</th>
+      <th class="sortable-column" data-sort-key="size" data-sort-type="number" tabindex="0" aria-sort="none" title="Nach Mirror-Größe sortieren">Mirror-Größe</th>
+      <th class="sortable-column" data-sort-key="repository" data-sort-type="text" tabindex="0" aria-sort="none" title="Nach Repository sortieren">Repository</th>
+      <th>Zeitplan</th><th>Letzter Job</th><th>Aktionen</th>
+    </tr></thead>
     <tbody>
     {% for m in mirrors %}
       <tr>
-        <td data-label="Name"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
-        <td data-label="Status" class="status-cell">{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
-        <td data-label="Mirror-Größe"><strong>{{ m.size_info.size_h }}</strong>{% if m.size_info.status %}<br><small>{{ m.size_info.status }}{% if m.size_info.calculated_at %} · {{ m.size_info.calculated_at }}{% endif %}</small>{% endif %}{% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}</td>
-        <td data-label="Repository"><small>{{ m.method }}://{{ m.host }}/{{ m.root_path }}<br>{{ m.dists }} · {{ m.sections }} · {{ m.archs }}</small></td>
+        <td data-label="Name" data-sort-value="{{ m.name|lower }}"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
+        <td data-label="Status" class="status-cell" data-sort-value="{{ m.dashboard_status.label|lower }}">{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
+        <td data-label="Mirror-Größe" data-sort-value="{{ m.size_info.bytes if m.size_info.bytes is not none else -1 }}">
+          <div class="size-value-actions">
+            <strong>{{ m.size_info.size_h }}</strong>
+            {% if is_admin %}
+            <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=m.id) }}" class="inline size-refresh-form">
+              <button type="submit" class="icon-button size-refresh-button" title="Mirror-Größe jetzt neu berechnen" aria-label="Mirror-Größe für {{ m.name }} neu berechnen">↻</button>
+            </form>
+            {% endif %}
+          </div>
+          {% if m.size_info.status %}<span class="badge {{ size_status_class(m.size_info.status) }} size-status" title="{{ size_status_title(m.size_info.status) }}">{{ size_status_label(m.size_info.status) }}</span>{% endif %}
+          {% if m.size_info.calculated_at %}<small class="size-check-time">letzte Prüfung: {{ m.size_info.calculated_at }}</small>{% endif %}
+          {% if m.size_info.error %}<br><small>{{ m.size_info.error }}</small>{% endif %}
+        </td>
+        <td data-label="Repository" data-sort-value="{{ (m.method ~ '://' ~ m.host ~ '/' ~ m.root_path)|lower }}"><small>{{ m.method }}://{{ m.host }}/{{ m.root_path }}<br>{{ m.dists }} · {{ m.sections }} · {{ m.archs }}</small></td>
         <td data-label="Zeitplan">{{ m.schedule_display }}</td>
         <td data-label="Letzter Job">{% if m.last_job %}<a href="{{ url_for('job_detail', job_id=m.last_job.id) }}"><span class="badge {{ m.last_job.status }}">{{ m.last_job.status }}</span></a><br><small>#{{ m.last_job.id }} {{ m.last_job.started_at }} · {{ m.last_job.duration_h }}<br>{{ m.last_job.source_h }}</small>{% else %}<small>noch kein Lauf</small>{% endif %}</td>
         <td data-label="Aktionen" class="actions compact-actions">

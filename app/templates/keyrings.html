@@ -15,37 +15,50 @@
 </section>
 {% endif %}
 
-<section class="card">
-  <h2>Master-Keyring</h2>
-  <p>Der Master-Keyring sammelt alle importierten Keys. Profil-Keyrings werden daraus gezielt per Fingerprint exportiert, damit pro Mirror nur die benötigten Keys enthalten sind.</p>
-  <dl>
-    <dt>Status</dt><dd>{% if master_exists %}<span class="badge ok">vorhanden</span>{% else %}<span class="badge warning">noch nicht erzeugt</span>{% endif %}</dd>
-    <dt>Pfad</dt><dd><code>{{ master_keyring_path }}</code></dd>
-    <dt>Größe</dt><dd>{{ (master_size / 1024)|round(1) }} KiB</dd>
-    <dt>Hauptkeys</dt><dd>{{ master_status.primary_count }}</dd>
-    <dt>Subkeys</dt><dd>{{ master_status.subkey_count }}</dd>
-    <dt>Fingerprints gesamt</dt><dd>{{ master_status.all_fingerprint_count }}</dd>
-    <dt>Quelldateien</dt><dd>{{ master_status.archive_file_count }} Datei(en), {{ master_status.archive_primary_count }} Hauptkey-Fingerprint(s)</dd>
-    <dt>Ausgeschlossene entfernte Keys</dt><dd>{% if master_status.removed_count %}<span class="badge warning">{{ master_status.removed_count }}</span>{% else %}<span class="badge ok">0</span>{% endif %}</dd>
-  </dl>
-  {% if master_status.removed_count %}
-    <div class="notice warning">
-      Es gibt {{ master_status.removed_count }} zuvor aus dem Master entfernte Fingerprint(s).
-      Beim normalen Neuaufbau werden diese absichtlich wieder ausgeschlossen.
-      Für einen vollständigen Test-Neuaufbau aus allen Quelldateien den Button „Vollständig neu aufbauen“ verwenden.
+<section class="card compact-card master-overview-card">
+  <div class="section-head master-overview-head">
+    <div>
+      <h2>Master-Keyring</h2>
+      <p class="hint">Zentrale Key-Sammlung für bereinigte Profil-Keyrings und Client-Exporte.</p>
     </div>
+    {% if master_exists %}<span class="badge ok">vorhanden</span>{% else %}<span class="badge warning">noch nicht erzeugt</span>{% endif %}
+  </div>
+
+  <div class="master-overview-stats" aria-label="Master-Keyring-Übersicht">
+    <div><strong>{{ master_status.primary_count }}</strong><small>Hauptkeys</small></div>
+    <div><strong>{{ master_status.subkey_count }}</strong><small>Subkeys</small></div>
+    <div><strong>{{ master_status.all_fingerprint_count }}</strong><small>Fingerprints</small></div>
+    <div><strong>{{ master_status.archive_file_count }}</strong><small>Quelldateien</small></div>
+    <div><strong>{{ (master_size / 1024)|round(1) }} KiB</strong><small>Dateigröße</small></div>
+    <div><strong>{% if master_status.removed_count %}<span class="badge warning">{{ master_status.removed_count }}</span>{% else %}<span class="badge ok">0</span>{% endif %}</strong><small>ausgeschlossen</small></div>
+  </div>
+
+  {% if master_status.removed_count %}
+    <div class="notice warning compact-notice">{{ master_status.removed_count }} zuvor entfernte Fingerprint(s) bleiben beim normalen Neuaufbau ausgeschlossen.</div>
   {% endif %}
   {% if master_status.warnings %}
-    <div class="notice warning"><strong>GPG-Hinweise:</strong><br>{% for w in master_status.warnings %}<code>{{ w }}</code><br>{% endfor %}</div>
+    <details class="compact-details warning-details">
+      <summary>GPG-Hinweise ({{ master_status.warnings|length }})</summary>
+      <p>{% for w in master_status.warnings %}<code>{{ w }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
+    </details>
   {% endif %}
-  {% if master_fingerprints %}
-    <p class="hint">{% for fp in master_fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</p>
-  {% endif %}
-  <div class="notice info"><strong>Unterschied:</strong> „Master-Keyring neu aufbauen“ liest alle Quelldateien aus <code>archive/</code> und <code>keyserver/</code> neu ein, behält aber bewusst entfernte Fingerprints ausgeschlossen. „Vollständig neu aufbauen“ liest dieselben Quelldateien ein und löscht zusätzlich diese Entfernsperren.</div>
-  <div class="actions compact-actions">
+
+  <details class="compact-details master-overview-details">
+    <summary>Pfad, Fingerprints und Neuaufbau-Hinweise</summary>
+    <dl class="master-meta-grid">
+      <dt>Pfad</dt><dd><code>{{ master_keyring_path }}</code></dd>
+      <dt>Quelldateien</dt><dd>{{ master_status.archive_file_count }} Datei(en), {{ master_status.archive_primary_count }} Hauptkey-Fingerprint(s)</dd>
+    </dl>
+    {% if master_fingerprints %}
+      <div class="master-fingerprint-list">{% for fp in master_fingerprints %}<code>{{ fp }}</code>{% endfor %}</div>
+    {% endif %}
+    <p class="hint"><strong>Normaler Neuaufbau:</strong> liest <code>archive/</code> und <code>keyserver/</code> neu ein und behält Entfernsperren. <strong>Vollständiger Neuaufbau:</strong> löscht zusätzlich diese Sperren, sodass bewusst entfernte Keys wieder aufgenommen werden können.</p>
+  </details>
+
+  <div class="actions compact-actions master-overview-actions">
     <form method="post" class="inline">
       <input type="hidden" name="action" value="rebuild_master_keyring">
-      <button type="submit">Master-Keyring neu aufbauen</button>
+      <button type="submit">Master neu aufbauen</button>
     </form>
     <form method="post" class="inline" onsubmit="return confirm('Master-Keyring vollständig aus allen Quelldateien neu aufbauen und bisherige Entfernsperren löschen? Dadurch können bewusst entfernte Keys wieder importiert werden.');">
       <input type="hidden" name="action" value="rebuild_master_keyring_full">
@@ -53,7 +66,7 @@
     </form>
     <form method="post" class="inline">
       <input type="hidden" name="action" value="rebuild_all_profile_keyrings">
-      <button type="submit">Alle Profil-Keyrings neu erzeugen</button>
+      <button type="submit">Profil-Keyrings neu erzeugen</button>
     </form>
   </div>
 </section>

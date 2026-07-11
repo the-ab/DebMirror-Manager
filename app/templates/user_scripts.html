@@ -28,13 +28,14 @@
 <section class="card">
   <h2>Vorhandene Skripte</h2>
   {% if scripts %}
-  <table>
+  <div class="table-scroll mobile-table-wrap">
+  <table class="user-scripts-table mobile-card-table">
     <thead><tr><th>Name</th><th>Aktiv</th><th>Skriptgröße</th><th>Zielverzeichnis / Größe</th><th>Geändert</th><th>Ausführbar</th><th>Status</th><th>Aktionen</th></tr></thead>
     <tbody>
     {% for script in scripts %}
       <tr>
-        <td><strong>{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
-        <td>
+        <td data-label="Name"><strong>{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
+        <td data-label="Aktiv">
           {% if is_admin %}
           <form method="post" class="inline script-enabled-form" action="{{ url_for('user_scripts_page') }}">
             <input type="hidden" name="action" value="set_enabled">
@@ -45,19 +46,19 @@
             {% if script.enabled %}<span class="badge ok">aktiv</span>{% else %}<span class="badge muted">inaktiv</span>{% endif %}
           {% endif %}
         </td>
-        <td>{{ script.size_h }}</td>
-        <td>
+        <td data-label="Skriptgröße">{{ script.size_h }}</td>
+        <td data-label="Zielverzeichnis / Größe">
           {% if script.target_path %}
             <code class="target-path-inline">{{ script.target_path }}</code>
             <div class="target-size-line">
               <strong>{{ script.target_size_info.size_h }}</strong>
-              {% if script.target_size_info.status %}<span class="badge {{ script.target_size_info.status }}">{{ script.target_size_info.status }}</span>{% endif %}
-              {% if script.target_size_info.calculated_at %}<small>{{ script.target_size_info.calculated_at }}</small>{% endif %}
+              {% if script.target_size_info.status %}<span class="badge {{ size_status_class(script.target_size_info.status) }} size-status" title="{{ size_status_title(script.target_size_info.status) }}">{{ size_status_label(script.target_size_info.status) }}</span>{% endif %}
+              {% if script.target_size_info.calculated_at %}<small class="size-check-time">letzte Prüfung: {{ script.target_size_info.calculated_at }}</small>{% endif %}
               {% if is_admin %}
               <form method="post" class="inline target-size-recalc-form" action="{{ url_for('user_scripts_page') }}">
                 <input type="hidden" name="action" value="recalculate_size">
                 <input type="hidden" name="script_name" value="{{ script.name }}">
-                <button type="submit">Größe neu berechnen</button>
+                <button type="submit" class="icon-button size-refresh-button" title="Skript-Zielgröße jetzt neu berechnen" aria-label="Zielgröße für {{ script.name }} neu berechnen">↻</button>
               </form>
               {% endif %}
             </div>
@@ -76,10 +77,10 @@
           </div>
           {% endif %}
         </td>
-        <td>{{ script.modified_at }}</td>
-        <td>{% if script.executable %}<span class="badge ok">ja</span>{% else %}<span class="badge error">nein</span>{% endif %}</td>
-        <td>{% if script.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=script.dashboard_status.job_id) }}"><span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span>{% endif %}</td>
-        <td>
+        <td data-label="Geändert">{{ script.modified_at }}</td>
+        <td data-label="Ausführbar">{% if script.executable %}<span class="badge ok">ja</span>{% else %}<span class="badge error">nein</span>{% endif %}</td>
+        <td data-label="Status">{% if script.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=script.dashboard_status.job_id) }}"><span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span>{% endif %}</td>
+        <td data-label="Aktionen" class="actions script-action-cell">
           {% if is_admin %}
           {% if script.start_block_reason %}
             <button type="button" class="locked-button" disabled title="{{ script.start_block_reason }}"><span>Als Job starten</span></button>
@@ -99,6 +100,7 @@
     {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
     <p>Noch keine Benutzerskripte vorhanden.</p>
   {% endif %}

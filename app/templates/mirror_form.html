@@ -12,7 +12,8 @@
   </div>
 </div>
 
-<form method="post" action="{{ form_action or request.path }}" class="card form-grid">
+<form method="post" enctype="multipart/form-data" action="{{ form_action or request.path }}" class="card form-grid">
+  {% if mirror._prepared_remote_password_enc %}<input type="hidden" name="prepared_remote_password" value="{{ mirror._prepared_remote_password_enc }}">{% endif %}
   <fieldset>
     <legend>Basis</legend>
     <label>Name</label>
@@ -32,6 +33,42 @@
 
     <label>Root-Pfad</label>
     <input name="root_path" value="{{ mirror.root_path or '' }}" placeholder="debian" required>
+    <small>Bei Rsync ist der erste Pfadteil immer der Modulname, z. B. <code>debian</code> oder <code>archive/debian</code>. Absolute Pfade, <code>..</code> und ungeeignete Sonderzeichen sind gesperrt. Einen abweichenden direkten Rsync-Daemon-Port kannst du über <code>--rsync-options</code> mit <code>--port=...</code> setzen; bei SSH gilt das separate Feld SSH-Port.</small>
+
+    <details class="option-picker remote-auth-picker">
+      <summary>Optionale Benutzer-/Passwort-Anmeldung (HTTP/HTTPS oder FTP)</summary>
+      <p class="hint">Nur für geschützte HTTP/HTTPS- oder FTP-Quellen. Bei <code>rsync</code> sind diese Felder deaktiviert; dafür steht darunter die SSH-Schlüsselanmeldung bereit.</p>
+      <label>Remote-Benutzer</label>
+      <input name="remote_user" value="{{ mirror.remote_user or '' }}" autocomplete="username" placeholder="z. B. mirroruser">
+      <label>Remote-Passwort</label>
+      <input type="password" name="remote_password" value="" autocomplete="new-password" placeholder="{% if remote_password_set or mirror._prepared_remote_password_enc %}gespeichert – leer lassen zum Beibehalten{% else %}optional{% endif %}">
+      {% if remote_password_set or mirror._prepared_remote_password_enc %}
+      <label class="check"><input type="checkbox" name="clear_remote_password"> Gespeichertes Remote-Passwort entfernen</label>
+      {% endif %}
+      <small>Das Passwort wird verschlüsselt gespeichert und weder im Jobbefehl noch im Job-Log ausgegeben.</small>
+    </details>
+
+    <details class="option-picker rsync-ssh-picker" {% if mirror.rsync_ssh_enabled %}open{% endif %}>
+      <summary>Optionale SSH-Schlüsselanmeldung für ein Rsync-Modul</summary>
+      <label class="check"><input type="checkbox" name="rsync_ssh_enabled" {% if mirror.rsync_ssh_enabled %}checked{% endif %}> Rsync-Modul über SSH mit privatem Schlüssel verwenden</label>
+      <p class="hint">debmirror verwendet Rsync-Modulpfade im Format <code>host::modul</code>. Mit dieser Option wird das Modul verschlüsselt über SSH angesprochen. Die Gegenstelle muss Rsync-Daemon-Funktionen über die SSH-Remote-Shell bereitstellen; ein normaler Dateipfad wie <code>user@host:/srv/mirror</code> wird von debmirror nicht unterstützt.</p>
+      <label>SSH-Benutzer</label>
+      <input name="rsync_ssh_user" value="{{ mirror.rsync_ssh_user or '' }}" autocomplete="username" placeholder="z. B. mirror">
+      <label>Privater SSH-Schlüssel</label>
+      <select name="rsync_ssh_key">
+        <option value="">Keinen vorhandenen Schlüssel auswählen</option>
+        {% for item in ssh_private_keys %}
+        <option value="{{ item.name }}" {% if mirror.rsync_ssh_key == item.name %}selected{% endif %}>{{ item.name }}{% if item.fingerprint %} – {{ item.fingerprint }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <label>Neuen privaten SSH-Schlüssel hochladen</label>
+      <input type="file" name="rsync_ssh_key_upload" accept=".key,.pem,.openssh,application/octet-stream,text/plain">
+      <small>Ein Upload ersetzt für dieses Profil die Auswahl oben. Unterstützt werden unverschlüsselte OpenSSH-Privatschlüssel für unbeaufsichtigte Jobs; die Datei wird mit Modus 0600 gespeichert.</small>
+      <label>SSH-Port</label>
+      <input type="number" min="1" max="65535" name="rsync_ssh_port" value="{{ mirror.rsync_ssh_port or 22 }}">
+      <label class="check"><input type="checkbox" name="rsync_ssh_accept_new_host_key" {% if mirror.rsync_ssh_accept_new_host_key is not defined or mirror.rsync_ssh_accept_new_host_key %}checked{% endif %}> Neuen SSH-Hostschlüssel beim ersten Verbindungsaufbau automatisch übernehmen</label>
+      <small>Bereits bekannte, später geänderte Hostschlüssel werden weiterhin abgewiesen. Ohne diese Option muss der Host bereits in der verwalteten <code>known_hosts</code>-Datei vorhanden sein.</small>
+    </details>
 
     <label>Zielverzeichnis im Container</label>
     <input name="target_path" value="{{ mirror.target_path or '' }}" placeholder="/mirror/debian" required>
@@ -86,17 +123,48 @@
     <input type="number" min="1" name="timeout_seconds" value="{{ mirror.timeout_seconds or '' }}" placeholder="leer = debmirror Standard">
 
     <label>Rsync Extra</label>
-    <input name="rsync_extra" value="{{ mirror.rsync_extra or '' }}" placeholder="z. B. --bwlimit=50000">
+    <div class="option-choice-grid rsync-extra-picker">
+      {% for option in rsync_extra_choices %}
+      <label class="option-choice-row">
+        <input type="checkbox" name="rsync_extra_value" value="{{ option.value }}" {% if option.value in selected_rsync_extra %}checked{% endif %}>
+        <span><strong>{{ option.label }}</strong><small>{{ option.help }}</small></span>
+      </label>
+      {% endfor %}
+    </div>
+    <small><code>--rsync-extra</code> akzeptiert nur diese Repository-Verzeichnisse. Zusätzliche Rsync-Parameter wie <code>--bwlimit</code> werden unten über <code>--rsync-options</code> gesetzt.</small>
 
-    <label>Zusätzliche debmirror-Flags</label>
-    <input name="extra_options" value="{{ mirror.extra_options or '' }}" placeholder="z. B. --passive --ignore-small-errors">
-    <small>Nur freigegebene Flags werden akzeptiert, z. B. <code>--passive</code>, <code>--checksums</code>, <code>--ignore-small-errors</code>.</small>
+    <details class="option-picker" {% if selected_debmirror_options %}open{% endif %}>
+      <summary>Zusätzliche debmirror-Flags auswählen{% if selected_debmirror_options %} ({{ selected_debmirror_options|length }} aktiv){% endif %}</summary>
+      <p class="hint">Nur profilgeeignete und sicher als einzelne Prozessargumente übergebbare Optionen werden angeboten. Bereits oben vorhandene Basisoptionen sind hier nicht doppelt aufgeführt.</p>
+      <div class="debmirror-option-list">
+        {% for option in debmirror_extra_catalog %}
+        {% set is_selected = option.flag in selected_debmirror_options %}
+        <div class="debmirror-option-row{% if not option.takes_value %} option-boolean{% endif %}{% if option.flag in ['--no-check-gpg','--disable-ssl-verification'] %} option-sensitive{% endif %}">
+          <label class="option-flag-choice">
+            <input type="checkbox" name="extra_flag" value="{{ option.flag }}" data-extra-option="{{ option.key }}" {% if is_selected %}checked{% endif %}>
+            <span><code>{{ option.flag }}</code><strong>{{ option.label }}</strong></span>
+          </label>
+          {% if option.takes_value %}
+          <input class="option-value-input" name="extra_value_{{ option.key }}" value="{{ selected_debmirror_options.get(option.flag, '') }}" placeholder="{{ option.placeholder or 'Wert' }}" {% if not is_selected %}disabled{% endif %} aria-label="Wert für {{ option.flag }}">
+          {% endif %}
+          <small>{{ option.help }}</small>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="hint option-picker-footnote">Nicht angeboten werden reine Programmaktionen wie <code>--help</code>, <code>--version</code> und <code>--dry-run</code>. Zugangsdaten werden separat und verschlüsselt verwaltet.</p>
+    </details>
+
+    <label>Manuelle Zusatzoptionen (Expertenmodus)</label>
+    <input name="manual_extra_options" value="{{ mirror.manual_extra_options or '' }}" placeholder="z. B. --neue-option --weitere-option=wert">
+    <small>Für seltene oder künftig ergänzte debmirror-Optionen, die noch nicht in der Auswahlliste stehen. Jede Option wird als eigenes Prozessargument ohne Shell ausgeführt. Basisoptionen, Zugangsdaten, <code>--config-file</code> und bereits auswählbare Flags sind hier gesperrt.</small>
 
     <label>Include-Patterns</label>
-    <input name="include_patterns" value="{{ mirror.include_patterns or '' }}" placeholder="optional, kommasepariert">
+    <input name="include_patterns" value="{{ mirror.include_patterns or '' }}" placeholder="z. B. /Translation-(de|en).*">
+    <small>Kommagetrennte Perl-RegEx. Beispiel: <code>/Translation-(de|en).*</code> nimmt deutsche und englische Übersetzungen wieder auf, wenn Übersetzungen über Exclude eingeschränkt werden.</small>
 
     <label>Exclude-Patterns</label>
-    <input name="exclude_patterns" value="{{ mirror.exclude_patterns or '' }}" placeholder="optional, kommasepariert">
+    <input name="exclude_patterns" value="{{ mirror.exclude_patterns or '' }}" placeholder="z. B. /Translation-.*,/.*-dbg_.*">
+    <small>Kommagetrennte Perl-RegEx. Beispiele: <code>/Translation-.*</code> schließt Übersetzungsdateien aus, <code>/.*-dbg_.*</code> typische Debug-Pakete.</small>
   </fieldset>
 
   <fieldset>
@@ -128,4 +196,131 @@
     <button type="submit" class="primary">Speichern</button>
   </div>
 </form>
+<script>
+(function () {
+  document.querySelectorAll('[data-extra-option]').forEach(function (checkbox) {
+    function syncValueInput() {
+      var row = checkbox.closest('.debmirror-option-row');
+      var input = row ? row.querySelector('.option-value-input') : null;
+      if (input) {
+        input.disabled = !checkbox.checked || checkbox.disabled;
+        if (checkbox.checked && !checkbox.disabled && !input.value) input.focus();
+      }
+    }
+    checkbox.addEventListener('change', syncValueInput);
+    checkbox.addEventListener('option-state-change', syncValueInput);
+    syncValueInput();
+  });
+
+  var rsyncChecks = Array.from(document.querySelectorAll('input[name="rsync_extra_value"]'));
+  rsyncChecks.forEach(function (checkbox) {
+    checkbox.addEventListener('change', function () {
+      if (!checkbox.checked) return;
+      if (checkbox.value === 'none') {
+        rsyncChecks.forEach(function (other) { if (other !== checkbox) other.checked = false; });
+      } else {
+        var none = rsyncChecks.find(function (other) { return other.value === 'none'; });
+        if (none) none.checked = false;
+      }
+      syncMethodOptions();
+    });
+  });
+
+  var method = document.querySelector('select[name="method"]');
+  var sshEnabled = document.querySelector('input[name="rsync_ssh_enabled"]');
+  var remoteFields = Array.from(document.querySelectorAll('.remote-auth-picker input'));
+  var sshFields = Array.from(document.querySelectorAll('.rsync-ssh-picker input, .rsync-ssh-picker select'));
+  var optionByFlag = {};
+  document.querySelectorAll('input[name="extra_flag"]').forEach(function (box) { optionByFlag[box.value] = box; });
+
+  function setOptionEnabled(flag, enabled) {
+    var box = optionByFlag[flag];
+    if (!box) return;
+    box.disabled = !enabled;
+    if (!enabled) box.checked = false;
+    box.dispatchEvent(new Event('option-state-change'));
+  }
+
+  function syncAuthMethods() {
+    var isRsync = method && method.value === 'rsync';
+    remoteFields.forEach(function (field) { field.disabled = isRsync; });
+    if (sshEnabled) sshEnabled.disabled = !isRsync;
+    if (!isRsync && sshEnabled) sshEnabled.checked = false;
+    sshFields.forEach(function (field) {
+      if (field === sshEnabled) return;
+      field.disabled = !isRsync || !sshEnabled || !sshEnabled.checked;
+    });
+  }
+
+  function syncMethodOptions() {
+    var selectedMethod = method ? method.value : '';
+    setOptionEnabled('--passive', selectedMethod === 'ftp');
+    setOptionEnabled('--disable-ssl-verification', selectedMethod === 'https');
+    setOptionEnabled('--rsync-batch', selectedMethod === 'rsync');
+    setOptionEnabled('--retry-rsync-packages', selectedMethod === 'rsync');
+  }
+
+  if (method) method.addEventListener('change', function () { syncAuthMethods(); syncMethodOptions(); });
+  if (sshEnabled) sshEnabled.addEventListener('change', syncAuthMethods);
+  syncAuthMethods();
+  syncMethodOptions();
+
+  function uncheck(flag) {
+    if (optionByFlag[flag]) {
+      optionByFlag[flag].checked = false;
+      optionByFlag[flag].dispatchEvent(new Event('change'));
+    }
+  }
+
+  ['--precleanup', '--nocleanup', '--debmarshal'].forEach(function (flag) {
+    var box = optionByFlag[flag];
+    if (!box) return;
+    box.addEventListener('change', function () {
+      if (!box.checked) return;
+      ['--precleanup', '--nocleanup', '--debmarshal'].forEach(function (other) { if (other !== flag) uncheck(other); });
+      var post = document.querySelector('input[name="postcleanup"]');
+      if (post) post.checked = false;
+    });
+  });
+  var postcleanup = document.querySelector('input[name="postcleanup"]');
+  if (postcleanup) postcleanup.addEventListener('change', function () {
+    if (this.checked) ['--precleanup', '--nocleanup', '--debmarshal'].forEach(uncheck);
+  });
+
+  var diff = document.querySelector('select[name="diff_mode"]');
+  if (optionByFlag['--slow-cpu']) optionByFlag['--slow-cpu'].addEventListener('change', function () {
+    if (this.checked && diff) diff.value = 'none';
+    syncDiffOptions();
+  });
+  function syncDiffOptions() {
+    var diffEnabled = diff && diff.value !== 'none';
+    setOptionEnabled('--gzip-options', !!diffEnabled);
+    if (diff && diff.value !== 'none' && optionByFlag['--slow-cpu'] && optionByFlag['--slow-cpu'].checked) {
+      uncheck('--slow-cpu');
+    }
+  }
+  if (diff) diff.addEventListener('change', syncDiffOptions);
+  syncDiffOptions();
+
+  if (optionByFlag['--check-gpg']) optionByFlag['--check-gpg'].addEventListener('change', function () {
+    if (this.checked) uncheck('--no-check-gpg');
+  });
+  if (optionByFlag['--no-check-gpg']) optionByFlag['--no-check-gpg'].addEventListener('change', function () {
+    if (!this.checked) return;
+    uncheck('--check-gpg');
+    uncheck('--ignore-release-gpg');
+    var keyring = document.querySelector('select[name="keyring"]');
+    var fingerprint = document.querySelector('input[name="keyring_fingerprint"]');
+    if (keyring) keyring.value = '';
+    if (fingerprint) fingerprint.value = '';
+  });
+  if (optionByFlag['--ignore-release-gpg']) optionByFlag['--ignore-release-gpg'].addEventListener('change', function () {
+    if (this.checked) uncheck('--no-check-gpg');
+  });
+  var keyringField = document.querySelector('select[name="keyring"]');
+  var fingerprintField = document.querySelector('input[name="keyring_fingerprint"]');
+  if (keyringField) keyringField.addEventListener('change', function () { if (this.value) uncheck('--no-check-gpg'); });
+  if (fingerprintField) fingerprintField.addEventListener('input', function () { if (this.value.trim()) uncheck('--no-check-gpg'); });
+})();
+</script>
 {% endblock %}

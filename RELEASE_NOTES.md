@@ -1,5 +1,109 @@
 # Release Notes
 
+## v0.1.75
+
+- Hover-Designfehler am Größen-Refresh behoben: die bisherige Drehung des Buttons konnte in der Benutzerskript-Tabelle kurzzeitig einen horizontalen Scrollbalken erzeugen.
+- Refresh-Buttons direkt neben der Mirror-Größe jetzt durchgängig im Dashboard, in der Profilübersicht und in der Mirror-Detailansicht vorhanden.
+- Dashboard um „Alle Größen aktualisieren“ oberhalb der Spalte Größe ergänzt.
+- Die Sammelaktualisierung berücksichtigt alle vorhandenen konfigurierten Mirror- und Benutzerskript-Zielverzeichnisse, entfernt doppelte Pfade und überspringt fehlende Verzeichnisse.
+- Mehr Ziele als gleichzeitig berechnet werden können, werden über die vorhandene Größenwarteschlange nacheinander verarbeitet.
+- Dashboard-Tabelle: Spalten Name, Status, Art und Größe per Mausklick oder Tastatur auf- und absteigend sortierbar.
+- Profilübersicht: Spalten Name, Status, Mirror-Größe und Repository per Mausklick oder Tastatur auf- und absteigend sortierbar.
+- Numerische Größensortierung verwendet Bytewerte statt der formatierten Texte KiB/GiB/TiB; unbekannte Werte werden konsistent einsortiert.
+- Anleitung an Sammelaktualisierung, durchgängige Refresh-Aktionen und sortierbare Tabellen angepasst.
+- VERSION auf 0.1.75 gesetzt.
+
+## v0.1.74
+
+- Größenstatus fachlich korrigiert: `veraltet` erscheint nur, wenn nach der letzten Größenprüfung ein echter, nicht als Dry-Run ausgeführter Job für dasselbe Ziel beendet wurde.
+- Reines Überschreiten der Cache-Gültigkeit markiert einen Größenwert nicht mehr als veraltet; die Gültigkeit bleibt ausschließlich für automatische Aktualisierungen relevant.
+- Bezeichnung „letzter bekannter Wert“ durch die eindeutige Angabe „letzte Prüfung“ mit Zeitstempel ersetzt.
+- Größenstatus an Dashboard, Profilübersicht, Mirror-Detail und Benutzerskripten einheitlich als farbige Badges dargestellt: aktuell grün, veraltet gelb.
+- Dashboard: Aktualisieren-Button neben den Zielgrößen der Benutzerskripte ergänzt.
+- Benutzerskripte: vorhandenen Größen-Aktualisieren-Button kompakt und einheitlich als Refresh-Symbol dargestellt.
+- Generator-Einstellungen: eingebaute Standard-Suchpfade werden dauerhaft als Text angezeigt; der aufklappbare Bereich wurde entfernt.
+- Anleitung an die neue Aktualitätslogik, Refresh-Funktionen und dauerhaft sichtbaren Generator-Standardwerte angepasst.
+- VERSION auf 0.1.74 gesetzt.
+
+## v0.1.73
+
+- Dashboard: Aktualisieren-Button direkt neben jeder Mirror-Größe ergänzt.
+- Größenstatus vereinheitlicht und verständlich lokalisiert; Status und Prüfzeitpunkt werden getrennt und mit erklärendem Tooltip angezeigt.
+- Interne Größenstatuswerte bleiben unverändert, damit API, Cache und Hintergrundberechnung kompatibel bleiben.
+- Dashboard: letzter Job von Mirror-Profilen und Benutzerskripten ist vollständig anklickbar und führt direkt zur Job-/Logseite.
+- Keyrings: oberen Master-Keyring-Block in eine kompakte Kennzahlenübersicht umgebaut; Pfad, Fingerprints und Neuaufbau-Erklärung sind einklappbar.
+- Generator-Einstellungen: Suchpfad-Variablen und Generator-Konfiguration nebeneinander angeordnet; responsive Darstellung für schmale Displays ergänzt.
+- Anleitung vollständig gegen Navigation, WebUI-Funktionen, Größenberechnung, Keyring-Verwaltung, Generator-Einstellungen und API-Endpunkte abgeglichen.
+- Release Notes vereinheitlicht: Versionsüberschriften normalisiert, doppelte Einträge entfernt und verschachtelte Listen für die WebUI-Darstellung bereinigt.
+- Allgemeiner Prüfungsdurchgang für Templates, Routen, Rollenansichten, Formularziele, Statusdarstellung, Skripte und Paketstruktur durchgeführt.
+- VERSION auf 0.1.73 gesetzt.
+
+## v0.1.72
+
+- Irreführende Rsync-Benutzer/Passwort-Anmeldung aus Profilen und Profilgenerator entfernt.
+- Vorhandene v0.1.71-Rsync-Zugangsdaten werden bei der Datenbankmigration entfernt und als Ereignis protokolliert.
+- SSH-Schlüsselanmeldung für Rsync-Module ergänzt: SSH-Benutzer, privater Schlüssel, Port und Hostschlüsselprüfung.
+- debmirror-kompatible Umsetzung über `--rsync-options` und eine explizite `--rsh`-Remote-Shell; SSH-Benutzer wird mit `ssh -l` gesetzt.
+- Private Schlüssel werden beim Upload mit `ssh-keygen` geprüft, passphrasegeschützte Schlüssel für unbeaufsichtigte Jobs abgewiesen und mit Modus `0600` gespeichert.
+- Persistente `known_hosts`-Datei ergänzt; optionales `StrictHostKeyChecking=accept-new`, geänderte bekannte Hostschlüssel bleiben gesperrt.
+- Profilgenerator-Zugangsdaten wieder standardmäßig eingeklappt; separate Rsync-Modulprüfung über SSH-Schlüssel ergänzt.
+- `rsync://`-Scans lesen jetzt `dists/` sowie `InRelease`/`Release` aus und können daraus direkt ein Profil mit Suites, Komponenten und Architekturen vorbereiten.
+- HTTP/FTP-Zugangsdaten und Rsync-SSH-Anmeldung sind im Generator gegenseitig gesperrt; Zugangsdaten in der URL sowie SSH-Portangaben in der Rsync-URL werden abgewiesen.
+- Nicht bestätigte Transferarten sind bei der Profilerzeugung nicht auswählbar; bei HTTP/FTP ohne erreichbaren Rsync-Zusatztransfer wird `Rsync Extra` automatisch auf `none` gesetzt.
+- Abweichende direkte Rsync-Daemon-Ports werden beim Erzeugen eines Rsync-Profils sicher in `--rsync-options` übernommen.
+- Host- und Modulpfadvalidierung gilt für alle Rsync-Profile und verhindert Ports im Host-Feld, Pfadtraversal, absolute Pfade und Shell-Sonderzeichen.
+- Zeitplan-Uhrzeiten werden beim Speichern strikt als gültiges `HH:MM` geprüft; widersprüchliche Importprofile durchlaufen dieselbe zentrale Profilvalidierung.
+- Konfliktprüfung erweitert: Methode/Optionen, GPG-Schalter, Diff/Gzip/Slow-CPU, Bereinigungsmodi und Rsync-Paketoptionen.
+- Ungültige Standardprofil-Kombination `HTTP + --passive` entfernt.
+- SSH-Schlüssel und `known_hosts` in Vollbackup/Restore aufgenommen; sichere Dateirechte werden wiederhergestellt.
+- Normaler Konfigurations-Export enthält SSH-Zuordnung, aber keinen Schlüsselinhalt; API zeigt nur Schlüsselstatus und Fingerprint.
+- Docker-Image um `openssh-client` ergänzt; Laufzeitdiagnose prüft `ssh` und `ssh-keygen`.
+- Anleitung und Beschriftungen aktualisiert.
+- VERSION auf 0.1.72 gesetzt.
+
+## v0.1.71
+
+- Zugangsdaten im Profilgenerator standardmäßig sichtbar geöffnet und eindeutig für HTTP/HTTPS, FTP und rsync beschriftet.
+- Profilgenerator prüft geschützte rsync-Daemons mit Benutzername und temporärer Passwortdatei.
+- Mirror-Profile erlauben Remote-Benutzer und verschlüsselte Passwörter jetzt auch bei der Methode `rsync`.
+- Rsync-Benutzer wird über die geschützte debmirror-Konfiguration an das Rsync-Ziel übergeben.
+- Rsync-Passwort wird nicht über `--passwd`, Prozessumgebung oder Klartextargumente übergeben, sondern über eine temporäre Datei mit Modus `0600`.
+- Vorhandene `--rsync-options` werden bei der Jobausführung um die temporäre Passwortdatei ergänzt.
+- Temporäre Rsync-Passwortdateien werden nach Jobende und beim Start als Altdateien bereinigt.
+- Hinweise grenzen rsync-Daemon-Authentifizierung klar von Rsync über SSH ab.
+- Anleitung und Beschriftungen aktualisiert.
+- VERSION auf 0.1.71 gesetzt.
+
+## v0.1.70
+
+- Mirror-Profile um optionale Remote-Anmeldung mit separatem Benutzer- und Passwortfeld erweitert.
+- Remote-Passwörter werden mit dem persistenten Datenschlüssel verschlüsselt in SQLite gespeichert und im Formular nicht zurückgegeben.
+- Jobausführung übergibt Zugangsdaten über eine temporäre debmirror-Konfigurationsdatei mit Modus `0600`; Prozessanzeige, Job-Datenbank und Logs enthalten kein Klartextpasswort.
+- Temporäre Auth-Dateien werden nach dem Job entfernt; veraltete Restdateien werden beim Start bereinigt.
+- Profilgenerator um optionale HTTP-Basic-/FTP-Zugangsdaten erweitert und kann diese verschlüsselt an ein vorbereitetes Profil übergeben.
+- Bei Zugangsdaten wird kein automatischer HTTPS-zu-HTTP-Fallback ausgeführt.
+- Transportfehler des Profilgenerators werden vor der Statusausgabe von FTP-Zugangsdaten bereinigt.
+- Validiertes Expertenfeld für manuelle, noch nicht in der Auswahl enthaltene debmirror-Optionen ergänzt.
+- Normale Konfigurations-Exporte enthalten Remote-Benutzer und manuelle Optionen, aber keine Remote-Passwörter.
+- Vollbackup-Prüfung berücksichtigt zusätzlich verschlüsselte Remote-Passwörter von Mirror-Profilen.
+- API-Ausgabe entfernt verschlüsselte Remote-Passwortwerte und zeigt nur `remote_password_set`.
+- Anleitung und Beschriftungen aktualisiert.
+- VERSION auf 0.1.70 gesetzt.
+
+## v0.1.69
+
+- Mirror-Profil: `Rsync Extra` durch Auswahl der gültigen Werte `doc`, `indices`, `tools`, `trace` und `none` ersetzt.
+- Mirror-Profil: zusätzliche debmirror-Flags als kontrollierte Auswahlliste umgesetzt; Optionen mit Parameter erhalten ein zugehöriges Eingabefeld.
+- Erweiterte Validierung für zusätzliche Optionen, Zahlenwerte, Konflikte und sicherheitsrelevante Schalter ergänzt.
+- Frühere fälschlich im Feld `Rsync Extra` gespeicherte Rsync-Parameter werden beim Bearbeiten zu `--rsync-options` migriert beziehungsweise beim Start kompatibel behandelt.
+- Include-/Exclude-Patterns mit verständlichen Beispielen ergänzt.
+- Benutzerskripte, Healthchecks und Benutzerliste für mobile Geräte als Kartenansicht optimiert.
+- Healthcheck-Formular auf schmalen Displays kompakter gestaltet.
+- `Admin-Zugang` aus den allgemeinen Einstellungen in die `Benutzerverwaltung` verschoben.
+- Menüeintrag `Benutzer` in `Benutzerverwaltung` umbenannt.
+- Anleitung und Beschriftungen an die neue Struktur angepasst.
+- VERSION auf 0.1.69 gesetzt.
+
 ## v0.1.68
 
 - Release-ZIP enthält das Projekt jetzt im obersten Ordner `debmirror-manager/`; normales `unzip` erzeugt dadurch direkt den Projektordner.
@@ -80,7 +184,7 @@
 - Profilansicht: Profil-Keyring-Status kompakter dargestellt, ohne Zeilenbruch in der Status-/Aktionszeile.
 - Profilansicht: Profil-Keyring-Block für mobile Ansichten optimiert.
 
-## v0.1.59 - Fehlerdiagnose Master-Keyring-Auswahl korrigiert
+## v0.1.59
 
 - Fehlerdiagnose gleicht fehlende GPG-Key-IDs jetzt zusätzlich per direkter GnuPG-Abfrage gegen den Master-Keyring ab.
 - Behebt Fälle, in denen ein Key im Master-Keyring vorhanden war, aber wegen einer kurzen Signing-Subkey-ID nicht zur Auswahl angeboten wurde.
@@ -88,43 +192,43 @@
 - Archivtreffer bleiben als Fallback sichtbar.
 - VERSION auf 0.1.59 gesetzt.
 
-## v0.1.58 - Fehlerdiagnose Key-Auswahl bereinigt
+## v0.1.58
 
 - Fehlerdiagnose bei fehlenden GPG-Keys klarer getrennt:
-  - Master-Keyring-Treffer werden in einem eigenen Block angezeigt.
-  - Archiv-Keyring-Treffer werden in einem eigenen Block angezeigt.
-  - erwarteter Fingerprint/Key-ID und tatsächlich gefundener Haupt-/Subkey werden getrennt sichtbar.
+- Master-Keyring-Treffer werden in einem eigenen Block angezeigt.
+- Archiv-Keyring-Treffer werden in einem eigenen Block angezeigt.
+- erwarteter Fingerprint/Key-ID und tatsächlich gefundener Haupt-/Subkey werden getrennt sichtbar.
 - Mehrfachauswahl vereinfacht:
-  - Einzel-Buttons pro Fingerprint entfernt.
-  - nur noch ein Button „Ausgewählte Keys übernehmen + Profil-Keyring erzeugen“.
-  - ausgewählte Master- und Archivtreffer werden gemeinsam verarbeitet.
+- Einzel-Buttons pro Fingerprint entfernt.
+- nur noch ein Button „Ausgewählte Keys übernehmen + Profil-Keyring erzeugen“.
+- ausgewählte Master- und Archivtreffer werden gemeinsam verarbeitet.
 - Checkbox-Auswahl stabilisiert:
-  - manuell abgewählte Treffer bleiben abgewählt, auch wenn die Live-Fehlerdiagnose erneut gerendert wird.
-  - verhindert das automatische erneute Auswählen aller Treffer nach Fokuswechsel/Refresh.
+- manuell abgewählte Treffer bleiben abgewählt, auch wenn die Live-Fehlerdiagnose erneut gerendert wird.
+- verhindert das automatische erneute Auswählen aller Treffer nach Fokuswechsel/Refresh.
 - VERSION auf 0.1.58 gesetzt.
 
-## v0.1.57 - Fehlerauswertung mit Master-/Subkey-Zuordnung
+## v0.1.57
 
 - Fehlerauswertung bei fehlenden GPG-Keys erweitert:
-  - Master-Keyring-Treffer werden jetzt auch gefunden, wenn im Log nur ein Signing-Subkey oder eine kurze Key-ID gemeldet wird.
-  - der gefundene Subkey wird auf den passenden Hauptkey im Master-Keyring abgebildet.
-  - daraus wird weiterhin ein bereinigter Profil-Keyring erzeugt, nicht der komplette Master-Keyring zugewiesen.
+- Master-Keyring-Treffer werden jetzt auch gefunden, wenn im Log nur ein Signing-Subkey oder eine kurze Key-ID gemeldet wird.
+- der gefundene Subkey wird auf den passenden Hauptkey im Master-Keyring abgebildet.
+- daraus wird weiterhin ein bereinigter Profil-Keyring erzeugt, nicht der komplette Master-Keyring zugewiesen.
 - Mehrfachzuordnung ergänzt:
-  - mehrere benötigte Fingerprints können in der Fehlerauswertung gemeinsam ausgewählt werden.
-  - ausgewählte Keys werden in einem Schritt dem Mirror-Profil zugeordnet.
-  - danach wird der Profil-Keyring einmal neu erzeugt.
+- mehrere benötigte Fingerprints können in der Fehlerauswertung gemeinsam ausgewählt werden.
+- ausgewählte Keys werden in einem Schritt dem Mirror-Profil zugeordnet.
+- danach wird der Profil-Keyring einmal neu erzeugt.
 - Archiv-Treffer werden beim Zuweisen zuerst in den Master-Keyring importiert und danach ebenfalls als Fingerprint-Zuordnung gespeichert.
 - VERSION auf 0.1.57 gesetzt.
 
-## v0.1.56 - Master-Keyring Zählung und Voll-Neuaufbau
+## v0.1.56
 
 - Master-Keyring-Status erweitert:
-  - Hauptkeys, Subkeys und Gesamt-Fingerprints werden getrennt angezeigt.
-  - Archivdateien und daraus erkannte Hauptkey-Fingerprints werden angezeigt.
-  - entfernte/ausgeschlossene Fingerprints werden sichtbar gemacht.
+- Hauptkeys, Subkeys und Gesamt-Fingerprints werden getrennt angezeigt.
+- Archivdateien und daraus erkannte Hauptkey-Fingerprints werden angezeigt.
+- entfernte/ausgeschlossene Fingerprints werden sichtbar gemacht.
 - Neuer Button „Vollständig neu aufbauen“:
-  - baut den Master-Keyring aus allen Archivdateien neu auf.
-  - entfernt vorherige Entfernsperren, falls bewusst gelöschte Keys wieder importiert werden sollen.
+- baut den Master-Keyring aus allen Archivdateien neu auf.
+- entfernt vorherige Entfernsperren, falls bewusst gelöschte Keys wieder importiert werden sollen.
 - Normales „Master-Keyring neu aufbauen“ behält das bisherige Schutzverhalten bei und importiert bewusst entfernte Keys nicht automatisch erneut.
 - Archivübersicht zeigt Hauptkeys und Subkey-Anzahl getrennt an.
 
@@ -145,107 +249,107 @@
 ## v0.1.53
 
 - Fehlerauswertung bei fehlenden GPG-Keys korrigiert:
-  - Treffer aus dem Master-Keyring werden nicht mehr als komplette Keyring-Datei zugewiesen.
-  - der passende Fingerprint wird direkt dem Mirror-Profil zugeordnet.
-  - danach wird automatisch ein bereinigter Profil-Keyring erzeugt.
-  - behebt die Meldung „Der ausgewählte Keyring enthält den erwarteten Fingerprint nicht.“ beim Klick auf „vorhandenen Keyring zuweisen“.
+- Treffer aus dem Master-Keyring werden nicht mehr als komplette Keyring-Datei zugewiesen.
+- der passende Fingerprint wird direkt dem Mirror-Profil zugeordnet.
+- danach wird automatisch ein bereinigter Profil-Keyring erzeugt.
+- behebt die Meldung „Der ausgewählte Keyring enthält den erwarteten Fingerprint nicht.“ beim Klick auf „vorhandenen Keyring zuweisen“.
 - Anzeige in der Fehlerauswertung präzisiert:
-  - Button jetzt „Master-Key zuweisen + Profil-Keyring erzeugen“ bei Master-Treffern.
-  - Archiv-Treffer werden getrennt als Archiv-Key angezeigt.
+- Button jetzt „Master-Key zuweisen + Profil-Keyring erzeugen“ bei Master-Treffern.
+- Archiv-Treffer werden getrennt als Archiv-Key angezeigt.
 - VERSION auf 0.1.53 gesetzt.
 
 ## v0.1.52
 
 - Master-Keyring-Verwaltung erweitert:
-  - einzelne Keys können aus dem Master-Keyring entfernt werden.
-  - das Entfernen wird blockiert, wenn der Key noch einem Mirror-Profil zugeordnet ist.
-  - entfernte Fingerprints werden gemerkt und beim späteren Neuaufbau nicht automatisch wieder aus Archivdateien importiert.
+- einzelne Keys können aus dem Master-Keyring entfernt werden.
+- das Entfernen wird blockiert, wenn der Key noch einem Mirror-Profil zugeordnet ist.
+- entfernte Fingerprints werden gemerkt und beim späteren Neuaufbau nicht automatisch wieder aus Archivdateien importiert.
 - Archivverwaltung ergänzt:
-  - archivierte Importdateien können jetzt einzeln gelöscht werden.
-  - zugehörige Archiv-Metadaten werden beim Löschen bereinigt.
-  - der aktuelle Master-Keyring bleibt beim Löschen einer Archivdatei unverändert.
+- archivierte Importdateien können jetzt einzeln gelöscht werden.
+- zugehörige Archiv-Metadaten werden beim Löschen bereinigt.
+- der aktuelle Master-Keyring bleibt beim Löschen einer Archivdatei unverändert.
 - Keyring-Oberfläche ergänzt:
-  - Button „Aus Master entfernen“ pro Master-Key.
-  - Button „Archivdatei löschen“ pro archivierter Importdatei.
+- Button „Aus Master entfernen“ pro Master-Key.
+- Button „Archivdatei löschen“ pro archivierter Importdatei.
 - VERSION auf 0.1.52 gesetzt.
 
 ## v0.1.51
 
 - Master-Keyring-Status korrigiert:
-  - Key-Anzahl und Key-Details werden jetzt mit `gpg --no-default-keyring --keyring ... --list-keys` aus der echten Master-Keyring-Datei gelesen.
-  - dadurch wird nach „Master-Keyring neu aufgebaut“ nicht mehr fälschlich `Keys 0` angezeigt.
+- Key-Anzahl und Key-Details werden jetzt mit `gpg --no-default-keyring --keyring ... --list-keys` aus der echten Master-Keyring-Datei gelesen.
+- dadurch wird nach „Master-Keyring neu aufgebaut“ nicht mehr fälschlich `Keys 0` angezeigt.
 - Keyring-Verwaltung umgestellt:
-  - Hauptübersicht zeigt jetzt die Keys im Master-Keyring.
-  - einzelne Importdateien werden nach dem Import als Archiv-/Quelldateien behandelt.
-  - neue Importdateien werden unter `keyrings/archive/` abgelegt und nicht mehr als aktive Keyrings gelistet.
+- Hauptübersicht zeigt jetzt die Keys im Master-Keyring.
+- einzelne Importdateien werden nach dem Import als Archiv-/Quelldateien behandelt.
+- neue Importdateien werden unter `keyrings/archive/` abgelegt und nicht mehr als aktive Keyrings gelistet.
 - Profil-Zuordnung verbessert:
-  - Zuordnung erfolgt direkt per Fingerprint aus dem Master-Keyring.
-  - Mirror-Detailseite nutzt die Master-Key-Liste für die Fingerprint-Auswahl.
-  - Profil-Keyrings und Client-Exports bleiben dadurch auf die wirklich zugeordneten Keys begrenzt.
+- Zuordnung erfolgt direkt per Fingerprint aus dem Master-Keyring.
+- Mirror-Detailseite nutzt die Master-Key-Liste für die Fingerprint-Auswahl.
+- Profil-Keyrings und Client-Exports bleiben dadurch auf die wirklich zugeordneten Keys begrenzt.
 - VERSION auf 0.1.51 gesetzt.
 
 ## v0.1.50
 
 - Master-Keyring ergänzt:
-  - alle importierten Keyrings werden zusätzlich in einen zentralen Master-Keyring importiert.
-  - vorhandene Key-Dateien bleiben als Verwaltungs-/Importdateien erhalten.
-  - der Master-Keyring kann in der Keyring-Verwaltung neu aufgebaut werden.
+- alle importierten Keyrings werden zusätzlich in einen zentralen Master-Keyring importiert.
+- vorhandene Key-Dateien bleiben als Verwaltungs-/Importdateien erhalten.
+- der Master-Keyring kann in der Keyring-Verwaltung neu aufgebaut werden.
 - Profil-Keyring-Erzeugung umgebaut:
-  - keine einfache Kopie ganzer Keyring-Dateien mehr.
-  - zugeordnete Fingerprints werden gezielt aus dem Master-Keyring exportiert.
-  - Profil-Keyrings enthalten dadurch nur noch die Keys, die dem jeweiligen Mirror-Profil zugeordnet sind.
-  - alte Dateizuordnungen ohne Fingerprint bleiben kompatibel und werden als Altzuordnung angezeigt.
+- keine einfache Kopie ganzer Keyring-Dateien mehr.
+- zugeordnete Fingerprints werden gezielt aus dem Master-Keyring exportiert.
+- Profil-Keyrings enthalten dadurch nur noch die Keys, die dem jeweiligen Mirror-Profil zugeordnet sind.
+- alte Dateizuordnungen ohne Fingerprint bleiben kompatibel und werden als Altzuordnung angezeigt.
 - Client-Export verbessert:
-  - verwendet den bereinigten Profil-Keyring.
-  - Export-ZIP enthält damit nur die für dieses Mirror-Profil benötigten Keys.
+- verwendet den bereinigten Profil-Keyring.
+- Export-ZIP enthält damit nur die für dieses Mirror-Profil benötigten Keys.
 - Mirror-Detailseite erweitert:
-  - Zuordnung einzelner Fingerprints möglich.
-  - Profil-Keyrings können aus den Fingerprint-Zuordnungen neu erzeugt werden.
+- Zuordnung einzelner Fingerprints möglich.
+- Profil-Keyrings können aus den Fingerprint-Zuordnungen neu erzeugt werden.
 - VERSION auf 0.1.50 gesetzt.
 
 ## v0.1.49
 
 - Keyring-Zuordnung zu Mirror-Profilen erweitert:
-  - Keyrings können direkt aus der Keyring-Verwaltung einem Profil zugeordnet werden.
-  - Mirror-Detailseite enthält einen eigenen Block für Profil-Keyrings.
-  - Mehrere Keys pro Profil sind möglich.
+- Keyrings können direkt aus der Keyring-Verwaltung einem Profil zugeordnet werden.
+- Mirror-Detailseite enthält einen eigenen Block für Profil-Keyrings.
+- Mehrere Keys pro Profil sind möglich.
 - Automatische Profil-Keyrings ergänzt:
-  - aus den zugeordneten Keys wird ein generierter Profil-Keyring unter `keyrings/profiles/` erstellt.
-  - debmirror verwendet diesen Profil-Keyring automatisch.
-  - Profil-Keyring kann manuell neu erzeugt werden.
+- aus den zugeordneten Keys wird ein generierter Profil-Keyring unter `keyrings/profiles/` erstellt.
+- debmirror verwendet diesen Profil-Keyring automatisch.
+- Profil-Keyring kann manuell neu erzeugt werden.
 - Migration ergänzt:
-  - alte direkte Keyring-Pfade werden als Profil-Zuordnung sichtbar gemacht.
-  - ungenutzte Keyrings werden markiert.
-  - Zuordnungen werden im Konfig-Export/-Import berücksichtigt.
+- alte direkte Keyring-Pfade werden als Profil-Zuordnung sichtbar gemacht.
+- ungenutzte Keyrings werden markiert.
+- Zuordnungen werden im Konfig-Export/-Import berücksichtigt.
 - VERSION auf 0.1.49 gesetzt.
 
 ## v0.1.48
 
 - Keyring-Import erweitert:
-  - Datei-, URL- und Textimport können vor dem Speichern geprüft werden.
-  - Import-Vorschau zeigt UID, Key-ID, Fingerprint, Algorithmus, Erstellung, Ablauf, Status und Subkeys.
-  - Duplikaterkennung per Fingerprint ergänzt.
-  - Importierte Fingerprints werden zusätzlich als zentrale Metadaten in `settings.json` gepflegt.
-  - vorhandene Keyring-Dateien werden beim Import nicht mehr automatisch überschrieben.
+- Datei-, URL- und Textimport können vor dem Speichern geprüft werden.
+- Import-Vorschau zeigt UID, Key-ID, Fingerprint, Algorithmus, Erstellung, Ablauf, Status und Subkeys.
+- Duplikaterkennung per Fingerprint ergänzt.
+- Importierte Fingerprints werden zusätzlich als zentrale Metadaten in `settings.json` gepflegt.
+- vorhandene Keyring-Dateien werden beim Import nicht mehr automatisch überschrieben.
 - VERSION auf 0.1.48 gesetzt.
 
 ## v0.1.47
 
 - Keyrings-Seite korrigiert:
-  - Internal Server Error durch Jinja-Konflikt mit `k.keys` behoben.
-  - Key-Detailtabelle nutzt jetzt ein eindeutiges Datenfeld.
+- Internal Server Error durch Jinja-Konflikt mit `k.keys` behoben.
+- Key-Detailtabelle nutzt jetzt ein eindeutiges Datenfeld.
 - VERSION auf 0.1.47 gesetzt.
 
 ## v0.1.46
 
 - Keyring-Verwaltung erweitert:
-  - UID, Key-ID, Fingerprint, Algorithmus, Erstellung, Ablauf und Status werden angezeigt.
-  - Anzeigename, Quelle, Notiz und Aktiv-Marker können pro Keyring gespeichert werden.
-  - Zuordnung zu Mirror-Profilen wird direkt in der Keyring-Übersicht angezeigt.
-  - einzelne Keyrings und einzelne Hauptkeys können als `.gpg` oder `.asc` exportiert werden.
+- UID, Key-ID, Fingerprint, Algorithmus, Erstellung, Ablauf und Status werden angezeigt.
+- Anzeigename, Quelle, Notiz und Aktiv-Marker können pro Keyring gespeichert werden.
+- Zuordnung zu Mirror-Profilen wird direkt in der Keyring-Übersicht angezeigt.
+- einzelne Keyrings und einzelne Hauptkeys können als `.gpg` oder `.asc` exportiert werden.
 - Client-Export pro Mirror-Profil ergänzt:
-  - erzeugt ZIP mit Keyring, Deb822-Quelle, klassischer `.list` und README.
-  - Client-Basis-URL wird beim Export abgefragt.
+- erzeugt ZIP mit Keyring, Deb822-Quelle, klassischer `.list` und README.
+- Client-Basis-URL wird beim Export abgefragt.
 - `VERSION` geprüft: 0.1.46.
 
 ## v0.1.45

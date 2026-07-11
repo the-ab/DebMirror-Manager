@@ -1,13 +1,35 @@
 {% extends "base.html" %}
-{% block title %}Benutzer - {{ app_name }}{% endblock %}
+{% block title %}Benutzerverwaltung - {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
     <h1>Benutzerverwaltung</h1>
-    <p>Mehrere Benutzer für die WebUI. Admins können Benutzer, Tokens, Import/Export und Benachrichtigungen verwalten.</p>
+    <p>WebUI-Benutzer, Rollen und den eigenen Admin-Zugang zentral verwalten.</p>
   </div>
 </div>
-<div class="grid two">
+
+<div class="grid two users-management-grid">
+  <section class="card">
+    <h2>Admin-Zugang</h2>
+    <dl>
+      <dt>Quelle</dt><dd>{{ auth_config.source }}</dd>
+      <dt>Benutzer</dt><dd>{{ auth_config.username }}</dd>
+      <dt>Settings-Datei</dt><dd><code>{{ settings_path }}</code></dd>
+    </dl>
+    <form method="post">
+      <input type="hidden" name="action" value="change_password">
+      <label>Aktuelles Passwort</label>
+      <input type="password" name="current_password" required autocomplete="current-password">
+      <label>Benutzername</label>
+      <input name="username" value="{{ auth_config.username }}" required autocomplete="username">
+      <label>Neues Passwort</label>
+      <input type="password" name="password" minlength="8" required autocomplete="new-password">
+      <label>Neues Passwort wiederholen</label>
+      <input type="password" name="password2" minlength="8" required autocomplete="new-password">
+      <button class="primary" type="submit">Eigenen Zugang ändern</button>
+    </form>
+  </section>
+
   <section class="card">
     <h2>{% if edit_user %}Benutzer bearbeiten{% else %}Benutzer anlegen{% endif %}</h2>
     <form method="post">
@@ -28,37 +50,44 @@
       {% if edit_user %}<a class="button" href="{{ url_for('users_page') }}">Abbrechen</a>{% endif %}
     </form>
   </section>
-  <section class="card">
-    <h2>Hinweis</h2>
-    <p>Die erste Anmeldung aus älteren Versionen wird automatisch in die Benutzerverwaltung übernommen.</p>
-    <p class="hint">Rolle <strong>Benutzer</strong> kann die WebUI verwenden. Kritische Verwaltungsseiten sind Admins vorbehalten.</p>
-  </section>
 </div>
+
 <section class="card">
   <h2>Vorhandene Benutzer</h2>
+  <p class="hint">Die erste Anmeldung aus älteren Versionen wird automatisch übernommen. Rolle <strong>Benutzer</strong> hat Leserechte; kritische Änderungen und Job-Aktionen bleiben Admins vorbehalten.</p>
   {% if users %}
-  <table>
-    <thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Letzter Login</th><th>Aktion</th></tr></thead>
-    <tbody>
-    {% for u in users %}
-      <tr>
-        <td>{{ u.username }}</td>
-        <td>{{ u.role }}</td>
-        <td><span class="badge {{ 'ok' if u.enabled else 'muted' }}">{{ 'aktiv' if u.enabled else 'inaktiv' }}</span></td>
-        <td>{{ u.last_login_at or '-' }}</td>
-        <td class="actions">
-          <a class="button" href="{{ url_for('users_page', edit=u.id) }}">Bearbeiten</a>
-          {% if current_user.id != u.id %}
-          <form method="post" class="inline" onsubmit="return confirm('Benutzer wirklich löschen?');">
-            <input type="hidden" name="action" value="delete"><input type="hidden" name="user_id" value="{{ u.id }}">
-            <button class="danger" type="submit">Löschen</button>
-          </form>
-          {% endif %}
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-scroll">
+    <table class="user-management-table mobile-card-table">
+      <thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Letzter Login</th><th>Aktion</th></tr></thead>
+      <tbody>
+      {% for u in users %}
+        <tr>
+          <td data-label="Benutzer">{{ u.username }}</td>
+          <td data-label="Rolle">{{ u.role }}</td>
+          <td data-label="Status"><span class="badge {{ 'ok' if u.enabled else 'muted' }}">{{ 'aktiv' if u.enabled else 'inaktiv' }}</span></td>
+          <td data-label="Letzter Login">{{ u.last_login_at or '-' }}</td>
+          <td data-label="Aktion" class="actions">
+            <a class="button" href="{{ url_for('users_page', edit=u.id) }}">Bearbeiten</a>
+            {% if current_user.id != u.id %}
+            <form method="post" class="inline" onsubmit="return confirm('Benutzer wirklich löschen?');">
+              <input type="hidden" name="action" value="delete"><input type="hidden" name="user_id" value="{{ u.id }}">
+              <button class="danger" type="submit">Löschen</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}<p>Noch keine Benutzer vorhanden.</p>{% endif %}
+</section>
+
+<section class="card settings-card">
+  <h2>Passwort über Shell zurücksetzen</h2>
+  <p>Falls die WebUI-Anmeldung nicht mehr möglich ist, kann der Admin-Zugang direkt auf dem Server zurückgesetzt werden:</p>
+  <pre class="code">cd debmirror-manager
+./set-admin-password.sh</pre>
+  <p class="hint">Das Skript schreibt den Admin-Zugang direkt in die SQLite-Benutzerverwaltung.</p>
 </section>
 {% endblock %}

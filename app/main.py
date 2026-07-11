@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import html
 import io
+import ipaddress
 import json
 import os
 import re
@@ -77,6 +78,10 @@ DB_PATH = APP_DATA_DIR / "debmirror-manager.sqlite3"
 WEBUI_ERROR_LOG = APP_LOG_DIR / "webui-error.log"
 SETTINGS_PATH = APP_DATA_DIR / "settings.json"
 NOTIFICATION_SECRET_KEY_PATH = APP_DATA_DIR / "notification-secrets.key"
+JOB_AUTH_CONFIG_DIR = Path(os.environ.get("JOB_AUTH_CONFIG_DIR", "/tmp/debmirror-manager-auth"))
+SSH_DIR = APP_DATA_DIR / "ssh"
+SSH_KEY_DIR = SSH_DIR / "keys"
+SSH_KNOWN_HOSTS_PATH = SSH_DIR / "known_hosts"
 SCHEDULER_SCAN_SECONDS = int(os.environ.get("SCHEDULER_SCAN_SECONDS", "60"))
 JOB_STOP_GRACE_SECONDS = int(os.environ.get("JOB_STOP_GRACE_SECONDS", "20"))
 DEFAULT_MAX_PARALLEL_JOBS = int(os.environ.get("MAX_PARALLEL_JOBS", "1"))
@@ -114,6 +119,26 @@ APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 IMPORT_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 USER_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 MIRROR_BASE.mkdir(parents=True, exist_ok=True)
+JOB_AUTH_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+SSH_KEY_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    JOB_AUTH_CONFIG_DIR.chmod(0o700)
+except OSError:
+    pass
+for secure_dir in (SSH_DIR, SSH_KEY_DIR):
+    try:
+        secure_dir.chmod(0o700)
+    except OSError:
+        pass
+if not SSH_KNOWN_HOSTS_PATH.exists():
+    try:
+        SSH_KNOWN_HOSTS_PATH.touch(mode=0o600, exist_ok=True)
+    except OSError:
+        pass
+try:
+    SSH_KNOWN_HOSTS_PATH.chmod(0o600)
+except OSError:
+    pass
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-change-me")
@@ -129,6 +154,7 @@ SIZE_CALC_RUNNING: set[str] = set()
 SIZE_CALC_LOCK = threading.Lock()
 PROFILE_SCAN_JOBS: Dict[str, Dict[str, Any]] = {}
 PROFILE_SCAN_JOBS_LOCK = threading.Lock()
+PROFILE_SCAN_AUTH_CONTEXT = threading.local()
 PROFILE_SCAN_JOB_TTL_SECONDS = 3600
 PROFILE_SCAN_JOB_MAX_ENTRIES = 40
 NOTIFICATION_SECRET_KEY_LOCK = threading.Lock()
@@ -186,6 +212,14 @@ def init_db() -> None:
                 timeout_seconds INTEGER DEFAULT NULL,
                 rsync_extra TEXT DEFAULT '',
                 extra_options TEXT DEFAULT '',
+                manual_extra_options TEXT DEFAULT '',
+                remote_user TEXT DEFAULT '',
+                remote_password_enc TEXT DEFAULT '',
+                rsync_ssh_enabled INTEGER NOT NULL DEFAULT 0,
+                rsync_ssh_user TEXT DEFAULT '',
+                rsync_ssh_key TEXT DEFAULT '',
+                rsync_ssh_port INTEGER NOT NULL DEFAULT 22,
+                rsync_ssh_accept_new_host_key INTEGER NOT NULL DEFAULT 1,
                 include_patterns TEXT DEFAULT '',
                 exclude_patterns TEXT DEFAULT '',
                 schedule_mode TEXT NOT NULL DEFAULT 'manual',
@@ -301,6 +335,36 @@ def init_db() -> None:
             con.execute("ALTER TABLE mirrors ADD COLUMN extra_options TEXT DEFAULT ''")
         if "keyring_fingerprint" not in columns:
             con.execute("ALTER TABLE mirrors ADD COLUMN keyring_fingerprint TEXT DEFAULT ''")
+        if "manual_extra_options" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN manual_extra_options TEXT DEFAULT ''")
+        if "remote_user" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN remote_user TEXT DEFAULT ''")
+        if "remote_password_enc" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN remote_password_enc TEXT DEFAULT ''")
+        if "rsync_ssh_enabled" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_enabled INTEGER NOT NULL DEFAULT 0")
+        if "rsync_ssh_user" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_user TEXT DEFAULT ''")
+        if "rsync_ssh_key" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_key TEXT DEFAULT ''")
+        if "rsync_ssh_port" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_port INTEGER NOT NULL DEFAULT 22")
+        if "rsync_ssh_accept_new_host_key" not in columns:
+            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_accept_new_host_key INTEGER NOT NULL DEFAULT 1")
+
+        # v0.1.71 bot irrtümlich Passwortauthentifizierung für rsync-Daemons an.
+        # Diese Kombination wird nicht weitergeführt. Vorhandene rsync-Zugangsdaten
+        # werden entfernt, damit kein Profil scheinbar mit einer nicht mehr
+        # unterstützten Authentifizierungsart weiterläuft.
+        legacy_rsync_auth = con.execute(
+            "SELECT COUNT(*) AS n FROM mirrors WHERE method='rsync' AND (COALESCE(remote_user,'') <> '' OR COALESCE(remote_password_enc,'') <> '')"
+        ).fetchone()
+        if legacy_rsync_auth and int(legacy_rsync_auth["n"] or 0) > 0:
+            con.execute("UPDATE mirrors SET remote_user='', remote_password_enc='' WHERE method='rsync'")
+            con.execute(
+                "INSERT INTO app_events(level, message, created_at) VALUES ('warning', ?, ?)",
+                ("Veraltete rsync-Benutzer/Passwort-Angaben wurden entfernt. Für geschützte rsync-Quellen bitte SSH-Schlüsselanmeldung konfigurieren.", now_iso()),
+            )
         # Migration: Ab v0.1.12 darf mirror_id NULL sein, damit auch Benutzerskripte
         # als normale Jobs in derselben Warteschlange laufen können.
         job_info = con.execute("PRAGMA table_info(jobs)").fetchall()
@@ -717,7 +781,7 @@ def encrypt_secret(value: str) -> str:
     f = _persistent_fernet_instance(create=True)
     if not f:
         # Do not silently downgrade newly entered credentials to plaintext.
-        raise RuntimeError("Benachrichtigungs-Geheimwert konnte nicht verschlüsselt werden.")
+        raise RuntimeError("Geheimwert konnte nicht verschlüsselt werden.")
     return SECRET_PREFIX + f.encrypt(value.encode("utf-8")).decode("ascii")
 
 
@@ -754,11 +818,23 @@ def notification_secret_storage_status() -> Dict[str, Any]:
             value = str(raw.get(field) or "")
             if value.startswith((SECRET_PREFIX, LEGACY_SECRET_PREFIX)) and not decrypt_secret(value):
                 unreadable.append(field)
+    unreadable_mirror_passwords: List[str] = []
+    try:
+        with db() as con:
+            rows = con.execute("SELECT id, name, remote_password_enc FROM mirrors WHERE COALESCE(remote_password_enc, '') <> ''").fetchall()
+        for row in rows:
+            encrypted = str(row["remote_password_enc"] or "")
+            if not decrypt_secret(encrypted):
+                unreadable_mirror_passwords.append(f"#{row['id']} {row['name']}")
+    except sqlite3.OperationalError:
+        # During very early startup the migration may not have added the column yet.
+        pass
     return {
         "key_present": NOTIFICATION_SECRET_KEY_PATH.exists(),
         "key_path": str(NOTIFICATION_SECRET_KEY_PATH),
         "unreadable_fields": unreadable,
-        "readable": not unreadable,
+        "unreadable_mirror_passwords": unreadable_mirror_passwords,
+        "readable": not unreadable and not unreadable_mirror_passwords,
     }
 
 
@@ -1190,34 +1266,9 @@ def logout():
 @app.route("/settings", methods=["GET", "POST"])
 @require_admin
 def settings_page():
-    cfg = admin_config() or {}
     if request.method == "POST":
         action = request.form.get("action")
         try:
-            if action == "change_password":
-                current_password = request.form.get("current_password", "")
-                username = request.form.get("username", "").strip()
-                password = request.form.get("password", "")
-                password2 = request.form.get("password2", "")
-                if not verify_admin_login(cfg.get("username", ""), current_password):
-                    raise ValueError("Aktuelles Passwort ist falsch.")
-                if not username:
-                    raise ValueError("Benutzername darf nicht leer sein.")
-                if len(password) < 8:
-                    raise ValueError("Das neue Passwort muss mindestens 8 Zeichen lang sein.")
-                if password != password2:
-                    raise ValueError("Die Passwort-Wiederholung passt nicht.")
-                user = current_user()
-                if user.get("id"):
-                    create_or_update_user(username, password, role=user.get("role", "admin"), enabled=1, user_id=int(user["id"]))
-                settings = load_settings()
-                settings.pop("admin_username", None)
-                settings.pop("admin_password_hash", None)
-                settings["auth_updated_at"] = now_iso()
-                save_settings(settings)
-                session.clear()
-                flash("Zugang wurde geändert. Bitte neu einloggen.", "success")
-                return redirect(url_for("login"))
             if action == "set_appearance":
                 appearance = request.form.get("appearance", "light").strip()
                 if appearance not in {"light", "dark", "auto"}:
@@ -1297,8 +1348,6 @@ def settings_page():
             flash(str(exc), "danger")
     return render_template(
         "settings.html",
-        auth_config=cfg,
-        settings_path=str(SETTINGS_PATH),
         webui_port=os.environ.get("WEBUI_PORT", "8111"),
         mirror_http_port=os.environ.get("MIRROR_HTTP_PORT", "8110"),
         use_nginx_mirror_http=str(os.environ.get("USE_NGINX_MIRROR_HTTP", "1")).lower() in {"1", "true", "yes", "on"},
@@ -1372,31 +1421,683 @@ def normalize_root_path(value: str) -> str:
     return raw.strip("/")
 
 
-SAFE_EXTRA_FLAGS = {
-    "--passive",
-    "--ignore-missing-release",
-    "--ignore-small-errors",
-    "--checksums",
-    "--ignore-release-gpg",
-    "--no-check-gpg",
-}
+RSYNC_EXTRA_CHOICES = [
+    {"value": "doc", "label": "doc", "help": "Dokumentation und README-Dateien im Archiv-Root spiegeln."},
+    {"value": "indices", "label": "indices", "help": "Zusätzliche Indexdateien spiegeln; kann viel Speicher benötigen."},
+    {"value": "tools", "label": "tools", "help": "Werkzeuge aus dem tools-Verzeichnis spiegeln."},
+    {"value": "trace", "label": "trace", "help": "Mirror-Trace-Dateien spiegeln; standardmäßig aktiv."},
+    {"value": "none", "label": "none", "help": "Alle Rsync-Extras ausdrücklich deaktivieren."},
+]
+RSYNC_EXTRA_VALUES = {item["value"] for item in RSYNC_EXTRA_CHOICES}
+
+# Zusätzliche profilbezogene Optionen aus debmirror(1), soweit sie sich sicher
+# als einzelnes argv-Element übergeben lassen. Basisoptionen mit eigenen
+# Formularfeldern (Host, Root, Suites, Sections, Architekturen, Keyring,
+# Include/Exclude, Timeout, Diff, Rsync-Extra usw.) werden hier nicht doppelt
+# angeboten. --dry-run bleibt eine Job-Aktion; --help/--version sind für Profile
+# nicht sinnvoll. Zugangsdaten werden ausschließlich in eigenen Feldern
+# verwaltet und dürfen nicht zusätzlich als freie debmirror-Option vorkommen.
+DEBMIRROR_EXTRA_OPTION_CATALOG = [
+    {"flag": "--debug", "key": "debug", "label": "Debug-Ausgabe", "takes_value": False, "help": "Sehr ausführliche Diagnoseausgabe einschließlich Transferdetails."},
+    {"flag": "--passive", "key": "passive", "label": "FTP Passive Mode", "takes_value": False, "help": "FTP im passiven Modus verwenden."},
+    {"flag": "--proxy", "key": "proxy", "label": "HTTP/FTP-Proxy", "takes_value": True, "placeholder": "http://proxy.example:3128/", "help": "Proxy-URL für HTTP- oder FTP-Transfers."},
+    {"flag": "--omit-suite-symlinks", "key": "omit_suite_symlinks", "label": "Suite-Symlinks auslassen", "takes_value": False, "help": "Keine Suite-zu-Codename-Symlinks erzeugen; nützlich bei Archiv-Repositories."},
+    {"flag": "--di-dist", "key": "di_dist", "label": "Debian-Installer Suites", "takes_value": True, "placeholder": "dists oder bookworm,trixie", "help": "Installer-Abbilder für die angegebenen Suites spiegeln."},
+    {"flag": "--di-arch", "key": "di_arch", "label": "Debian-Installer Architekturen", "takes_value": True, "placeholder": "arches oder amd64,arm64", "help": "Installer-Abbilder für die angegebenen Architekturen spiegeln."},
+    {"flag": "--checksums", "key": "checksums", "label": "Checksummen prüfen", "takes_value": False, "help": "Lokale Dateien zusätzlich anhand der Prüfsumme kontrollieren."},
+    {"flag": "--ignore-missing-release", "key": "ignore_missing_release", "label": "Fehlende Release-Datei tolerieren", "takes_value": False, "help": "Nicht abbrechen, wenn eine Release-Datei fehlt."},
+    {"flag": "--check-gpg", "key": "check_gpg", "label": "GPG-Prüfung erzwingen", "takes_value": False, "help": "Release-Signaturen ausdrücklich prüfen."},
+    {"flag": "--no-check-gpg", "key": "no_check_gpg", "label": "GPG-Prüfung deaktivieren", "takes_value": False, "help": "Release-Signaturen nicht prüfen; sicherheitsrelevant."},
+    {"flag": "--ignore-release-gpg", "key": "ignore_release_gpg", "label": "Fehlendes Release.gpg tolerieren", "takes_value": False, "help": "Fehlende Release.gpg-Datei nicht als Fehler behandeln."},
+    {"flag": "--ignore", "key": "ignore", "label": "Dateien nie löschen", "takes_value": True, "placeholder": "^/project/trace/", "help": "Perl-RegEx; passende lokale Dateien werden bei der Bereinigung nie entfernt."},
+    {"flag": "--exclude-deb-section", "key": "exclude_deb_section", "label": "Debian-Section ausschließen", "takes_value": True, "placeholder": "^(debug|games)$", "help": "Pakete anhand ihres Debian-Section-Feldes ausschließen."},
+    {"flag": "--limit-priority", "key": "limit_priority", "label": "Priorität begrenzen", "takes_value": True, "placeholder": "^(required|important|standard)$", "help": "Nur Pakete mit passender Debian-Priorität spiegeln."},
+    {"flag": "--exclude-field", "key": "exclude_field", "label": "Paketfeld ausschließen", "takes_value": True, "placeholder": "Package=^linux-image-debug", "help": "Format Feldname=RegEx; passende Binärpakete ausschließen."},
+    {"flag": "--include-field", "key": "include_field", "label": "Paketfeld einschließen", "takes_value": True, "placeholder": "Package=^linux-image", "help": "Format Feldname=RegEx; passende Binärpakete wieder einschließen."},
+    {"flag": "--max-batch", "key": "max_batch", "label": "Maximale Dateien pro Lauf", "takes_value": True, "value_type": "positive_int", "placeholder": "1000", "help": "Pro Lauf höchstens diese Anzahl Dateien herunterladen."},
+    {"flag": "--rsync-batch", "key": "rsync_batch", "label": "Dateien pro Rsync-Aufruf", "takes_value": True, "value_type": "positive_int", "placeholder": "200", "help": "Rsync-Downloads in Pakete dieser Größe aufteilen."},
+    {"flag": "--rsync-options", "key": "rsync_options", "label": "Zusätzliche Rsync-Optionen", "takes_value": True, "placeholder": "-aIL --partial --bwlimit=50000", "help": "Alternative/ergänzende Rsync-Optionen; sorgfältig prüfen."},
+    {"flag": "--precleanup", "key": "precleanup", "label": "Vor dem Spiegeln bereinigen", "takes_value": False, "help": "Lokale Bereinigung vor dem Download; Mirror kann währenddessen inkonsistent sein."},
+    {"flag": "--nocleanup", "key": "nocleanup", "label": "Bereinigung deaktivieren", "takes_value": False, "help": "Unbekannte lokale Dateien nicht entfernen."},
+    {"flag": "--skippackages", "key": "skippackages", "label": "Packages/Sources nicht neu laden", "takes_value": False, "help": "Metadaten nicht erneut laden, wenn sie sicher aktuell sind."},
+    {"flag": "--gzip-options", "key": "gzip_options", "label": "Gzip-Optionen", "takes_value": True, "placeholder": "-9 -n --rsyncable", "help": "Optionen für die Komprimierung nach Diff-Anwendung."},
+    {"flag": "--slow-cpu", "key": "slow_cpu", "label": "Langsame CPU", "takes_value": False, "help": "Weniger CPU-intensive Verarbeitung; impliziert diff=none."},
+    {"flag": "--state-cache-days", "key": "state_cache_days", "label": "State-Cache in Tagen", "takes_value": True, "value_type": "nonnegative_int", "placeholder": "7", "help": "Mirror-Zustand für diese Anzahl Tage zwischenspeichern."},
+    {"flag": "--ignore-small-errors", "key": "ignore_small_errors", "label": "Kleine Downloadfehler tolerieren", "takes_value": False, "help": "Fehlende einzelne Paketdateien tolerieren, Metadaten aber streng prüfen."},
+    {"flag": "--allow-dist-rename", "key": "allow_dist_rename", "label": "Distribution umbenennen erlauben", "takes_value": False, "help": "Alte Suite-Verzeichnisse automatisch auf Codenames umstellen."},
+    {"flag": "--disable-ssl-verification", "key": "disable_ssl_verification", "label": "TLS-Zertifikatsprüfung deaktivieren", "takes_value": False, "help": "Nur für bewusst verwendete selbstsignierte HTTPS-Quellen; sicherheitsrelevant."},
+    {"flag": "--debmarshal", "key": "debmarshal", "label": "Debmarshal-Modus", "takes_value": False, "help": "Metadatenstände nummeriert aufbewahren; normale Bereinigung wird deaktiviert."},
+    {"flag": "--retry-rsync-packages", "key": "retry_rsync_packages", "label": "Rsync-Paketmetadaten wiederholen", "takes_value": True, "value_type": "retry_int", "placeholder": "10", "help": "Experimentell: Anzahl Verbindungsversuche; 0 oder -1 bedeutet unbegrenzt."},
+]
+DEBMIRROR_EXTRA_OPTION_BY_FLAG = {item["flag"]: item for item in DEBMIRROR_EXTRA_OPTION_CATALOG}
+SAFE_EXTRA_FLAGS = {item["flag"] for item in DEBMIRROR_EXTRA_OPTION_CATALOG if not item.get("takes_value")}
+
+
+def validate_debmirror_extra_value(flag: str, value: str) -> str:
+    spec = DEBMIRROR_EXTRA_OPTION_BY_FLAG.get(flag)
+    if not spec or not spec.get("takes_value"):
+        raise ValueError(f"Zusatzoption benötigt keinen Wert: {flag}")
+    value = (value or "").strip()
+    if not value:
+        raise ValueError(f"Für {flag} muss ein Wert angegeben werden.")
+    if "\x00" in value or "\n" in value or "\r" in value:
+        raise ValueError(f"Ungültiger Wert für {flag}.")
+    value_type = spec.get("value_type", "text")
+    if value_type == "positive_int":
+        number = int(value)
+        if number < 1:
+            raise ValueError(f"Der Wert für {flag} muss mindestens 1 sein.")
+        return str(number)
+    if value_type == "nonnegative_int":
+        number = int(value)
+        if number < 0:
+            raise ValueError(f"Der Wert für {flag} darf nicht negativ sein.")
+        return str(number)
+    if value_type == "retry_int":
+        number = int(value)
+        if number < -1:
+            raise ValueError(f"Der Wert für {flag} muss -1, 0 oder positiv sein.")
+        return str(number)
+    if flag in {"--exclude-field", "--include-field"} and "=" not in value:
+        raise ValueError(f"{flag} erwartet Feldname=RegEx.")
+    if flag in {"--rsync-options", "--gzip-options"}:
+        try:
+            command_tokens = shlex_split(value)
+        except Exception as exc:
+            raise ValueError(f"{flag} enthält ungültige Anführungszeichen oder Escape-Zeichen.") from exc
+        if not command_tokens or len(command_tokens) > 40:
+            raise ValueError(f"{flag} muss zwischen 1 und 40 einzelne Optionen enthalten.")
+        normalized_tokens: List[str] = []
+        for token in command_tokens:
+            if not token.startswith("-") or token == "--":
+                raise ValueError(f"{flag} darf ausschließlich Optionsschalter enthalten: {token}")
+            if not re.fullmatch(r"[-A-Za-z0-9_.,=+:/%@]+", token):
+                raise ValueError(f"{flag} enthält einen nicht sicher übergebbaren Wert: {token}")
+            normalized_tokens.append(token)
+        if flag == "--rsync-options":
+            blocked_rsync_flags = {"-e", "--rsh", "--password-file", "--rsync-path"}
+            for token in normalized_tokens:
+                token_flag = token.split("=", 1)[0]
+                if token_flag in blocked_rsync_flags:
+                    raise ValueError(f"{token_flag} wird über eigene sichere Profilfelder verwaltet und ist in --rsync-options nicht zulässig.")
+        return " ".join(normalized_tokens)
+    return value
+
+
+def validate_extra_option_conflicts(tokens: List[str]) -> None:
+    flags = {token.split("=", 1)[0] for token in tokens}
+    conflicts = [
+        ({"--check-gpg", "--no-check-gpg"}, "--check-gpg und --no-check-gpg können nicht gleichzeitig verwendet werden."),
+        ({"--precleanup", "--nocleanup"}, "--precleanup und --nocleanup können nicht gleichzeitig verwendet werden."),
+        ({"--precleanup", "--debmarshal"}, "--precleanup und --debmarshal können nicht gleichzeitig verwendet werden."),
+        ({"--nocleanup", "--debmarshal"}, "--nocleanup und --debmarshal können nicht gleichzeitig verwendet werden."),
+    ]
+    for pair, message in conflicts:
+        if pair.issubset(flags):
+            raise ValueError(message)
 
 
 def parse_extra_options(value: str) -> List[str]:
-    """Parse a small whitelist of additional debmirror flags.
+    """Parse and validate additional debmirror profile options.
 
-    These are appended without shell=True, so shell injection is avoided. Unknown
-    flags are rejected instead of being executed blindly.
+    Every returned value is passed as one argv element without shell=True.
+    Unknown options, missing values and conflicting switches are rejected.
     """
     if not (value or "").strip():
         return []
     result: List[str] = []
     for token in shlex_split(value):
-        if token in SAFE_EXTRA_FLAGS:
-            result.append(token)
-        else:
+        flag, separator, raw_value = token.partition("=")
+        spec = DEBMIRROR_EXTRA_OPTION_BY_FLAG.get(flag)
+        if not spec:
             raise ValueError(f"Zusatzoption ist nicht freigegeben: {token}")
+        if spec.get("takes_value"):
+            if not separator:
+                raise ValueError(f"Zusatzoption benötigt einen Wert im Format {flag}=WERT.")
+            normalized = validate_debmirror_extra_value(flag, raw_value)
+            result.append(f"{flag}={normalized}")
+        else:
+            if separator:
+                raise ValueError(f"Zusatzoption akzeptiert keinen Wert: {flag}")
+            result.append(flag)
+    validate_extra_option_conflicts(result)
     return result
+
+
+def serialize_extra_options(tokens: Iterable[str]) -> str:
+    import shlex
+    return " ".join(shlex.quote(token) for token in tokens)
+
+
+def extra_options_from_form(form: Any) -> str:
+    selected = form.getlist("extra_flag") if hasattr(form, "getlist") else []
+    tokens: List[str] = []
+    seen = set()
+    for flag in selected:
+        flag = (flag or "").strip()
+        if flag in seen:
+            continue
+        seen.add(flag)
+        spec = DEBMIRROR_EXTRA_OPTION_BY_FLAG.get(flag)
+        if not spec:
+            raise ValueError(f"Unbekannte Zusatzoption: {flag}")
+        if spec.get("takes_value"):
+            value = form.get(f"extra_value_{spec['key']}", "")
+            tokens.append(f"{flag}={validate_debmirror_extra_value(flag, value)}")
+        else:
+            tokens.append(flag)
+    validate_extra_option_conflicts(tokens)
+    return serialize_extra_options(tokens)
+
+
+def extra_option_selection(value: str) -> Dict[str, str]:
+    """Return a tolerant form representation, even for conflicting legacy input."""
+    selected: Dict[str, str] = {}
+    try:
+        tokens = shlex_split(value or "")
+    except Exception:
+        tokens = []
+    for token in tokens:
+        flag, separator, raw_value = token.partition("=")
+        spec = DEBMIRROR_EXTRA_OPTION_BY_FLAG.get(flag)
+        if not spec:
+            continue
+        if spec.get("takes_value"):
+            selected[flag] = raw_value if separator else ""
+        else:
+            selected[flag] = ""
+    return selected
+
+
+MANUAL_EXTRA_BLOCKED_FLAGS = {
+    "--host", "--root", "--method", "--dist", "--section", "--arch",
+    "--source", "--nosource", "--keyring", "--user", "--passwd",
+    "--config-file", "--dry-run", "--help", "--version", "--progress",
+    "--verbose", "--getcontents", "--i18n", "--timeout", "--rsync-extra",
+    "--include", "--exclude", "--cleanup", "--postcleanup", "--diff",
+}
+
+
+def parse_manual_extra_options(value: str) -> List[str]:
+    """Validate expert-mode debmirror argv without invoking a shell.
+
+    Only long options are accepted. Core profile options and credentials stay in
+    dedicated fields so they cannot be duplicated or silently override the UI.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return []
+    if len(raw) > 4096:
+        raise ValueError("Manuelle Zusatzoptionen sind auf 4096 Zeichen begrenzt.")
+    tokens = shlex_split(raw)
+    if len(tokens) > 50:
+        raise ValueError("Es sind maximal 50 manuelle Zusatzoptionen erlaubt.")
+    result: List[str] = []
+    seen_flags: set[str] = set()
+    for token in tokens:
+        if not token.startswith("--") or token == "--":
+            raise ValueError(f"Manuelle Zusatzoption muss mit -- beginnen: {token}")
+        if "\x00" in token or "\n" in token or "\r" in token:
+            raise ValueError("Ungültige Zeichen in manuellen Zusatzoptionen.")
+        flag = token.split("=", 1)[0]
+        if flag in MANUAL_EXTRA_BLOCKED_FLAGS:
+            raise ValueError(f"{flag} wird über ein eigenes Profilfeld verwaltet und ist im Expertenfeld nicht erlaubt.")
+        if flag in DEBMIRROR_EXTRA_OPTION_BY_FLAG:
+            raise ValueError(f"{flag} ist bereits in der Auswahlliste vorhanden. Bitte dort auswählen.")
+        if flag in seen_flags:
+            raise ValueError(f"Manuelle Zusatzoption doppelt angegeben: {flag}")
+        seen_flags.add(flag)
+        result.append(token)
+    return result
+
+
+def serialize_manual_extra_options(value: str) -> str:
+    return serialize_extra_options(parse_manual_extra_options(value))
+
+
+def mirror_remote_password_plain(mirror: Dict[str, Any]) -> str:
+    encrypted = str(mirror.get("remote_password_enc") or "")
+    if not encrypted:
+        return ""
+    return decrypt_secret(encrypted)
+
+
+def mirror_remote_password_set(mirror: Dict[str, Any]) -> bool:
+    encrypted = str(mirror.get("remote_password_enc") or "")
+    return bool(encrypted and mirror_remote_password_plain(mirror))
+
+
+def ssh_key_fingerprint(path: Path) -> str:
+    if not path.exists() or not shutil.which("ssh-keygen"):
+        return ""
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-lf", str(path)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().split()[1]
+    except Exception:
+        pass
+    return ""
+
+
+def allowed_ssh_key_name(value: str, must_exist: bool = True) -> str:
+    name = (value or "").strip()
+    if not name:
+        return ""
+    if name != Path(name).name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise ValueError("Ungültiger SSH-Schlüsselname.")
+    path = (SSH_KEY_DIR / name).resolve(strict=False)
+    base = SSH_KEY_DIR.resolve(strict=False)
+    if path.parent != base:
+        raise ValueError("SSH-Schlüssel muss aus dem verwalteten SSH-Schlüsselverzeichnis stammen.")
+    if must_exist and (not path.exists() or not path.is_file() or path.is_symlink()):
+        raise ValueError(f"SSH-Privatschlüssel nicht gefunden: {name}")
+    if path.exists():
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+    return name
+
+
+def validate_ssh_private_key_file(path: Path) -> None:
+    if not shutil.which("ssh-keygen"):
+        raise ValueError("ssh-keygen fehlt im Container. Container mit der aktuellen Version neu bauen.")
+    if not path.exists() or not path.is_file() or path.is_symlink():
+        raise ValueError("SSH-Privatschlüsseldatei ist ungültig.")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    result = subprocess.run(
+        ["ssh-keygen", "-y", "-P", "", "-f", str(path)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        detail = (result.stderr or result.stdout or "").strip().lower()
+        if "passphrase" in detail or "incorrect passphrase" in detail:
+            raise ValueError("Passwortgeschützte SSH-Privatschlüssel werden für unbeaufsichtigte Jobs nicht unterstützt. Bitte einen eigenen, eingeschränkten Schlüssel ohne Passphrase verwenden.")
+        raise ValueError("Die hochgeladene Datei ist kein verwendbarer OpenSSH-Privatschlüssel.")
+
+
+def save_uploaded_ssh_private_key(uploaded: Any) -> str:
+    if uploaded is None or not getattr(uploaded, "filename", ""):
+        return ""
+    original_name = secure_filename(str(uploaded.filename)) or "ssh-key"
+    data = uploaded.read(2 * 1024 * 1024 + 1)
+    if len(data) > 2 * 1024 * 1024:
+        raise ValueError("SSH-Privatschlüssel ist größer als 2 MiB.")
+    if not data.strip() or b"\x00" in data:
+        raise ValueError("SSH-Privatschlüsseldatei ist leer oder ungültig.")
+    SSH_KEY_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        SSH_KEY_DIR.chmod(0o700)
+    except OSError:
+        pass
+    digest = hashlib.sha256(data).hexdigest()
+    stem = secure_filename(Path(original_name).stem) or "ssh-key"
+    final_name = f"{stem}-{digest[:12]}"
+    final_path = SSH_KEY_DIR / final_name
+    if final_path.exists():
+        if final_path.read_bytes() != data:
+            raise ValueError("SSH-Schlüsselname kollidiert mit einer vorhandenen Datei.")
+        validate_ssh_private_key_file(final_path)
+        return final_name
+    fd, temp_name = tempfile.mkstemp(prefix="upload-", dir=str(SSH_KEY_DIR))
+    temp_path = Path(temp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        validate_ssh_private_key_file(temp_path)
+        temp_path.replace(final_path)
+        final_path.chmod(0o600)
+        return final_name
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def list_ssh_private_keys() -> List[Dict[str, Any]]:
+    SSH_KEY_DIR.mkdir(parents=True, exist_ok=True)
+    items: List[Dict[str, Any]] = []
+    for path in sorted(SSH_KEY_DIR.iterdir(), key=lambda item: item.name.lower()):
+        if not path.is_file() or path.is_symlink() or path.name.startswith("upload-"):
+            continue
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        items.append({
+            "name": path.name,
+            "fingerprint": ssh_key_fingerprint(path),
+            "size": path.stat().st_size,
+        })
+    return items
+
+
+def validate_mirror_remote_credentials(method: str, remote_user: str, remote_password_enc: str) -> None:
+    user = (remote_user or "").strip()
+    if len(user) > 255 or any(ch in user for ch in ("\x00", "\r", "\n")):
+        raise ValueError("Der Remote-Benutzer enthält unzulässige Steuerzeichen oder ist zu lang.")
+    if method == "rsync" and (user or remote_password_enc):
+        raise ValueError("Benutzer/Passwort ist für die Methode rsync nicht zulässig. Verwende dafür die separate SSH-Schlüsselanmeldung.")
+    if remote_password_enc and not user:
+        raise ValueError("Für ein gespeichertes Remote-Passwort muss ein Remote-Benutzer angegeben werden.")
+    if remote_password_enc:
+        password = decrypt_secret(remote_password_enc)
+        if not password:
+            raise ValueError("Das gespeicherte Remote-Passwort kann nicht entschlüsselt werden. Bitte neu setzen.")
+        if len(password) > 4096 or any(ch in password for ch in ("\x00", "\r", "\n")):
+            raise ValueError("Das gespeicherte Remote-Passwort enthält unzulässige Steuerzeichen oder ist zu lang. Bitte neu setzen.")
+
+
+def validate_non_rsync_host_value(host: str) -> str:
+    value = (host or "").strip()
+    if not value or "://" in value or "/" in value or "@" in value or any(ch.isspace() for ch in value):
+        raise ValueError("Im Host-Feld darf nur ein Hostname oder eine IP-Adresse stehen; Protokoll, Zugangsdaten und Pfade gehören in die eigenen Felder.")
+    try:
+        parsed = urllib.parse.urlparse("//" + value)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Das Host-Feld enthält eine ungültige Port- oder IPv6-Angabe.") from exc
+    if not parsed.hostname or parsed.path not in {"", "/"}:
+        raise ValueError("Das Host-Feld enthält keinen gültigen Hostnamen oder keine gültige IP-Adresse.")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("Der Port im Host-Feld muss zwischen 1 und 65535 liegen.")
+    return value
+
+
+def rsync_options_value(mirror: Dict[str, Any]) -> str:
+    for token in parse_extra_options(str(mirror.get("extra_options") or "")):
+        if token.startswith("--rsync-options="):
+            return token.split("=", 1)[1]
+    return ""
+
+
+def validate_rsync_host_value(host: str) -> str:
+    value = (host or "").strip()
+    if not value or "://" in value or "/" in value or "@" in value or any(ch.isspace() for ch in value):
+        raise ValueError("Für Rsync muss im Host-Feld nur ein Hostname oder eine IP-Adresse stehen.")
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            if ipaddress.ip_address(value[1:-1]).version != 6:
+                raise ValueError
+            return value
+        except ValueError as exc:
+            raise ValueError("Die IPv6-Adresse im Host-Feld ist ungültig.") from exc
+    if ":" in value:
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            raise ValueError("Einen Port bitte nicht im Host-Feld angeben. Für direkten Rsync-Daemon-Zugriff kann --port in den Rsync-Optionen verwendet werden; bei SSH steht das Feld SSH-Port bereit.")
+        raise ValueError("IPv6-Adressen im Host-Feld bitte in eckigen Klammern angeben, z. B. [2001:db8::1].")
+    try:
+        ipaddress.ip_address(value)
+        return value
+    except ValueError:
+        pass
+    if len(value) > 253 or not re.fullmatch(r"(?=.{1,253}\.?$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?", value):
+        raise ValueError("Das Host-Feld für Rsync enthält keinen gültigen Hostnamen oder keine gültige IP-Adresse.")
+    return value
+
+
+def validate_rsync_module_path(root_path: str) -> str:
+    raw = (root_path or "").strip()
+    if raw.startswith(("/", "\\")):
+        raise ValueError("Für Rsync muss der Root-Pfad als Modulname ohne führenden Schrägstrich angegeben werden.")
+    value = normalize_root_path(raw)
+    if not value or value in {".", ".."} or value.startswith(":"):
+        raise ValueError("Für Rsync muss der Root-Pfad mit einem Rsync-Modulnamen beginnen.")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("Der Rsync-Modulpfad darf keine leeren Segmente, '.' oder '..' enthalten.")
+    if not re.fullmatch(r"[A-Za-z0-9._+-]+", parts[0]):
+        raise ValueError("Der erste Teil des Root-Pfads muss ein gültiger Rsync-Modulname sein.")
+    if any(not re.fullmatch(r"[A-Za-z0-9._+@%=-]+", part) for part in parts[1:]):
+        raise ValueError("Der Unterpfad des Rsync-Moduls enthält unzulässige Zeichen.")
+    return value
+
+
+def validate_rsync_ssh_settings(mirror: Dict[str, Any], require_key: bool = True) -> None:
+    enabled = bool(int(mirror.get("rsync_ssh_enabled") or 0))
+    if not enabled:
+        return
+    if str(mirror.get("method") or "") != "rsync":
+        raise ValueError("SSH-Schlüsselanmeldung kann nur mit der Transfermethode rsync verwendet werden.")
+    if str(mirror.get("remote_user") or "").strip() or str(mirror.get("remote_password_enc") or "").strip():
+        raise ValueError("SSH-Schlüsselanmeldung kann nicht mit Remote-Benutzer/Passwort kombiniert werden.")
+    user = str(mirror.get("rsync_ssh_user") or "").strip()
+    if not user:
+        raise ValueError("Für die SSH-Schlüsselanmeldung muss ein SSH-Benutzer angegeben werden.")
+    if any(ch.isspace() for ch in user) or any(ch in user for ch in "@:/\\") or any(ord(ch) < 32 for ch in user):
+        raise ValueError("Der SSH-Benutzer enthält unzulässige Zeichen.")
+    validate_rsync_host_value(str(mirror.get("host") or ""))
+    validate_rsync_module_path(str(mirror.get("root_path") or ""))
+    try:
+        port = int(mirror.get("rsync_ssh_port") or 22)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SSH-Port muss eine Zahl sein.") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("SSH-Port muss zwischen 1 und 65535 liegen.")
+    key_name = str(mirror.get("rsync_ssh_key") or "").strip()
+    if not key_name:
+        raise ValueError("Für die SSH-Schlüsselanmeldung muss ein privater Schlüssel ausgewählt oder hochgeladen werden.")
+    if require_key:
+        allowed_ssh_key_name(key_name, must_exist=True)
+    else:
+        allowed_ssh_key_name(key_name, must_exist=False)
+    options = rsync_options_value(mirror)
+    if options:
+        try:
+            option_tokens = shlex_split(options)
+        except Exception as exc:
+            raise ValueError("Zusätzliche Rsync-Optionen können nicht ausgewertet werden.") from exc
+        blocked = []
+        for index, token in enumerate(option_tokens):
+            flag = token.split("=", 1)[0]
+            if flag in {"-e", "--rsh", "--password-file", "--port"} or token.startswith(("--rsh=", "--password-file=", "--port=")):
+                blocked.append(token)
+            if index and option_tokens[index - 1] == "-e":
+                blocked.append(token)
+        if blocked:
+            raise ValueError("Bei aktiver SSH-Schlüsselanmeldung dürfen --rsync-options keine eigene Remote-Shell, Passwortdatei oder Rsync-Daemon-Port setzen.")
+
+
+def rsync_ssh_rsh_command(mirror: Dict[str, Any]) -> str:
+    validate_rsync_ssh_settings(mirror, require_key=True)
+    if not shutil.which("ssh"):
+        raise ValueError("SSH-Client fehlt im Container. Bitte den Container mit der aktuellen Version neu bauen.")
+    key_path = SSH_KEY_DIR / allowed_ssh_key_name(str(mirror.get("rsync_ssh_key") or ""), must_exist=True)
+    try:
+        key_path.chmod(0o600)
+        SSH_KNOWN_HOSTS_PATH.chmod(0o600)
+    except OSError:
+        pass
+    port = int(mirror.get("rsync_ssh_port") or 22)
+    user = str(mirror.get("rsync_ssh_user") or "").strip()
+    strict_mode = "accept-new" if bool(int(mirror.get("rsync_ssh_accept_new_host_key") or 0)) else "yes"
+    parts = [
+        "ssh", "-i", str(key_path), "-p", str(port), "-l", user,
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", f"StrictHostKeyChecking={strict_mode}",
+        "-o", f"UserKnownHostsFile={SSH_KNOWN_HOSTS_PATH}",
+    ]
+    import shlex
+    return shlex.join(parts)
+
+
+def rsync_options_with_ssh(mirror: Dict[str, Any]) -> str:
+    import shlex
+    base = rsync_options_value(mirror).strip() or "-aIL --partial"
+    rsh = rsync_ssh_rsh_command(mirror)
+    return f"{base} --rsh={shlex.quote(rsh)}"
+
+
+def _perl_single_quoted(value: str) -> str:
+    return "'" + (value or "").replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def create_job_auth_config(mirror: Dict[str, Any], job_id: int) -> Optional[Path]:
+    method = str(mirror.get("method") or "")
+    if method == "rsync":
+        return None
+    user = str(mirror.get("remote_user") or "").strip()
+    password = mirror_remote_password_plain(mirror)
+    if not user and not password:
+        return None
+    validate_mirror_remote_credentials(method, user, str(mirror.get("remote_password_enc") or ""))
+    JOB_AUTH_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    path = JOB_AUTH_CONFIG_DIR / f"job-{int(job_id)}-{secrets.token_hex(8)}.conf"
+    content = ["# Temporäre Zugangsdaten für einen DebMirror-Manager-Job"]
+    if user:
+        content.append(f"$user={_perl_single_quoted(user)};")
+    if password:
+        content.append(f"$passwd={_perl_single_quoted(password)};")
+    content.append("1;")
+    path.write_text("\n".join(content) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
+def display_debmirror_command(mirror: Dict[str, Any], dry_run: bool = False, validate_keyring: bool = True) -> List[str]:
+    cmd = build_debmirror_command(mirror, dry_run=dry_run, validate_keyring=validate_keyring)
+    if str(mirror.get("method") or "") != "rsync":
+        target = cmd.pop() if cmd else ""
+        user = str(mirror.get("remote_user") or "").strip()
+        if user:
+            cmd.append(f"--user={user}")
+        if mirror.get("remote_password_enc"):
+            cmd.append("--passwd=<verschlüsselt gespeichert>")
+        if target:
+            cmd.append(target)
+    return cmd
+
+
+def normalize_rsync_extra_values(values: Iterable[str]) -> str:
+    result: List[str] = []
+    for raw in values:
+        for value in csv_to_list(raw or ""):
+            if value not in RSYNC_EXTRA_VALUES:
+                raise ValueError(f"Ungültiger Rsync-Extra-Wert: {value}")
+            if value not in result:
+                result.append(value)
+    if "none" in result and len(result) > 1:
+        raise ValueError("Rsync Extra 'none' kann nicht zusammen mit anderen Werten verwendet werden.")
+    return ",".join(result)
+
+
+def normalize_mirror_option_compatibility(values: Dict[str, Any]) -> None:
+    """Store one unambiguous value for options that imply another setting."""
+    extra_options = parse_extra_options(str(values.get("extra_options") or ""))
+    flags = {item.split("=", 1)[0] for item in extra_options}
+    if "--slow-cpu" in flags:
+        values["diff_mode"] = "none"
+    if {"--precleanup", "--nocleanup", "--debmarshal"} & flags:
+        values["postcleanup"] = 0
+
+
+def validate_mirror_configuration(values: Dict[str, Any], require_ssh_key: bool = True) -> None:
+    method = str(values.get("method") or "")
+    if method not in {"rsync", "http", "https", "ftp"}:
+        raise ValueError("Ungültige Methode.")
+    if str(values.get("source_mode") or "nosource") not in {"source", "nosource"}:
+        raise ValueError("Ungültige Quellpaket-Einstellung.")
+    if str(values.get("diff_mode") or "none") not in {"use", "mirror", "none"}:
+        raise ValueError("Ungültiger Diff-Modus.")
+    if method == "rsync":
+        validate_rsync_host_value(str(values.get("host") or ""))
+        validate_rsync_module_path(str(values.get("root_path") or ""))
+    else:
+        validate_non_rsync_host_value(str(values.get("host") or ""))
+    for field, label in (("dists", "Distributionen"), ("sections", "Komponenten/Sections"), ("archs", "Architekturen")):
+        if not csv_to_list(str(values.get(field) or "")):
+            raise ValueError(f"{label} muss mindestens einen gültigen Wert enthalten.")
+    timeout = values.get("timeout_seconds")
+    if timeout not in (None, ""):
+        try:
+            timeout_number = int(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Timeout muss eine ganze Zahl sein.") from exc
+        if timeout_number < 1:
+            raise ValueError("Timeout muss mindestens 1 Sekunde betragen.")
+    validate_mirror_remote_credentials(method, str(values.get("remote_user") or ""), str(values.get("remote_password_enc") or ""))
+    validate_rsync_ssh_settings(values, require_key=require_ssh_key)
+    extra_options = parse_extra_options(str(values.get("extra_options") or ""))
+    flags = {item.split("=", 1)[0] for item in extra_options}
+    if "--passive" in flags and method != "ftp":
+        raise ValueError("--passive ist nur mit der Transfermethode FTP sinnvoll.")
+    if "--disable-ssl-verification" in flags and method != "https":
+        raise ValueError("--disable-ssl-verification ist nur mit der Transfermethode HTTPS zulässig.")
+    if "--proxy" in flags and method not in {"http", "https", "ftp"}:
+        raise ValueError("--proxy kann nur mit HTTP, HTTPS oder FTP verwendet werden.")
+    if "--no-check-gpg" in flags and (str(values.get("keyring") or "").strip() or str(values.get("keyring_fingerprint") or "").strip()):
+        raise ValueError("Ein Keyring/Fingerprint kann nicht gleichzeitig mit deaktivierter GPG-Prüfung verwendet werden.")
+    if "--no-check-gpg" in flags and "--ignore-release-gpg" in flags:
+        raise ValueError("--ignore-release-gpg ist bei vollständig deaktivierter GPG-Prüfung wirkungslos.")
+    if "--slow-cpu" in flags and str(values.get("diff_mode") or "") != "none":
+        raise ValueError("--slow-cpu erfordert Diff-Modus none.")
+    if "--gzip-options" in flags and str(values.get("diff_mode") or "none") == "none":
+        raise ValueError("--gzip-options wird nur beim Anwenden von Diff-Dateien verwendet und ist mit Diff-Modus none wirkungslos.")
+    cleanup_flags = {"--precleanup", "--nocleanup", "--debmarshal"} & flags
+    if cleanup_flags and bool(int(values.get("postcleanup") or 0)):
+        raise ValueError("Post-Cleanup darf nicht gleichzeitig mit einem alternativen Bereinigungsmodus aktiviert sein.")
+    rsync_specific = {"--rsync-options", "--rsync-batch", "--retry-rsync-packages"} & flags
+    if method != "rsync" and str(values.get("rsync_extra") or "") == "none" and rsync_specific:
+        raise ValueError("Rsync-spezifische Optionen werden nicht verwendet, wenn die Hauptmethode nicht rsync ist und Rsync Extra auf none steht.")
+    package_rsync_only = {"--rsync-batch", "--retry-rsync-packages"} & flags
+    if method != "rsync" and package_rsync_only:
+        raise ValueError("--rsync-batch und --retry-rsync-packages wirken nur, wenn Pakete mit der Hauptmethode rsync geladen werden.")
+    schedule_mode = str(values.get("schedule_mode") or "manual")
+    if schedule_mode not in {"manual", "daily", "weekly", "interval"}:
+        raise ValueError("Ungültiger Zeitplanmodus.")
+    if schedule_mode in {"daily", "weekly"}:
+        validate_hhmm(str(values.get("schedule_time") or ""))
+    weekday = int(values.get("schedule_weekday") if values.get("schedule_weekday") not in (None, "") else 6)
+    if not 0 <= weekday <= 6:
+        raise ValueError("Wochentag muss zwischen Montag und Sonntag liegen.")
+    interval = int(values.get("interval_hours") or 24)
+    if not 1 <= interval <= 8760:
+        raise ValueError("Intervall muss zwischen 1 und 8760 Stunden liegen.")
+
+
+def mirror_form_option_context(mirror: Dict[str, Any]) -> Dict[str, Any]:
+    selected_options = extra_option_selection(str(mirror.get("extra_options") or ""))
+    raw_rsync_extra = str(mirror.get("rsync_extra") or "").strip()
+    selected_rsync: List[str] = []
+    if raw_rsync_extra:
+        try:
+            selected_rsync = csv_to_list(normalize_rsync_extra_values([raw_rsync_extra]))
+        except Exception:
+            # Older versions suggested --bwlimit in the wrong field. Present that
+            # legacy value as --rsync-options so saving the form migrates it.
+            if raw_rsync_extra.startswith("-") and "--rsync-options" not in selected_options:
+                selected_options["--rsync-options"] = raw_rsync_extra
+    return {
+        "debmirror_extra_catalog": DEBMIRROR_EXTRA_OPTION_CATALOG,
+        "selected_debmirror_options": selected_options,
+        "rsync_extra_choices": RSYNC_EXTRA_CHOICES,
+        "selected_rsync_extra": selected_rsync,
+        "remote_password_set": mirror_remote_password_set(mirror),
+        "ssh_private_keys": list_ssh_private_keys(),
+    }
 
 
 def allowed_keyring_path(value: str) -> str:
@@ -1452,6 +2153,34 @@ def get_last_job_for_script(script_name: str) -> Optional[Dict[str, Any]]:
             (script_name,),
         ).fetchone()
         return row_to_dict(row) if row else None
+
+
+def latest_size_changing_job_finished_at(*, mirror_id: Optional[int] = None, script_name: str = "") -> str:
+    """Liefert den letzten beendeten echten Job, der ein Ziel verändert haben kann.
+
+    Das Alter des Cache-Eintrags allein darf keinen Größenwert als veraltet
+    markieren. Wartende Jobs, Dry-Runs und Fehler vor dem Prozessstart zählen
+    deshalb nicht als Änderung des Zielinhalts.
+    """
+    if mirror_id is None and not (script_name or "").strip():
+        return ""
+    where = ["dry_run=0", "finished_at IS NOT NULL"]
+    params: List[Any] = []
+    if mirror_id is not None:
+        where.extend(["job_type='mirror'", "mirror_id=?"])
+        params.append(int(mirror_id))
+    else:
+        where.extend(["job_type='script'", "script_name=?"])
+        params.append((script_name or "").strip())
+    # Erfolg wurde ausgeführt. Fehler/Stop zählen nur mit vergebener PID; damit
+    # bleiben Vorprüfungsfehler und aus der Queue entfernte Jobs ausgeschlossen.
+    where.append("(status='success' OR (status IN ('error','stopped') AND pid IS NOT NULL))")
+    with db() as con:
+        row = con.execute(
+            f"SELECT finished_at FROM jobs WHERE {' AND '.join(where)} ORDER BY finished_at DESC, id DESC LIMIT 1",
+            tuple(params),
+        ).fetchone()
+    return str(row["finished_at"] or "") if row else ""
 
 
 def get_running_job_for_script(script_name: str) -> Optional[Dict[str, Any]]:
@@ -1529,6 +2258,10 @@ def mirror_dashboard_issue(mirror: Dict[str, Any]) -> str:
             normalize_target_path(str(mirror.get("target_path") or ""))
     except Exception:
         issues.append("Zielpfad")
+    try:
+        validate_mirror_configuration(mirror, require_ssh_key=True)
+    except Exception:
+        issues.append("Optionen/Anmeldung")
     if issues:
         return "Profil prüfen: " + ", ".join(dict.fromkeys(issues))
     return ""
@@ -1728,7 +2461,7 @@ def _size_worker(path_value: str) -> None:
         )
     except subprocess.TimeoutExpired:
         old = _size_cache_row(path_value) or {}
-        _write_size_cache(path_value, status="timeout", exists_flag=1 if Path(path_value).exists() else 0, bytes_value=old.get("bytes"), error="Größenberechnung dauerte zu lange. Der letzte bekannte Wert bleibt erhalten.", started_at=started, calculated_at=now_iso())
+        _write_size_cache(path_value, status="timeout", exists_flag=1 if Path(path_value).exists() else 0, bytes_value=old.get("bytes"), error="Größenberechnung dauerte zu lange. Der Wert der letzten Prüfung bleibt erhalten.", started_at=started, calculated_at=now_iso())
     except Exception as exc:
         old = _size_cache_row(path_value) or {}
         _write_size_cache(path_value, status="error", exists_flag=1 if Path(path_value).exists() else 0, bytes_value=old.get("bytes"), error=str(exc), started_at=started, calculated_at=now_iso())
@@ -1791,7 +2524,23 @@ def request_size_calculation(path_value: str, force: bool = False, *, queue_when
         log_webui_exception("request_size_calculation", exc)
         return False
 
-def cached_path_size_info(path_value: str, *, force_refresh: bool = False, auto_refresh: bool = False) -> Dict[str, Any]:
+def _size_value_is_outdated(row: Optional[Dict[str, Any]], content_changed_at: str) -> bool:
+    if not row or row.get("bytes") is None:
+        return False
+    changed = parse_datetime_flexible(str(content_changed_at or ""))
+    if not changed:
+        return False
+    calculated = parse_datetime_flexible(str(row.get("calculated_at") or ""))
+    return calculated is None or changed > calculated
+
+
+def cached_path_size_info(
+    path_value: str,
+    *,
+    force_refresh: bool = False,
+    auto_refresh: bool = False,
+    content_changed_at: str = "",
+) -> Dict[str, Any]:
     raw_path = (path_value or "").strip()
     if not raw_path:
         return {"exists": False, "bytes": 0, "size_h": "0 B", "files": None, "dirs": None, "error": "Kein Pfad gesetzt.", "status": "missing", "calculated_at": "", "started_at": ""}
@@ -1801,27 +2550,26 @@ def cached_path_size_info(path_value: str, *, force_refresh: bool = False, auto_
         return {"exists": False, "bytes": 0, "size_h": "0 B", "files": None, "dirs": None, "error": "Pfad existiert noch nicht.", "status": "missing", "calculated_at": "", "started_at": ""}
 
     row = _size_cache_row(path_value)
-    now = local_now()
-    stale = True
+    cache_expired = True
     if row and row.get("calculated_at"):
         try:
             calculated = dt.datetime.fromisoformat(str(row["calculated_at"]))
-            stale = (now - calculated).total_seconds() > size_cache_ttl_seconds()
+            cache_expired = (local_now() - calculated).total_seconds() > size_cache_ttl_seconds()
         except Exception:
-            stale = True
-    if force_refresh or (auto_refresh and (not row or stale)):
+            cache_expired = True
+    if force_refresh or (auto_refresh and (not row or cache_expired)):
         request_size_calculation(path_value, force=force_refresh)
 
-    # Nach dem Anstoß erneut lesen, damit der Status 'calculating' sichtbar wird.
+    # Nach dem Anstoß erneut lesen, damit 'calculating' sofort sichtbar wird.
     row = _size_cache_row(path_value) or row
     if row and row.get("bytes") is not None:
         error = str(row.get("error") or "")
         status = str(row.get("status") or "ok")
-        if stale and status == "ok":
+        if status == "ok" and _size_value_is_outdated(row, content_changed_at):
             status = "stale"
         if str(row.get("path") or "") in SIZE_CALC_RUNNING:
             status = "calculating"
-            error = "Größe wird im Hintergrund aktualisiert. Angezeigt wird der letzte bekannte Wert."
+            error = "Größe wird im Hintergrund aktualisiert. Angezeigt wird der Wert der letzten Prüfung."
         return {
             "exists": bool(row.get("exists_flag")),
             "bytes": row.get("bytes"),
@@ -1843,6 +2591,37 @@ def cached_path_size_info(path_value: str, *, force_refresh: bool = False, auto_
     return {"exists": True, "bytes": None, "size_h": "Unbekannt", "files": None, "dirs": None, "error": "Noch kein Größenwert vorhanden. Starte die Berechnung im Profil manuell oder nutze die automatische Berechnung nach Job-Ruhefenster.", "status": "unknown", "calculated_at": "", "started_at": ""}
 
 
+SIZE_STATUS_PRESENTATION: Dict[str, Tuple[str, str, str]] = {
+    "ok": ("aktuell", "ok", "Seit der letzten Größenprüfung wurde kein weiterer echter Job für dieses Ziel beendet."),
+    "stale": ("veraltet", "warning", "Nach der letzten Größenprüfung wurde ein echter Job für dieses Ziel beendet. Mit Aktualisieren wird der aktuelle Wert neu ermittelt."),
+    "calculating": ("wird aktualisiert", "running", "Die Größe wird im Hintergrund neu berechnet; bis zum Abschluss wird der Wert der letzten Prüfung angezeigt."),
+    "queued": ("wartet", "queued", "Die Größenberechnung wartet auf freie Kapazität."),
+    "pending": ("vorgemerkt", "queued", "Die Größenberechnung ist für das nächste freie Ruhefenster vorgemerkt."),
+    "wartet": ("wartet", "queued", "Die Größenberechnung wartet auf freie Kapazität."),
+    "vorgemerkt": ("vorgemerkt", "queued", "Die Größenberechnung ist für das nächste freie Ruhefenster vorgemerkt."),
+    "missing": ("Pfad fehlt", "warning", "Das konfigurierte Zielverzeichnis existiert noch nicht."),
+    "unknown": ("noch nicht berechnet", "muted", "Für dieses Zielverzeichnis ist noch kein Größenwert vorhanden."),
+    "timeout": ("Zeitüberschreitung", "error", "Die letzte Größenberechnung hat das Zeitlimit überschritten."),
+    "error": ("Fehler", "error", "Die Größenberechnung ist fehlgeschlagen."),
+    "nicht gesetzt": ("nicht gesetzt", "muted", "Für dieses Benutzerskript ist kein Zielverzeichnis zur Größenberechnung hinterlegt."),
+}
+
+
+def size_status_label(status: Any) -> str:
+    value = str(status or "").strip()
+    return SIZE_STATUS_PRESENTATION.get(value, (value or "unbekannt", "muted", ""))[0]
+
+
+def size_status_class(status: Any) -> str:
+    value = str(status or "").strip()
+    return SIZE_STATUS_PRESENTATION.get(value, ("", "muted", ""))[1]
+
+
+def size_status_title(status: Any) -> str:
+    value = str(status or "").strip()
+    return SIZE_STATUS_PRESENTATION.get(value, ("", "muted", "Kein zusätzlicher Statushinweis verfügbar."))[2]
+
+
 def path_size_info(path_value: str, timeout_seconds: int = 20) -> Dict[str, Any]:
     # Rückwärtskompatible API: nicht mehr blockierend berechnen.
     return cached_path_size_info(path_value)
@@ -1850,10 +2629,57 @@ def path_size_info(path_value: str, timeout_seconds: int = 20) -> Dict[str, Any]
 
 def mirror_stats(mirror: Dict[str, Any], *, auto_refresh: bool = False) -> Dict[str, Any]:
     try:
-        return cached_path_size_info(mirror.get("target_path") or "", auto_refresh=auto_refresh)
+        return cached_path_size_info(
+            mirror.get("target_path") or "",
+            auto_refresh=auto_refresh,
+            content_changed_at=latest_size_changing_job_finished_at(mirror_id=int(mirror.get("id") or 0)) if mirror.get("id") else "",
+        )
     except Exception as exc:
         log_webui_exception(f"mirror_stats {mirror.get('name') if isinstance(mirror, dict) else ''}", exc)
         return {"exists": False, "bytes": None, "size_h": "Unbekannt", "files": None, "dirs": None, "error": f"Größenstatus konnte nicht gelesen werden: {exc}", "status": "error", "calculated_at": "", "started_at": ""}
+
+
+def configured_size_target_paths(*, existing_directories_only: bool = False) -> List[str]:
+    """Return all unique configured mirror/script target directories.
+
+    The same directory can be referenced by more than one profile or script.
+    It must only be calculated once per bulk refresh.
+    """
+    candidates: List[str] = []
+    try:
+        candidates.extend(str(item.get("target_path") or "") for item in list_mirrors())
+    except Exception as exc:
+        log_webui_exception("configured_size_target_paths mirrors", exc)
+    try:
+        candidates.extend(str(item.get("target_path") or "") for item in list_user_scripts())
+    except Exception as exc:
+        log_webui_exception("configured_size_target_paths user_scripts", exc)
+
+    result: List[str] = []
+    seen: set[str] = set()
+    for raw_path in candidates:
+        path_value = _normalized_size_path(raw_path)
+        if not path_value or path_value in seen:
+            continue
+        path = Path(path_value)
+        if existing_directories_only and (not path.exists() or not path.is_dir()):
+            continue
+        seen.add(path_value)
+        result.append(path_value)
+    return result
+
+
+def request_all_configured_size_calculations() -> Dict[str, int]:
+    """Start or queue a size refresh for every existing configured directory."""
+    paths = configured_size_target_paths(existing_directories_only=True)
+    started = 0
+    waiting = 0
+    for path_value in paths:
+        if request_size_calculation(path_value, force=True):
+            started += 1
+        else:
+            waiting += 1
+    return {"total": len(paths), "started": started, "waiting": waiting}
 
 
 def sample_profiles() -> List[Dict[str, Any]]:
@@ -1936,7 +2762,7 @@ def sample_profiles() -> List[Dict[str, Any]]:
                 "name": "SCPCom Stable RISC-V", "enabled": 1, "method": "http", "host": "scpcom.github.io", "root_path": ":deb/",
                 "target_path": str(MIRROR_BASE / "scpcom"), "dists": "stable",
                 "sections": "sg200x,licheervnano-kvm", "archs": "riscv64", "source_mode": "nosource",
-                "i18n": 1, "diff_mode": "use", "rsync_extra": "none", "extra_options": "--passive",
+                "i18n": 1, "diff_mode": "use", "rsync_extra": "none", "extra_options": "",
             },
         },
     ]
@@ -1964,6 +2790,14 @@ def default_mirror_values(overrides: Optional[Dict[str, Any]] = None) -> Dict[st
         "timeout_seconds": "",
         "rsync_extra": "",
         "extra_options": "",
+        "manual_extra_options": "",
+        "remote_user": "",
+        "remote_password_enc": "",
+        "rsync_ssh_enabled": 0,
+        "rsync_ssh_user": "",
+        "rsync_ssh_key": "",
+        "rsync_ssh_port": 22,
+        "rsync_ssh_accept_new_host_key": 1,
         "include_patterns": "",
         "exclude_patterns": "",
         "schedule_mode": "manual",
@@ -2224,7 +3058,10 @@ def list_user_scripts() -> List[Dict[str, Any]]:
         stat_info = path.stat()
         executable = os.access(path, os.X_OK)
         target_path = get_user_script_target(path.name)
-        size_info = cached_path_size_info(target_path) if target_path else {"size_h": "-", "status": "nicht gesetzt", "error": "", "calculated_at": ""}
+        size_info = cached_path_size_info(
+            target_path,
+            content_changed_at=latest_size_changing_job_finished_at(script_name=path.name),
+        ) if target_path else {"size_h": "-", "status": "nicht gesetzt", "error": "", "calculated_at": ""}
         items.append({
             "name": path.name,
             "path": str(path),
@@ -2311,19 +3148,18 @@ def build_debmirror_command(mirror: Dict[str, Any], dry_run: bool = False, valid
     Path(target).mkdir(parents=True, exist_ok=True)
 
     method = mirror["method"]
-    if method not in {"rsync", "http", "https", "ftp"}:
-        raise ValueError("Ungültige Methode.")
+    validate_mirror_configuration(mirror, require_ssh_key=True)
+    root_value = normalize_root_path(mirror["root_path"])
 
     cmd = [
         "debmirror",
         f"--method={method}",
         f"--host={mirror['host'].strip()}",
-        f"--root={normalize_root_path(mirror['root_path'])}",
+        f"--root={root_value}",
         f"--dist={','.join(csv_to_list(mirror['dists']))}",
         f"--section={','.join(csv_to_list(mirror['sections']))}",
         f"--arch={','.join(csv_to_list(mirror['archs']))}",
     ]
-
     if mirror.get("source_mode") == "source":
         cmd.append("--source")
     else:
@@ -2336,10 +3172,16 @@ def build_debmirror_command(mirror: Dict[str, Any], dry_run: bool = False, valid
             raise ValueError("Der hinterlegte Keyring-Fingerprint passt nicht zum ausgewählten Keyring. Prüfe Keyring und erwarteten Fingerprint im Mirror-Profil.")
         cmd.append(f"--keyring={keyring}")
 
-    if mirror.get("postcleanup"):
-        cmd.append("--postcleanup")
-    else:
-        cmd.append("--cleanup")
+    extra_options = parse_extra_options(mirror.get("extra_options") or "")
+    if bool(int(mirror.get("rsync_ssh_enabled") or 0)):
+        extra_options = [item for item in extra_options if item.split("=", 1)[0] != "--rsync-options"]
+        extra_options.append(f"--rsync-options={rsync_options_with_ssh(mirror)}")
+    extra_flags = {item.split("=", 1)[0] for item in extra_options}
+    if not ({"--precleanup", "--nocleanup", "--debmarshal"} & extra_flags):
+        if mirror.get("postcleanup"):
+            cmd.append("--postcleanup")
+        else:
+            cmd.append("--cleanup")
 
     diff_mode = mirror.get("diff_mode") or "none"
     if diff_mode in {"use", "mirror", "none"}:
@@ -2358,16 +3200,25 @@ def build_debmirror_command(mirror: Dict[str, Any], dry_run: bool = False, valid
     if timeout:
         cmd.append(f"--timeout={int(timeout)}")
 
-    rsync_extra_parts = []
     rsync_extra = (mirror.get("rsync_extra") or "").strip()
     if rsync_extra:
-        # Whitelisted extra transport option field. It is passed as a single debmirror option,
-        # not via shell=True, so shell injection is avoided.
-        rsync_extra_parts.append(rsync_extra)
-    if rsync_extra_parts:
-        cmd.append(f"--rsync-extra={' '.join(rsync_extra_parts)}")
+        try:
+            normalized_rsync_extra = normalize_rsync_extra_values([rsync_extra])
+            if normalized_rsync_extra:
+                cmd.append(f"--rsync-extra={normalized_rsync_extra}")
+        except ValueError:
+            # Backward compatibility for profiles created when the UI incorrectly
+            # suggested --bwlimit in the Rsync-Extra field.
+            if rsync_extra.startswith("-"):
+                if "--rsync-options" not in extra_flags:
+                    cmd.append(f"--rsync-options={rsync_extra}")
+            else:
+                raise
 
-    for extra in parse_extra_options(mirror.get("extra_options") or ""):
+    for extra in extra_options:
+        cmd.append(extra)
+
+    for extra in parse_manual_extra_options(str(mirror.get("manual_extra_options") or "")):
         cmd.append(extra)
 
     for pattern in csv_to_list(mirror.get("include_patterns") or ""):
@@ -2521,9 +3372,12 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
     status = "error"
     error_message = ""
     with db() as con:
-        job_meta_row = con.execute("SELECT job_type, script_name FROM jobs WHERE id=?", (job_id,)).fetchone()
+        job_meta_row = con.execute("SELECT job_type, script_name, mirror_id FROM jobs WHERE id=?", (job_id,)).fetchone()
     job_type = (job_meta_row["job_type"] if job_meta_row else "mirror") or "mirror"
     script_name = (job_meta_row["script_name"] if job_meta_row else "") or ""
+    mirror_id_for_job = int(job_meta_row["mirror_id"]) if job_meta_row and job_meta_row["mirror_id"] is not None else None
+    auth_config_path: Optional[Path] = None
+    process_env = os.environ.copy()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8", errors="replace") as log:
         started_time = now_iso()
@@ -2531,6 +3385,20 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
         log.flush()
         try:
             if job_type == "mirror":
+                mirror_for_job = get_mirror(mirror_id_for_job) if mirror_id_for_job is not None else None
+                if mirror_for_job:
+                    auth_config_path = create_job_auth_config(mirror_for_job, job_id)
+                    if auth_config_path:
+                        cmd = list(cmd)
+                        target_arg = cmd.pop() if cmd else ""
+                        cmd.append(f"--config-file={auth_config_path}")
+                        if target_arg:
+                            cmd.append(target_arg)
+                    if bool(int(mirror_for_job.get("rsync_ssh_enabled") or 0)):
+                        log.write(f"[{now_iso()}] Rsync verwendet eine explizite SSH-Remote-Shell mit Schlüssel, BatchMode, IdentitiesOnly und persistenter known_hosts-Datei.\n")
+                    if auth_config_path:
+                        log.write(f"[{now_iso()}] Remote-Zugangsdaten werden über eine temporäre, geschützte debmirror-Konfigurationsdatei mit Dateimodus 0600 bereitgestellt.\n")
+                        log.flush()
                 dep_checks = runtime_dependency_checks()
                 missing_required = [item for item in dep_checks if item["required"] and not item["found"]]
                 missing_optional = [item for item in dep_checks if not item["required"] and not item["found"]]
@@ -2557,6 +3425,7 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
                 bufsize=1,
                 universal_newlines=True,
                 start_new_session=True,
+                env=process_env,
             )
             with RUNNING_PROCESSES_LOCK:
                 RUNNING_PROCESSES[job_id] = proc
@@ -2588,6 +3457,13 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
         finally:
             with RUNNING_PROCESSES_LOCK:
                 RUNNING_PROCESSES.pop(job_id, None)
+            for auth_path, label in ((auth_config_path, "Auth-Konfiguration"),):
+                if auth_path is None:
+                    continue
+                try:
+                    auth_path.unlink(missing_ok=True)
+                except Exception as exc:
+                    log.write(f"[{now_iso()}] WARNUNG: Temporäre {label} konnte nicht entfernt werden: {exc}\n")
             finished_time = now_iso()
             duration_h = format_duration_between(started_time, finished_time)
             log.write(f"\n[{finished_time}] Ende Status={status} Exit-Code={exit_code} Dauer={duration_h}\n")
@@ -3002,16 +3878,23 @@ def cleanup_old_jobs_and_logs() -> Dict[str, int]:
 # Scheduler
 # ---------------------------------------------------------------------------
 
+def validate_hhmm(value: str) -> Tuple[int, int]:
+    text = (value or "").strip()
+    match = re.fullmatch(r"(\d{2}):(\d{2})", text)
+    if not match:
+        raise ValueError("Zeitangabe muss im Format HH:MM stehen.")
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError("Zeitangabe enthält keine gültige Uhrzeit.")
+    return hour, minute
+
+
 def parse_hhmm(value: str) -> Tuple[int, int]:
     try:
-        hour_s, min_s = value.split(":", 1)
-        hour = int(hour_s)
-        minute = int(min_s)
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return hour, minute
-    except Exception:
-        pass
-    return 22, 0
+        return validate_hhmm(value)
+    except ValueError:
+        return 22, 0
 
 
 def last_non_dry_job(mirror_id: int) -> Optional[Dict[str, Any]]:
@@ -3494,6 +4377,8 @@ def runtime_dependency_checks() -> List[Dict[str, Any]]:
         ("patch", False, "wird für PDiff/Diff-Modus genutzt"),
         ("ed", False, "wird für PDiff/Diff-Modus genutzt"),
         ("rsync", False, "wird für rsync-Upstreams benötigt"),
+        ("ssh", False, "wird für Rsync-Module über SSH-Schlüssel benötigt"),
+        ("ssh-keygen", False, "prüft hochgeladene SSH-Privatschlüssel"),
         ("dirmngr", False, "wird für Keyserver-Importe über gpg benötigt"),
         ("curl", False, "hilfreich für Diagnose und URL-Tests"),
         ("lftp", False, "wird von eigenen Benutzerskripten oder FTP/SFTP-Workflows genutzt"),
@@ -3531,6 +4416,9 @@ def inject_globals():
         "appearance": current_appearance(),
         "current_user": current_user() if session.get("authenticated") else {},
         "is_admin": is_admin_user(),
+        "size_status_label": size_status_label,
+        "size_status_class": size_status_class,
+        "size_status_title": size_status_title,
     }
 
 
@@ -3700,6 +4588,7 @@ def mirror_new():
         selected_template=selected_template,
         return_url=url_for("mirrors_page"),
         return_label="Zurück zu Profilen",
+        **mirror_form_option_context(mirror),
     )
 
 
@@ -4043,14 +4932,39 @@ def normalize_profile_scan_url(raw_url: str) -> str:
     if not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", raw):
         raw = "https://" + raw
     parsed = urllib.parse.urlparse(raw)
-    if parsed.scheme not in {"http", "https", "rsync"}:
-        raise ValueError("Für die Prüfung sind aktuell http, https und rsync vorgesehen.")
+    if parsed.scheme not in {"http", "https", "ftp", "rsync"}:
+        raise ValueError("Für die Prüfung sind aktuell http, https, ftp und rsync vorgesehen.")
     if not parsed.netloc:
         raise ValueError("Die Repository-Adresse enthält keinen Host.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Zugangsdaten dürfen nicht in der Repository-Adresse stehen. Verwende dafür die separaten Felder im Profilgenerator.")
     path = parsed.path or "/"
     if parsed.scheme in {"http", "https"} and not path.endswith("/"):
         path += "/"
     return urllib.parse.urlunparse((parsed.scheme.lower(), parsed.netloc, path, "", "", ""))
+
+
+def validate_profile_scan_access_mode(normalized_url: str, auth_username: str, auth_password: str, ssh_values: Dict[str, Any]) -> None:
+    parsed = urllib.parse.urlparse(normalized_url)
+    scheme = parsed.scheme.lower()
+    username = (auth_username or "").strip()
+    password = auth_password or ""
+    ssh_enabled = bool(int(ssh_values.get("rsync_ssh_enabled") or 0))
+    if len(username) > 255 or any(ch in username for ch in ("\x00", "\r", "\n")):
+        raise ValueError("Der Scan-Benutzer enthält unzulässige Steuerzeichen oder ist zu lang.")
+    if len(password) > 4096 or any(ch in password for ch in ("\x00", "\r", "\n")):
+        raise ValueError("Das Scan-Passwort enthält unzulässige Steuerzeichen oder ist zu lang.")
+    if password and not username:
+        raise ValueError("Für ein Scan-Passwort muss ein Benutzername angegeben werden.")
+    if scheme == "rsync":
+        if username or password:
+            raise ValueError("HTTP/FTP-Zugangsdaten können nicht mit einem Rsync-Scan kombiniert werden. Verwende für Rsync ausschließlich die optionale SSH-Schlüsselanmeldung.")
+        if ssh_enabled and parsed.port is not None:
+            raise ValueError("Bei Rsync über SSH wird der Port ausschließlich im Feld SSH-Port angegeben. Entferne den Port aus der rsync://-Adresse.")
+    elif ssh_enabled:
+        raise ValueError("SSH-Schlüsselanmeldung kann im Profilgenerator nur mit einer ausdrücklich angegebenen rsync://-Adresse verwendet werden.")
+    if (username or password) and scheme not in {"http", "https", "ftp"}:
+        raise ValueError("Benutzername und Passwort sind im Profilgenerator nur für HTTP, HTTPS oder FTP vorgesehen.")
 
 
 def profile_scan_root_path_from_url(url: str) -> str:
@@ -4109,14 +5023,80 @@ def profile_scan_variable_dists_candidate_roots(start_url: str, result: Dict[str
     return candidates
 
 
+def profile_scan_set_auth(username: str = "", password: str = "") -> None:
+    PROFILE_SCAN_AUTH_CONTEXT.username = (username or "").strip()
+    PROFILE_SCAN_AUTH_CONTEXT.password = password or ""
+
+
+def profile_scan_set_ssh(enabled: bool = False, user: str = "", key_name: str = "", port: int = 22, accept_new_host_key: bool = True) -> None:
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_enabled = bool(enabled)
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_user = (user or "").strip()
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_key = (key_name or "").strip()
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_port = int(port or 22)
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_accept_new_host_key = bool(accept_new_host_key)
+
+
+def profile_scan_clear_auth() -> None:
+    PROFILE_SCAN_AUTH_CONTEXT.username = ""
+    PROFILE_SCAN_AUTH_CONTEXT.password = ""
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_enabled = False
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_user = ""
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_key = ""
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_port = 22
+    PROFILE_SCAN_AUTH_CONTEXT.rsync_ssh_accept_new_host_key = True
+
+
+def profile_scan_auth_values() -> Tuple[str, str]:
+    return (str(getattr(PROFILE_SCAN_AUTH_CONTEXT, "username", "") or ""), str(getattr(PROFILE_SCAN_AUTH_CONTEXT, "password", "") or ""))
+
+
+def profile_scan_ssh_values() -> Dict[str, Any]:
+    return {
+        "rsync_ssh_enabled": 1 if bool(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_enabled", False)) else 0,
+        "rsync_ssh_user": str(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_user", "") or ""),
+        "rsync_ssh_key": str(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_key", "") or ""),
+        "rsync_ssh_port": int(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_port", 22) or 22),
+        "rsync_ssh_accept_new_host_key": 1 if bool(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_accept_new_host_key", True)) else 0,
+    }
+
+
+def profile_scan_authenticated_url(url: str, username: str, password: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "ftp" or not username:
+        return url
+    userinfo = urllib.parse.quote(username, safe="")
+    if password:
+        userinfo += ":" + urllib.parse.quote(password, safe="")
+    host = parsed.hostname or ""
+    if parsed.port:
+        host += f":{parsed.port}"
+    return urllib.parse.urlunparse((parsed.scheme, f"{userinfo}@{host}", parsed.path, parsed.params, parsed.query, parsed.fragment))
+
+
+def profile_scan_redact_auth_detail(value: Any) -> str:
+    """Remove scan credentials from transport errors before UI/log output."""
+    text = str(value or "")
+    username, password = profile_scan_auth_values()
+    for secret in (password, urllib.parse.quote(password, safe="") if password else ""):
+        if secret:
+            text = text.replace(secret, "***")
+    if username:
+        # Remove user-info from FTP URLs while keeping host/path useful.
+        text = re.sub(r"(ftp://)[^/@\s]+@", r"\1", text, flags=re.IGNORECASE)
+    return text
+
+
 def profile_scan_fetch(url: str, max_bytes: int = PROFILE_SCAN_MAX_BYTES) -> Tuple[bool, str, bytes, str]:
-    request_obj = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": PROFILE_SCAN_USER_AGENT,
-            "Accept": "text/plain,text/html,application/octet-stream,*/*",
-        },
-    )
+    username, password = profile_scan_auth_values()
+    request_url = profile_scan_authenticated_url(url, username, password)
+    headers = {
+        "User-Agent": PROFILE_SCAN_USER_AGENT,
+        "Accept": "text/plain,text/html,application/octet-stream,*/*",
+    }
+    if username and urllib.parse.urlparse(url).scheme in {"http", "https"}:
+        basic = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {basic}"
+    request_obj = urllib.request.Request(request_url, headers=headers)
     try:
         with urllib.request.urlopen(request_obj, timeout=PROFILE_SCAN_TIMEOUT_SECONDS) as response:
             status = getattr(response, "status", 200)
@@ -4128,9 +5108,9 @@ def profile_scan_fetch(url: str, max_bytes: int = PROFILE_SCAN_MAX_BYTES) -> Tup
     except urllib.error.HTTPError as exc:
         return False, f"HTTP {exc.code}", b"", exc.headers.get("Content-Type", "") if exc.headers else ""
     except urllib.error.URLError as exc:
-        return False, str(exc.reason), b"", ""
+        return False, profile_scan_redact_auth_detail(exc.reason), b"", ""
     except Exception as exc:
-        return False, str(exc), b"", ""
+        return False, profile_scan_redact_auth_detail(exc), b"", ""
 
 
 def profile_scan_decode(data: bytes) -> str:
@@ -4209,50 +5189,253 @@ def profile_scan_check_http_transfer(base_url: str, method: str) -> Dict[str, An
     }
 
 
-def profile_scan_check_rsync_transfer(base_url: str) -> Dict[str, Any]:
+def profile_scan_rsync_target_context(base_url: str, relative_path: str = "", trailing_slash: bool = True) -> Dict[str, Any]:
     parsed = urllib.parse.urlparse(base_url)
+    host_name = parsed.hostname or parsed.netloc
+    if not host_name:
+        raise ValueError("Rsync-Adresse enthält keinen Host.")
     root_path = profile_scan_root_path_from_url(base_url)
-    rsync_target = base_url if parsed.scheme == "rsync" else f"rsync://{parsed.netloc}/{'' if root_path == '.' else root_path}"
-    if not rsync_target.endswith("/"):
-        rsync_target += "/"
+    if parsed.scheme == "rsync":
+        validate_rsync_module_path(root_path)
+    relative = (relative_path or "").strip("/")
+    if relative:
+        relative_parts = relative.split("/")
+        if any(part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9._+@%=-]+", part) for part in relative_parts):
+            raise ValueError("Rsync-Prüfpfad enthält unzulässige Segmente.")
+    remote_path = root_path if root_path not in {"", "."} else ""
+    if relative:
+        remote_path = "/".join(part for part in (remote_path, relative) if part)
+    if not remote_path:
+        raise ValueError("Die Rsync-Adresse muss mindestens einen Modulnamen enthalten.")
+    suffix = "/" if trailing_slash else ""
+    ssh_values = profile_scan_ssh_values()
+    ssh_enabled = bool(int(ssh_values.get("rsync_ssh_enabled") or 0))
+    if ssh_enabled:
+        mirror_like = {
+            "method": "rsync",
+            "host": host_name,
+            "root_path": root_path,
+            "remote_user": "",
+            "remote_password_enc": "",
+            "extra_options": "",
+            **ssh_values,
+        }
+        validate_rsync_ssh_settings(mirror_like, require_key=True)
+        display_host = f"[{host_name}]" if ":" in host_name and not host_name.startswith("[") else host_name
+        command_target = f"{display_host}::{remote_path}{suffix}"
+        public_url = f"rsync+ssh://{ssh_values.get('rsync_ssh_user')}@{display_host}:{ssh_values.get('rsync_ssh_port')}/{remote_path}{suffix}"
+        rsh_option = f"--rsh={rsync_ssh_rsh_command(mirror_like)}"
+    else:
+        display_host = f"[{host_name}]" if ":" in host_name and not host_name.startswith("[") else host_name
+        # Nur ein ausdrücklich eingegebener rsync://-Port gehört zum Rsync-Ziel.
+        # HTTP-/HTTPS-Ports dürfen beim ergänzenden Rsync-Test nicht übernommen werden.
+        netloc = display_host
+        if parsed.scheme == "rsync" and parsed.port:
+            netloc += f":{parsed.port}"
+        public_url = urllib.parse.urlunparse(("rsync", netloc, "/" + remote_path + suffix, "", "", ""))
+        command_target = public_url
+        rsh_option = ""
+    return {
+        "command_target": command_target,
+        "public_url": public_url,
+        "rsh_option": rsh_option,
+        "root_path": root_path,
+        "remote_path": remote_path,
+        "ssh_enabled": ssh_enabled,
+    }
+
+
+def profile_scan_rsync_run(base_url: str, relative_path: str = "", trailing_slash: bool = True, list_only: bool = False, destination: str = "") -> subprocess.CompletedProcess:
+    if not shutil.which("rsync"):
+        raise ValueError("rsync ist im WebUI-Container nicht verfügbar.")
+    context = profile_scan_rsync_target_context(base_url, relative_path, trailing_slash=trailing_slash)
+    command = ["rsync", "--timeout=5", "--no-motd"]
+    if list_only:
+        command.append("--list-only")
+    if context["rsh_option"]:
+        command.append(context["rsh_option"])
+    command.append(context["command_target"])
+    if destination:
+        command.append(destination)
+    return subprocess.run(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=PROFILE_SCAN_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+
+def profile_scan_rsync_list_directories(base_url: str, relative_path: str) -> List[str]:
+    completed = profile_scan_rsync_run(base_url, relative_path, trailing_slash=True, list_only=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or f"Exit-Code {completed.returncode}").strip().splitlines()[0][:240]
+        raise ValueError("Rsync-Verzeichnis konnte nicht gelesen werden: " + profile_scan_redact_auth_detail(detail))
+    directories: List[str] = []
+    for raw_line in completed.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or line[0] not in {"d", "l"}:
+            continue
+        parts = line.split(maxsplit=4)
+        if len(parts) < 5:
+            continue
+        name = parts[4].strip().rstrip("/")
+        if name in {"", ".", ".."} or "/" in name:
+            continue
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", name) and name not in directories:
+            directories.append(name)
+    return directories
+
+
+def profile_scan_rsync_fetch_file(base_url: str, relative_path: str, max_bytes: int = PROFILE_SCAN_MAX_BYTES) -> Tuple[bool, str, bytes]:
+    temp_dir = Path(tempfile.mkdtemp(prefix="debmirror-rsync-scan-"))
+    destination = temp_dir / "remote-file"
+    try:
+        completed = profile_scan_rsync_run(base_url, relative_path, trailing_slash=False, destination=str(destination))
+        if completed.returncode != 0 or not destination.is_file():
+            detail = (completed.stderr or completed.stdout or f"Exit-Code {completed.returncode}").strip().splitlines()[0][:240]
+            return False, profile_scan_redact_auth_detail(detail), b""
+        if destination.stat().st_size > max_bytes:
+            return False, f"Datei überschreitet das Scan-Limit von {max_bytes} Bytes.", b""
+        return True, "OK", destination.read_bytes()
+    except Exception as exc:
+        return False, profile_scan_redact_auth_detail(exc), b""
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def profile_scan_check_rsync_transfer(base_url: str) -> Dict[str, Any]:
+    try:
+        context = profile_scan_rsync_target_context(base_url)
+    except Exception as exc:
+        return {
+            "method": "rsync",
+            "url": base_url.rstrip("/"),
+            "available": False,
+            "status": "missing",
+            "detail": str(exc),
+            "status_class": "warning",
+        }
     if not shutil.which("rsync"):
         return {
             "method": "rsync",
-            "url": rsync_target,
+            "url": context["public_url"].rstrip("/"),
             "available": False,
             "status": "unknown",
             "detail": "rsync ist im WebUI-Container nicht verfügbar; Transferart wurde nicht geprüft.",
             "status_class": "warning",
         }
     try:
-        completed = subprocess.run(
-            ["rsync", "--list-only", "--timeout=5", rsync_target],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=PROFILE_SCAN_TIMEOUT_SECONDS,
-            check=False,
-        )
+        completed = profile_scan_rsync_run(base_url, list_only=True)
         ok = completed.returncode == 0
-        detail = "OK" if ok else (completed.stderr or completed.stdout or f"Exit-Code {completed.returncode}").strip().splitlines()[0][:180]
+        raw_detail = "OK" if ok else (completed.stderr or completed.stdout or f"Exit-Code {completed.returncode}").strip().splitlines()[0][:180]
         return {
             "method": "rsync",
-            "url": rsync_target,
+            "url": context["public_url"].rstrip("/"),
             "available": ok,
             "status": "available" if ok else "missing",
-            "detail": detail,
+            "detail": profile_scan_redact_auth_detail(raw_detail),
             "status_class": "ok" if ok else "warning",
         }
     except Exception as exc:
         return {
             "method": "rsync",
-            "url": rsync_target,
+            "url": context["public_url"].rstrip("/"),
             "available": False,
             "status": "unknown",
-            "detail": str(exc),
+            "detail": profile_scan_redact_auth_detail(exc),
             "status_class": "warning",
         }
 
+
+def profile_scan_rsync_release_url(base_url: str, relative_path: str) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    root = profile_scan_root_path_from_url(base_url).strip("/")
+    path = "/" + "/".join(part for part in (root, relative_path.strip("/")) if part)
+    return urllib.parse.urlunparse(("rsync", parsed.netloc, path, "", "", ""))
+
+
+def profile_scan_scan_rsync_repository(base_url: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    transfer = profile_scan_check_rsync_transfer(base_url)
+    result["transfers"].append(transfer)
+    result["rsync_available"] = bool(transfer.get("available"))
+    if not transfer.get("available"):
+        result["warnings"].append("Rsync-Ziel konnte nicht gelesen werden; eine Profilerzeugung ist deshalb nicht möglich.")
+        profile_scan_status(result, f"Rsync-Verbindung fehlgeschlagen: {transfer.get('detail') or 'unbekannter Fehler'}", "error")
+        return result
+    profile_scan_status(result, "Rsync-Verbindung hergestellt. Prüfe gezielt dists/ und die Release-Dateien.", "ok")
+    try:
+        suite_names = profile_scan_rsync_list_directories(base_url, "dists")
+    except Exception as exc:
+        result["warnings"].append(str(exc))
+        profile_scan_status(result, str(exc), "error")
+        return result
+    if not suite_names:
+        result["warnings"].append("Im Rsync-Ziel wurde kein lesbares dists/-Verzeichnis mit Suites gefunden.")
+        profile_scan_status(result, "Kein lesbares dists/-Verzeichnis mit Suites gefunden.", "error")
+        return result
+    if len(suite_names) > 80:
+        result["warnings"].append("Es wurden mehr als 80 Suite-Verzeichnisse gefunden; für den Scan werden die ersten 80 ausgewertet.")
+        suite_names = suite_names[:80]
+    suites: List[Dict[str, Any]] = []
+    for suite_name in suite_names:
+        profile_scan_check_cancel(result)
+        release_text = ""
+        release_name = ""
+        release_detail = ""
+        for candidate in ("InRelease", "Release"):
+            ok, detail, data = profile_scan_rsync_fetch_file(base_url, f"dists/{suite_name}/{candidate}")
+            if ok and data:
+                release_text = profile_scan_decode(data)
+                release_name = candidate
+                release_detail = detail
+                break
+        if not release_text:
+            profile_scan_status(result, f"Suite {suite_name}: keine lesbare InRelease-/Release-Datei ({release_detail or 'nicht vorhanden'}).", "warning")
+            continue
+        meta = profile_scan_parse_release(release_text, fallback_suite=suite_name)
+        if not meta.get("components") or not meta.get("archs"):
+            profile_scan_status(result, f"Suite {suite_name}: Release-Datei gelesen, aber Komponenten oder Architekturen fehlen.", "warning")
+            continue
+        suites.append({
+            "name": suite_name,
+            "suite": meta.get("suite") or suite_name,
+            "codename": meta.get("codename") or "",
+            "origin": meta.get("origin") or "",
+            "label": meta.get("label") or "",
+            "version": meta.get("version") or "",
+            "components": meta.get("components") or [],
+            "archs": meta.get("archs") or [],
+            "release_url": profile_scan_rsync_release_url(base_url, f"dists/{suite_name}/{release_name}"),
+            "signed": release_name == "InRelease",
+            "repo_base_url": base_url.rstrip("/"),
+            "repo_root_path": profile_scan_root_path_from_url(base_url),
+        })
+        profile_scan_status(result, f"Suite über Rsync gefunden: {suite_name} ({release_name}, {len(meta.get('components') or [])} Komponenten, {len(meta.get('archs') or [])} Architekturen).", "ok")
+    result["suites"] = suites
+    all_components: List[str] = []
+    all_archs: List[str] = []
+    for suite in suites:
+        all_components.extend(suite.get("components") or [])
+        all_archs.extend(suite.get("archs") or [])
+    result["components"] = profile_scan_unique(all_components)
+    result["archs"] = profile_scan_unique(all_archs)
+    result["repository_roots"] = [{
+        "base_url": base_url.rstrip("/"),
+        "root_path": profile_scan_root_path_from_url(base_url),
+        "suite_count": len(suites),
+        "components": result["components"],
+        "archs": result["archs"],
+    }] if suites else []
+    result["gpg_keys"] = []
+    result["usable"] = bool(suites and result["components"] and result["archs"])
+    if result["usable"]:
+        profile_scan_status(result, f"Rsync-Prüfung abgeschlossen: verwendbares Repository mit {len(suites)} Suite(s).", "ok")
+    else:
+        result["warnings"].append("Über Rsync wurde keine vollständig verwendbare APT-Repository-Struktur erkannt.")
+        profile_scan_status(result, "Rsync-Prüfung abgeschlossen: keine vollständig verwendbare APT-Repository-Struktur erkannt.", "error")
+    return result
 
 def profile_scan_key_candidate_name(value: str) -> bool:
     name = Path(urllib.parse.urlparse(value).path).name.lower()
@@ -4557,6 +5740,7 @@ def scan_apt_repository_url(raw_url: str, max_depth: Any = PROFILE_SCAN_DEFAULT_
         "warnings": [],
         "flat_repo": None,
         "usable": False,
+        "rsync_available": False,
         "status_lines": [],
         "scan_path_variables": active_scan_path_variables,
         "_job_token": live_token,
@@ -4564,20 +5748,21 @@ def scan_apt_repository_url(raw_url: str, max_depth: Any = PROFILE_SCAN_DEFAULT_
     profile_scan_status(result, f"Scan gestartet: {start_url.rstrip('/')} | Verzeichnistiefe: {depth}", "info")
     profile_scan_status(result, f"Aktive Suchpfad-Variablen aus den Generator-Einstellungen: {', '.join(active_scan_path_variables[:12])}{' ...' if len(active_scan_path_variables) > 12 else ''}", "info")
 
-    if start_parsed.scheme not in {"http", "https"}:
-        result["transfers"].append(profile_scan_check_rsync_transfer(start_url))
-        result["warnings"].append("Repository-Inhalte werden im ersten Schritt nur über HTTP/HTTPS ausgelesen. Für rsync wurde nur die Transferart geprüft.")
-        profile_scan_status(result, "Inhaltsprüfung übersprungen, weil die Adresse kein HTTP/HTTPS-Ziel ist.", "warning")
-        return result
+    if start_parsed.scheme == "rsync":
+        return profile_scan_scan_rsync_repository(start_url, result)
 
     content_start_urls = [start_url]
     if not input_has_scheme and start_parsed.scheme == "https":
-        # Ohne Protokoll wurde bisher https angenommen. Falls HTTPS nicht funktioniert,
-        # muss die Repository-Struktur anschließend auch über HTTP geprüft werden.
-        http_start_url = profile_scan_same_url_with_scheme(start_url, "http")
-        if http_start_url not in content_start_urls:
-            content_start_urls.append(http_start_url)
-            profile_scan_status(result, f"Keine Protokollangabe erkannt. Falls HTTPS nichts liefert, wird zusätzlich HTTP geprüft: {http_start_url.rstrip('/')}", "info")
+        # Zugangsdaten dürfen nicht automatisch von HTTPS auf unverschlüsseltes
+        # HTTP weitergereicht werden. Ohne Auth bleibt der bewährte Fallback aktiv.
+        auth_username, _auth_password = profile_scan_auth_values()
+        if auth_username:
+            profile_scan_status(result, "Keine Protokollangabe erkannt. Wegen verwendeter Zugangsdaten wird aus Sicherheitsgründen kein automatischer HTTP-Fallback ausgeführt. Für HTTP bitte das Protokoll ausdrücklich angeben.", "warning")
+        else:
+            http_start_url = profile_scan_same_url_with_scheme(start_url, "http")
+            if http_start_url not in content_start_urls:
+                content_start_urls.append(http_start_url)
+                profile_scan_status(result, f"Keine Protokollangabe erkannt. Falls HTTPS nichts liefert, wird zusätzlich HTTP geprüft: {http_start_url.rstrip('/')}", "info")
 
     all_suites: List[Dict[str, Any]] = []
     all_candidate_roots: List[str] = []
@@ -4684,7 +5869,13 @@ def scan_apt_repository_url(raw_url: str, max_depth: Any = PROFILE_SCAN_DEFAULT_
         if method in {"http", "https"} and method not in checked_transfer_methods:
             result["transfers"].append(profile_scan_check_http_transfer(selected_base_url, method))
             checked_transfer_methods.append(method)
-    result["transfers"].append(profile_scan_check_rsync_transfer(selected_base_url))
+        elif method == "ftp" and method not in checked_transfer_methods:
+            ok, detail, _data, _ctype = profile_scan_fetch(selected_base_url, max_bytes=2048)
+            result["transfers"].append({"method": "ftp", "url": selected_base_url.rstrip("/"), "available": ok, "status": "available" if ok else "missing", "detail": detail, "status_class": "ok" if ok else "warning"})
+            checked_transfer_methods.append(method)
+    rsync_transfer = profile_scan_check_rsync_transfer(selected_base_url)
+    result["transfers"].append(rsync_transfer)
+    result["rsync_available"] = bool(rsync_transfer.get("available"))
 
     all_components: List[str] = []
     all_archs: List[str] = []
@@ -4720,7 +5911,7 @@ def generator_build_values_from_scan(form) -> Dict[str, Any]:
     parsed = urllib.parse.urlparse(source_url)
     method = form.get("method") or parsed.scheme
     if method not in {"http", "https", "rsync", "ftp"}:
-        method = parsed.scheme if parsed.scheme in {"http", "https", "rsync"} else "https"
+        method = parsed.scheme if parsed.scheme in {"http", "https", "rsync", "ftp"} else "https"
     suites = profile_scan_unique(form.getlist("suites"))
     components = profile_scan_unique(form.getlist("components"))
     archs = profile_scan_unique(form.getlist("archs"))
@@ -4731,14 +5922,17 @@ def generator_build_values_from_scan(form) -> Dict[str, Any]:
     if not archs:
         raise ValueError("Bitte mindestens eine Architektur auswählen.")
     root_path = normalize_root_path(form.get("root_path", "") or profile_scan_root_path_from_url(source_url)) or "."
-    default_name = f"{parsed.netloc} {'+'.join(suites[:2])}"
+    host = parsed.hostname if method == "rsync" else parsed.netloc
+    if not host:
+        raise ValueError("Die ausgewählte Repository-Basis enthält keinen Host.")
+    default_name = f"{host} {'+'.join(suites[:2])}"
     name = (form.get("profile_name") or default_name).strip()
-    target_suffix = profile_scan_slug(form.get("target_suffix") or f"{parsed.netloc}-{root_path}-{suites[0]}")
-    values = default_mirror_values({
+    target_suffix = profile_scan_slug(form.get("target_suffix") or f"{host}-{root_path}-{suites[0]}")
+    overrides: Dict[str, Any] = {
         "name": name,
         "enabled": 1,
         "method": method,
-        "host": parsed.netloc,
+        "host": host,
         "root_path": root_path,
         "target_path": str(MIRROR_BASE / target_suffix),
         "dists": ",".join(suites),
@@ -4746,7 +5940,14 @@ def generator_build_values_from_scan(form) -> Dict[str, Any]:
         "archs": ",".join(archs),
         "source_mode": "nosource",
         "schedule_mode": "manual",
-    })
+    }
+    if method == "rsync" and parsed.scheme == "rsync" and parsed.port:
+        import shlex
+        overrides["extra_options"] = "--rsync-options=" + shlex.quote(f"-aIL --partial --port={parsed.port}")
+    if method != "rsync" and str(form.get("scan_rsync_available") or "0") != "1":
+        overrides["rsync_extra"] = "none"
+    values = default_mirror_values(overrides)
+    validate_mirror_configuration(values, require_ssh_key=False)
     return values
 
 def generator_build_values(form) -> Dict[str, Any]:
@@ -4800,7 +6001,39 @@ def generator_build_values(form) -> Dict[str, Any]:
     return values
 
 
-def profile_scan_worker(token: str, scan_url: str, scan_depth: int, scan_path_variables: Any = None) -> None:
+def profile_scan_ssh_from_form() -> Dict[str, Any]:
+    enabled = bool_from_form("scan_rsync_ssh_enabled")
+    upload = request.files.get("scan_rsync_ssh_key_upload")
+    if upload and getattr(upload, "filename", "") and not enabled:
+        raise ValueError("Zum Hochladen eines SSH-Schlüssels muss 'Rsync-Modul über SSH prüfen' aktiviert sein.")
+    uploaded_key = save_uploaded_ssh_private_key(upload) if enabled else ""
+    key_name = uploaded_key or (request.form.get("scan_rsync_ssh_key") or "").strip()
+    try:
+        port = int(request.form.get("scan_rsync_ssh_port") or 22)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SSH-Port muss eine Zahl sein.") from exc
+    values = {
+        "rsync_ssh_enabled": 1 if enabled else 0,
+        "rsync_ssh_user": (request.form.get("scan_rsync_ssh_user") or "").strip(),
+        "rsync_ssh_key": key_name,
+        "rsync_ssh_port": port,
+        "rsync_ssh_accept_new_host_key": 1 if bool_from_form("scan_rsync_ssh_accept_new_host_key") else 0,
+    }
+    if not enabled:
+        values.update({"rsync_ssh_user": "", "rsync_ssh_key": "", "rsync_ssh_port": 22, "rsync_ssh_accept_new_host_key": 1})
+    return values
+
+
+def profile_scan_worker(token: str, scan_url: str, scan_depth: int, scan_path_variables: Any = None, auth_username: str = "", auth_password: str = "", ssh_values: Optional[Dict[str, Any]] = None) -> None:
+    profile_scan_set_auth(auth_username, auth_password)
+    ssh_values = ssh_values or {}
+    profile_scan_set_ssh(
+        bool(int(ssh_values.get("rsync_ssh_enabled") or 0)),
+        str(ssh_values.get("rsync_ssh_user") or ""),
+        str(ssh_values.get("rsync_ssh_key") or ""),
+        int(ssh_values.get("rsync_ssh_port") or 22),
+        bool(int(ssh_values.get("rsync_ssh_accept_new_host_key") if ssh_values.get("rsync_ssh_accept_new_host_key") is not None else 1)),
+    )
     try:
         result = scan_apt_repository_url(scan_url, scan_depth, live_token=token, scan_path_variables=scan_path_variables)
         result.pop("_job_token", None)
@@ -4814,6 +6047,8 @@ def profile_scan_worker(token: str, scan_url: str, scan_depth: int, scan_path_va
         result = None
         status = "error"
         error = str(exc)
+    finally:
+        profile_scan_clear_auth()
     with PROFILE_SCAN_JOBS_LOCK:
         job = PROFILE_SCAN_JOBS.get(token)
         if job is not None:
@@ -4830,26 +6065,36 @@ def profile_scan_worker(token: str, scan_url: str, scan_depth: int, scan_path_va
 @app.route("/profile-generator/scan/start", methods=["POST"])
 @require_admin
 def profile_generator_scan_start():
-    profile_scan_jobs_cleanup()
-    scan_url = (request.form.get("scan_url") or "").strip()
-    scan_depth = profile_scan_parse_depth(request.form.get("scan_depth"))
-    scan_path_variables = get_profile_scan_path_variables()
-    token = secrets.token_urlsafe(16)
-    with PROFILE_SCAN_JOBS_LOCK:
-        PROFILE_SCAN_JOBS[token] = {
-            "status": "running",
-            "scan_url": scan_url,
-            "scan_depth": scan_depth,
-            "scan_path_variables": scan_path_variables,
-            "status_lines": [{"level": "info", "message": "Live-Prüfung wurde gestartet.", "timestamp": now_iso()}],
-            "result": None,
-            "error": "",
-            "created_at": time.time(),
-            "updated_at": time.time(),
-        }
-    thread = threading.Thread(target=profile_scan_worker, args=(token, scan_url, scan_depth, scan_path_variables), daemon=True)
-    thread.start()
-    return jsonify({"ok": True, "token": token})
+    try:
+        profile_scan_jobs_cleanup()
+        scan_url = (request.form.get("scan_url") or "").strip()
+        scan_depth = profile_scan_parse_depth(request.form.get("scan_depth"))
+        scan_path_variables = get_profile_scan_path_variables()
+        auth_username = (request.form.get("scan_username") or "").strip()
+        auth_password = request.form.get("scan_password") or ""
+        auth_password_enc = encrypt_secret(auth_password) if auth_password else ""
+        normalized_url = normalize_profile_scan_url(scan_url)
+        parsed = urllib.parse.urlparse(normalized_url)
+        raw_ssh_mode = {"rsync_ssh_enabled": 1 if bool_from_form("scan_rsync_ssh_enabled") else 0}
+        validate_profile_scan_access_mode(normalized_url, auth_username, auth_password, raw_ssh_mode)
+        ssh_values = profile_scan_ssh_from_form()
+        if bool(int(ssh_values.get("rsync_ssh_enabled") or 0)):
+            mirror_like = {"method": "rsync", "host": parsed.hostname or parsed.netloc, "root_path": profile_scan_root_path_from_url(normalized_url), "remote_user": "", "remote_password_enc": "", "extra_options": "", **ssh_values}
+            validate_rsync_ssh_settings(mirror_like, require_key=True)
+        token = secrets.token_urlsafe(16)
+        with PROFILE_SCAN_JOBS_LOCK:
+            PROFILE_SCAN_JOBS[token] = {
+                "status": "running", "scan_url": scan_url, "scan_depth": scan_depth,
+                "scan_path_variables": scan_path_variables, "auth_username": auth_username,
+                "auth_password_enc": auth_password_enc, **ssh_values,
+                "status_lines": [{"level": "info", "message": "Live-Prüfung wurde gestartet." + (" HTTP/FTP-Zugangsdaten werden nur für den Scan verschlüsselt vorgehalten." if auth_username else "") + (" Rsync wird über SSH-Schlüssel geprüft." if ssh_values.get("rsync_ssh_enabled") else ""), "timestamp": now_iso()}],
+                "result": None, "error": "", "created_at": time.time(), "updated_at": time.time(),
+            }
+        thread = threading.Thread(target=profile_scan_worker, args=(token, scan_url, scan_depth, scan_path_variables, auth_username, auth_password, ssh_values), daemon=True)
+        thread.start()
+        return jsonify({"ok": True, "token": token})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.route("/profile-generator/scan/status/<token>")
@@ -4893,12 +6138,21 @@ def profile_generator():
     scan_url = ""
     scan_depth = PROFILE_SCAN_DEFAULT_DEPTH
     scan_token = request.args.get("scan_token", "").strip()
+    scan_auth_username = ""
+    scan_auth_password_set = False
+    scan_ssh_values: Dict[str, Any] = {
+        "rsync_ssh_enabled": 0, "rsync_ssh_user": "", "rsync_ssh_key": "",
+        "rsync_ssh_port": 22, "rsync_ssh_accept_new_host_key": 1,
+    }
     if request.method == "GET" and scan_token:
         with PROFILE_SCAN_JOBS_LOCK:
             job = PROFILE_SCAN_JOBS.get(scan_token)
         if job and job.get("status") == "done" and job.get("result"):
             scan_result = job.get("result")
             scan_url = job.get("scan_url", "")
+            scan_auth_username = str(job.get("auth_username") or "")
+            scan_auth_password_set = bool(job.get("auth_password_enc") and decrypt_secret(str(job.get("auth_password_enc") or "")))
+            scan_ssh_values = {key: job.get(key, default) for key, default in scan_ssh_values.items()}
             scan_depth = profile_scan_parse_depth(job.get("scan_depth"))
             if scan_result.get("usable"):
                 flash("Repository wurde geprüft. Gefundene Suites, Komponenten und Architekturen können jetzt ausgewählt werden.", "success")
@@ -4916,18 +6170,64 @@ def profile_generator():
             scan_url = request.form.get("scan_url", "").strip()
             scan_depth = profile_scan_parse_depth(request.form.get("scan_depth"))
             scan_path_variables = get_profile_scan_path_variables()
+            scan_auth_username = (request.form.get("scan_username") or "").strip()
+            scan_auth_password = request.form.get("scan_password") or ""
+            scan_auth_password_set = bool(scan_auth_password)
             try:
+                normalized_url = normalize_profile_scan_url(scan_url)
+                parsed_scan = urllib.parse.urlparse(normalized_url)
+                raw_ssh_mode = {"rsync_ssh_enabled": 1 if bool_from_form("scan_rsync_ssh_enabled") else 0}
+                validate_profile_scan_access_mode(normalized_url, scan_auth_username, scan_auth_password, raw_ssh_mode)
+                scan_ssh_values = profile_scan_ssh_from_form()
+                if bool(int(scan_ssh_values.get("rsync_ssh_enabled") or 0)):
+                    validate_rsync_ssh_settings({"method": "rsync", "host": parsed_scan.hostname or parsed_scan.netloc, "root_path": profile_scan_root_path_from_url(normalized_url), "remote_user": "", "remote_password_enc": "", "extra_options": "", **scan_ssh_values}, require_key=True)
+                profile_scan_set_auth(scan_auth_username, scan_auth_password)
+                profile_scan_set_ssh(bool(int(scan_ssh_values.get("rsync_ssh_enabled") or 0)), str(scan_ssh_values.get("rsync_ssh_user") or ""), str(scan_ssh_values.get("rsync_ssh_key") or ""), int(scan_ssh_values.get("rsync_ssh_port") or 22), bool(int(scan_ssh_values.get("rsync_ssh_accept_new_host_key") or 0)))
                 scan_result = scan_apt_repository_url(scan_url, scan_depth, scan_path_variables=scan_path_variables)
                 scan_result.pop("_job_token", None)
+                if scan_auth_password:
+                    scan_result["_auth_password_enc"] = encrypt_secret(scan_auth_password)
+                scan_result["_auth_username"] = scan_auth_username
+                scan_result.update({"_" + key: value for key, value in scan_ssh_values.items()})
                 if scan_result.get("usable"):
                     flash("Repository wurde geprüft. Gefundene Suites, Komponenten und Architekturen können jetzt ausgewählt werden.", "success")
                 else:
                     flash("Prüfung abgeschlossen, aber es wurde noch kein vollständig verwendbares dists/-Repository erkannt.", "warning")
             except Exception as exc:
                 flash(str(exc), "danger")
+            finally:
+                profile_scan_clear_auth()
         elif action == "create_from_scan":
             try:
                 values = generator_build_values_from_scan(request.form)
+                posted_scan_token = (request.form.get("scan_token") or "").strip()
+                auth_username = (request.form.get("profile_remote_user") or "").strip()
+                auth_password_enc = (request.form.get("prepared_scan_password") or "").strip()
+                if posted_scan_token:
+                    with PROFILE_SCAN_JOBS_LOCK:
+                        auth_job = PROFILE_SCAN_JOBS.get(posted_scan_token) or {}
+                    auth_username = auth_username or str(auth_job.get("auth_username") or "")
+                    auth_password_enc = auth_password_enc or str(auth_job.get("auth_password_enc") or "")
+                selected_method = str(values.get("method") or "")
+                ssh_profile_values = {
+                    "rsync_ssh_enabled": int(request.form.get("prepared_rsync_ssh_enabled") or 0),
+                    "rsync_ssh_user": (request.form.get("prepared_rsync_ssh_user") or "").strip(),
+                    "rsync_ssh_key": (request.form.get("prepared_rsync_ssh_key") or "").strip(),
+                    "rsync_ssh_port": int(request.form.get("prepared_rsync_ssh_port") or 22),
+                    "rsync_ssh_accept_new_host_key": int(request.form.get("prepared_rsync_ssh_accept_new_host_key") or 1),
+                }
+                if posted_scan_token:
+                    ssh_profile_values = {key: auth_job.get(key, value) for key, value in ssh_profile_values.items()}
+                if selected_method == "rsync" and bool(int(ssh_profile_values.get("rsync_ssh_enabled") or 0)):
+                    values.update(ssh_profile_values)
+                    parsed_source = urllib.parse.urlparse((request.form.get("source_url") or "").strip())
+                    if parsed_source.hostname:
+                        values["host"] = parsed_source.hostname
+                elif selected_method != "rsync":
+                    if auth_username:
+                        values["remote_user"] = auth_username
+                    if auth_password_enc and decrypt_secret(auth_password_enc):
+                        values["_prepared_remote_password_enc"] = auth_password_enc
                 selected_key = request.form.get("selected_gpg_key", "").strip()
                 if selected_key:
                     flash(f"GPG-Key gefunden, aber noch nicht automatisch importiert: {selected_key}", "info")
@@ -4940,6 +6240,7 @@ def profile_generator():
                     form_action=url_for("mirror_new"),
                     return_url=url_for("profile_generator"),
                     return_label="Zurück zum Generator",
+                    **mirror_form_option_context(values),
                 )
             except Exception as exc:
                 flash(str(exc), "danger")
@@ -4956,6 +6257,7 @@ def profile_generator():
                 form_action=url_for("mirror_new"),
                 return_url=url_for("profile_generator"),
                 return_label="Zurück zum Generator",
+                **mirror_form_option_context(values),
             )
     return render_template(
         "profile_generator.html",
@@ -4967,6 +6269,11 @@ def profile_generator():
         max_scan_depth=PROFILE_SCAN_MAX_DEPTH,
         scan_path_variables=get_profile_scan_path_variables(),
         scan_path_variables_text="\n".join(get_profile_scan_path_variables()),
+        scan_token=scan_token,
+        scan_auth_username=scan_auth_username,
+        scan_auth_password_set=scan_auth_password_set,
+        scan_ssh_values=scan_ssh_values,
+        ssh_private_keys=list_ssh_private_keys(),
     )
 
 
@@ -4986,8 +6293,8 @@ def mirror_detail(mirror_id: int):
         return redirect(url_for("dashboard"))
     command_error = ""
     try:
-        cmd = shell_join(build_debmirror_command(mirror, dry_run=False))
-        dry_cmd = shell_join(build_debmirror_command(mirror, dry_run=True))
+        cmd = shell_join(display_debmirror_command(mirror, dry_run=False))
+        dry_cmd = shell_join(display_debmirror_command(mirror, dry_run=True))
     except ValueError as exc:
         # Die Detailseite darf durch eine ungültige Profil-/Keyring-Konfiguration
         # nicht mit HTTP 500 abbrechen. Für reine Anzeige wird der Befehl ohne
@@ -4995,8 +6302,8 @@ def mirror_detail(mirror_id: int):
         # im Template angezeigt. Beim Job-Start bleibt die Prüfung aktiv.
         command_error = str(exc)
         try:
-            cmd = shell_join(build_debmirror_command(mirror, dry_run=False, validate_keyring=False))
-            dry_cmd = shell_join(build_debmirror_command(mirror, dry_run=True, validate_keyring=False))
+            cmd = shell_join(display_debmirror_command(mirror, dry_run=False, validate_keyring=False))
+            dry_cmd = shell_join(display_debmirror_command(mirror, dry_run=True, validate_keyring=False))
         except Exception as inner_exc:
             command_error = f"{command_error} Zusätzlich konnte der Befehl nicht angezeigt werden: {inner_exc}"
             cmd = "Befehl konnte nicht generiert werden."
@@ -5063,6 +6370,29 @@ def mirror_keyrings_save(mirror_id: int):
     return redirect(url_for("mirror_detail", mirror_id=mirror_id))
 
 
+@app.route("/sizes/recalculate-all", methods=["POST"])
+@require_admin
+def all_sizes_recalculate():
+    try:
+        result = request_all_configured_size_calculations()
+        total = int(result.get("total") or 0)
+        started = int(result.get("started") or 0)
+        waiting = int(result.get("waiting") or 0)
+        target_label = "Verzeichnis" if total == 1 else "Verzeichnisse"
+        if total == 0:
+            flash("Es wurden keine vorhandenen konfigurierten Zielverzeichnisse gefunden.", "info")
+        elif waiting:
+            flash(f"Größenaktualisierung für {total} {target_label} angefordert: {started} gestartet, {waiting} bereits aktiv oder vorgemerkt.", "success")
+        else:
+            flash(f"Größenaktualisierung für alle {total} vorhandenen {target_label} wurde gestartet.", "success")
+        event_target_label = "Ziel" if total == 1 else "Ziele"
+        add_event("info", f"Alle Größen aktualisieren: {total} {event_target_label}, {started} gestartet, {waiting} aktiv/vorgemerkt.")
+    except Exception as exc:
+        log_webui_exception("all_sizes_recalculate", exc)
+        flash(f"Die gemeinsame Größenaktualisierung konnte nicht gestartet werden: {exc}", "danger")
+    return redirect(request.referrer or url_for("dashboard"))
+
+
 @app.route("/mirrors/<int:mirror_id>/size/recalculate", methods=["POST"])
 @require_admin
 def mirror_size_recalculate(mirror_id: int):
@@ -5098,23 +6428,54 @@ def mirror_edit(mirror_id: int):
         keyrings=mirror_keyring_form_options(mirror),
         return_url=url_for("mirror_detail", mirror_id=mirror_id),
         return_label="Zurück zum Profil",
+        **mirror_form_option_context(mirror),
     )
 
 
 def save_mirror(mirror_id: Optional[int]):
     try:
+        existing_mirror = get_mirror(int(mirror_id)) if mirror_id is not None else None
         had_managed_keyring_assignments = bool(mirror_keyring_assignment_items(int(mirror_id))) if mirror_id is not None else False
         name = request.form.get("name", "").strip()
         if not name:
             raise ValueError("Name darf nicht leer sein.")
         target_path = normalize_target_path(request.form.get("target_path", ""))
         keyring = allowed_keyring_path(request.form.get("keyring", ""))
+        method = request.form.get("method", "rsync").strip()
+        remote_user = request.form.get("remote_user", "").strip()
+        new_remote_password = request.form.get("remote_password", "")
+        rsync_ssh_enabled = bool_from_form("rsync_ssh_enabled")
+        ssh_upload = request.files.get("rsync_ssh_key_upload")
+        if ssh_upload and getattr(ssh_upload, "filename", "") and (method != "rsync" or not rsync_ssh_enabled):
+            raise ValueError("Ein privater SSH-Schlüssel kann nur bei Methode rsync und aktivierter SSH-Schlüsselanmeldung hochgeladen werden.")
+        uploaded_ssh_key = save_uploaded_ssh_private_key(ssh_upload) if method == "rsync" and rsync_ssh_enabled else ""
+        rsync_ssh_key = uploaded_ssh_key or request.form.get("rsync_ssh_key", "").strip()
+        clear_remote_password = bool_from_form("clear_remote_password")
+        prepared_remote_password = request.form.get("prepared_remote_password", "").strip()
+        if clear_remote_password:
+            remote_password_enc = ""
+        elif new_remote_password:
+            remote_password_enc = encrypt_secret(new_remote_password)
+        elif existing_mirror is not None:
+            remote_password_enc = str(existing_mirror.get("remote_password_enc") or "")
+        elif prepared_remote_password.startswith((SECRET_PREFIX, LEGACY_SECRET_PREFIX)) and decrypt_secret(prepared_remote_password):
+            remote_password_enc = encrypt_secret(decrypt_secret(prepared_remote_password))
+        else:
+            remote_password_enc = ""
+        if method == "rsync":
+            remote_user = ""
+            remote_password_enc = ""
+        else:
+            rsync_ssh_enabled = False
+            rsync_ssh_key = ""
+        raw_root_path = request.form.get("root_path", "")
+        normalized_root_path = validate_rsync_module_path(raw_root_path) if method == "rsync" else normalize_root_path(raw_root_path)
         values = {
             "name": name,
             "enabled": bool_from_form("enabled"),
-            "method": request.form.get("method", "rsync"),
+            "method": method,
             "host": request.form.get("host", "").strip(),
-            "root_path": normalize_root_path(request.form.get("root_path", "")),
+            "root_path": normalized_root_path,
             "target_path": target_path,
             "dists": request.form.get("dists", "").strip(),
             "sections": request.form.get("sections", "").strip(),
@@ -5129,8 +6490,16 @@ def save_mirror(mirror_id: Optional[int]):
             "getcontents": bool_from_form("getcontents"),
             "i18n": bool_from_form("i18n"),
             "timeout_seconds": int(request.form["timeout_seconds"]) if request.form.get("timeout_seconds") else None,
-            "rsync_extra": request.form.get("rsync_extra", "").strip(),
-            "extra_options": request.form.get("extra_options", "").strip(),
+            "rsync_extra": normalize_rsync_extra_values(request.form.getlist("rsync_extra_value")),
+            "extra_options": extra_options_from_form(request.form),
+            "manual_extra_options": serialize_manual_extra_options(request.form.get("manual_extra_options", "")),
+            "remote_user": remote_user,
+            "remote_password_enc": remote_password_enc,
+            "rsync_ssh_enabled": 1 if rsync_ssh_enabled else 0,
+            "rsync_ssh_user": request.form.get("rsync_ssh_user", "").strip() if rsync_ssh_enabled else "",
+            "rsync_ssh_key": rsync_ssh_key if rsync_ssh_enabled else "",
+            "rsync_ssh_port": int(request.form.get("rsync_ssh_port") or 22) if rsync_ssh_enabled else 22,
+            "rsync_ssh_accept_new_host_key": 1 if (rsync_ssh_enabled and bool_from_form("rsync_ssh_accept_new_host_key")) else 0,
             "include_patterns": request.form.get("include_patterns", "").strip(),
             "exclude_patterns": request.form.get("exclude_patterns", "").strip(),
             "schedule_mode": request.form.get("schedule_mode", "manual"),
@@ -5142,12 +6511,9 @@ def save_mirror(mirror_id: Optional[int]):
         for required in ("host", "root_path", "dists", "sections", "archs"):
             if not values[required]:
                 raise ValueError(f"{required} darf nicht leer sein.")
-        if values["method"] not in {"rsync", "http", "https", "ftp"}:
-            raise ValueError("Ungültige Methode.")
-        parse_extra_options(values.get("extra_options") or "")
-        if values["schedule_mode"] not in {"manual", "daily", "weekly", "interval"}:
-            raise ValueError("Ungültiger Zeitplanmodus.")
-        parse_hhmm(values["schedule_time"])
+        parse_manual_extra_options(values.get("manual_extra_options") or "")
+        normalize_mirror_option_compatibility(values)
+        validate_mirror_configuration(values, require_ssh_key=True)
         created_new = mirror_id is None
         with db() as con:
             if mirror_id is None:
@@ -5187,6 +6553,26 @@ def save_mirror(mirror_id: Optional[int]):
         mirror["verbose"] = bool_from_form("verbose")
         mirror["getcontents"] = bool_from_form("getcontents")
         mirror["i18n"] = bool_from_form("i18n")
+        mirror["rsync_extra"] = ",".join(request.form.getlist("rsync_extra_value"))
+        mirror["manual_extra_options"] = request.form.get("manual_extra_options", "")
+        mirror["remote_user"] = request.form.get("remote_user", "").strip()
+        mirror["remote_password_enc"] = (existing_mirror or {}).get("remote_password_enc", "") if 'existing_mirror' in locals() else ""
+        mirror["rsync_ssh_enabled"] = bool_from_form("rsync_ssh_enabled")
+        mirror["rsync_ssh_user"] = request.form.get("rsync_ssh_user", "").strip()
+        mirror["rsync_ssh_key"] = request.form.get("rsync_ssh_key", "").strip()
+        mirror["rsync_ssh_port"] = request.form.get("rsync_ssh_port", "22")
+        mirror["rsync_ssh_accept_new_host_key"] = bool_from_form("rsync_ssh_accept_new_host_key")
+        raw_extra_tokens: List[str] = []
+        for raw_flag in request.form.getlist("extra_flag"):
+            spec = DEBMIRROR_EXTRA_OPTION_BY_FLAG.get(raw_flag)
+            if not spec:
+                continue
+            if spec.get("takes_value"):
+                field_name = f"extra_value_{spec['key']}"
+                raw_extra_tokens.append(f"{raw_flag}={request.form.get(field_name, '')}")
+            else:
+                raw_extra_tokens.append(raw_flag)
+        mirror["extra_options"] = serialize_extra_options(raw_extra_tokens)
         mirror["id"] = mirror_id
         title = "Mirror anlegen" if mirror_id is None else "Mirror bearbeiten"
         return_url = url_for("mirrors_page") if mirror_id is None else url_for("mirror_detail", mirror_id=mirror_id)
@@ -5198,6 +6584,7 @@ def save_mirror(mirror_id: Optional[int]):
             keyrings=list_keyring_files(),
             return_url=return_url,
             return_label=return_label,
+            **mirror_form_option_context(mirror),
         ), 400
 
 
@@ -5981,7 +7368,7 @@ def apply_debmirror_options(tokens: List[str], values: Dict[str, Any], warnings:
                 "--method", "--host", "--root", "--dist", "--dists", "--section", "--sections",
                 "--arch", "--archs", "--keyring", "--diff", "--timeout", "--rsync-extra",
                 "--include", "--exclude",
-            }
+            } | {item["flag"] for item in DEBMIRROR_EXTRA_OPTION_CATALOG if item.get("takes_value")}
             if opt in takes_value:
                 val, used_i = option_value(tok, i)
                 i = used_i
@@ -6027,11 +7414,16 @@ def apply_debmirror_options(tokens: List[str], values: Dict[str, Any], warnings:
                 include_patterns.append(val)
             elif opt == "--exclude" and val:
                 exclude_patterns.append(val)
-            elif opt in SAFE_EXTRA_FLAGS:
-                if opt not in extra_options:
-                    extra_options.append(opt)
-                if opt in {"--no-check-gpg", "--ignore-release-gpg"}:
-                    warnings.append(f"Sicherheitsrelevante Option {opt} wurde übernommen. Prüfe, ob du wirklich ohne Release-GPG-Prüfung spiegeln willst.")
+            elif opt in DEBMIRROR_EXTRA_OPTION_BY_FLAG:
+                spec = DEBMIRROR_EXTRA_OPTION_BY_FLAG[opt]
+                try:
+                    extra_token = f"{opt}={validate_debmirror_extra_value(opt, val or '')}" if spec.get("takes_value") else opt
+                    if extra_token not in extra_options:
+                        extra_options.append(extra_token)
+                    if opt in {"--no-check-gpg", "--ignore-release-gpg", "--disable-ssl-verification"}:
+                        warnings.append(f"Sicherheitsrelevante Option {opt} wurde übernommen. Prüfe diese Einstellung sorgfältig.")
+                except Exception as exc:
+                    warnings.append(f"Option {opt} konnte nicht übernommen werden: {exc}")
             else:
                 if opt not in {"--dry-run"}:
                     warnings.append(f"Option {opt} wurde nicht automatisch übernommen.")
@@ -6046,7 +7438,11 @@ def apply_debmirror_options(tokens: List[str], values: Dict[str, Any], warnings:
     if exclude_patterns:
         values["exclude_patterns"] = ",".join(exclude_patterns)
     if extra_options:
-        values["extra_options"] = " ".join(extra_options)
+        try:
+            validate_extra_option_conflicts(extra_options)
+            values["extra_options"] = serialize_extra_options(extra_options)
+        except Exception as exc:
+            warnings.append(f"Zusatzoptionen enthalten einen Konflikt: {exc}")
     if positional:
         values["target_path"] = normalize_import_target(positional[-1], warnings)
 
@@ -6141,7 +7537,8 @@ def insert_mirror_values(values: Dict[str, Any]) -> int:
     clean["target_path"] = normalize_target_path(str(clean.get("target_path") or ""))
     clean["keyring"] = allowed_keyring_path(str(clean.get("keyring") or "")) if clean.get("keyring") else ""
     clean["keyring_fingerprint"] = normalize_fingerprint(str(clean.get("keyring_fingerprint") or ""))
-    clean["root_path"] = normalize_root_path(str(clean.get("root_path") or ""))
+    raw_import_root = str(clean.get("root_path") or "")
+    clean["root_path"] = validate_rsync_module_path(raw_import_root) if clean.get("method") == "rsync" else normalize_root_path(raw_import_root)
     clean["host"] = str(clean.get("host") or "").strip()
     clean["dists"] = str(clean.get("dists") or "").strip()
     clean["sections"] = str(clean.get("sections") or "").strip()
@@ -6152,6 +7549,8 @@ def insert_mirror_values(values: Dict[str, Any]) -> int:
     if clean["method"] not in {"rsync", "http", "https", "ftp"}:
         raise ValueError("Ungültige Methode.")
     parse_extra_options(clean.get("extra_options") or "")
+    normalize_mirror_option_compatibility(clean)
+    validate_mirror_configuration(clean, require_ssh_key=True)
     clean["created_at"] = now_iso()
     clean["updated_at"] = now_iso()
     with db() as con:
@@ -8662,6 +10061,31 @@ def users_page():
     if request.method == "POST":
         action = request.form.get("action", "save")
         try:
+            if action == "change_password":
+                user = current_user() or {}
+                current_password = request.form.get("current_password", "")
+                username = request.form.get("username", "").strip()
+                password = request.form.get("password", "")
+                password2 = request.form.get("password2", "")
+                if not verify_admin_login(str(user.get("username") or ""), current_password):
+                    raise ValueError("Aktuelles Passwort ist falsch.")
+                if not username:
+                    raise ValueError("Benutzername darf nicht leer sein.")
+                if len(password) < 8:
+                    raise ValueError("Das neue Passwort muss mindestens 8 Zeichen lang sein.")
+                if password != password2:
+                    raise ValueError("Die Passwort-Wiederholung passt nicht.")
+                if not user.get("id"):
+                    raise ValueError("Der aktuell angemeldete Benutzer konnte nicht eindeutig ermittelt werden.")
+                create_or_update_user(username, password, role=user.get("role", "admin"), enabled=1, user_id=int(user["id"]))
+                settings = load_settings()
+                settings.pop("admin_username", None)
+                settings.pop("admin_password_hash", None)
+                settings["auth_updated_at"] = now_iso()
+                save_settings(settings)
+                session.clear()
+                flash("Zugang wurde geändert. Bitte neu einloggen.", "success")
+                return redirect(url_for("login"))
             if action == "save":
                 uid_raw = request.form.get("user_id", "").strip()
                 uid = int(uid_raw) if uid_raw else None
@@ -8688,7 +10112,13 @@ def users_page():
             raise ValueError("Unbekannte Aktion.")
         except Exception as exc:
             flash(str(exc), "danger")
-    return render_template("users.html", users=list_users(), edit_user=edit_user)
+    return render_template(
+        "users.html",
+        users=list_users(),
+        edit_user=edit_user,
+        auth_config=admin_config() or {},
+        settings_path=str(SETTINGS_PATH),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -8781,10 +10211,25 @@ def api_status():
     return jsonify({"ok": True, "app": APP_NAME, "version": APP_VERSION, "storage": disk_usage_info(MIRROR_BASE), "storage_guard": mirror_storage_guard_info(), "mirrors": mirrors_n, "running_jobs": running_n, "queued_jobs": queued_jobs_count()})
 
 
+def api_safe_mirror(mirror: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(mirror)
+    result.pop("remote_password_enc", None)
+    key_name = str(result.pop("rsync_ssh_key", "") or "")
+    result["remote_password_set"] = mirror_remote_password_set(mirror)
+    result["rsync_ssh_key_set"] = bool(key_name)
+    result["rsync_ssh_key_fingerprint"] = ""
+    if key_name:
+        try:
+            result["rsync_ssh_key_fingerprint"] = ssh_key_fingerprint(SSH_KEY_DIR / allowed_ssh_key_name(key_name, must_exist=True))
+        except Exception:
+            result["rsync_ssh_key_fingerprint"] = "unavailable"
+    return result
+
+
 @app.route("/api/v1/mirrors")
 @require_api_auth
 def api_mirrors():
-    rows = list_mirrors()
+    rows = [api_safe_mirror(row) for row in list_mirrors()]
     for row in rows:
         row["last_job"] = get_last_job(row["id"])
         row["size_info"] = mirror_stats(row)
@@ -8797,14 +10242,16 @@ def api_mirror(mirror_id: int):
     mirror = get_mirror(mirror_id)
     if not mirror:
         return jsonify({"ok": False, "error": "Mirror not found"}), 404
+    raw_mirror = mirror
+    mirror = api_safe_mirror(raw_mirror)
     mirror["last_job"] = get_last_job(mirror_id)
-    mirror["size_info"] = mirror_stats(mirror)
+    mirror["size_info"] = mirror_stats(raw_mirror)
     try:
-        mirror["command"] = shell_join(build_debmirror_command(mirror, dry_run=False))
+        mirror["command"] = shell_join(display_debmirror_command(raw_mirror, dry_run=False))
         mirror["command_error"] = ""
     except ValueError as exc:
         mirror["command_error"] = str(exc)
-        mirror["command"] = shell_join(build_debmirror_command(mirror, dry_run=False, validate_keyring=False))
+        mirror["command"] = shell_join(display_debmirror_command(raw_mirror, dry_run=False, validate_keyring=False))
     return jsonify({"ok": True, "mirror": mirror})
 
 
@@ -8930,6 +10377,9 @@ def create_full_backup(label: str = "manual") -> Path:
     if secret_status["unreadable_fields"]:
         fields = ", ".join(secret_status["unreadable_fields"])
         raise ValueError(f"Backup abgebrochen: Benachrichtigungs-Geheimwerte können nicht entschlüsselt werden ({fields}). Werte neu setzen und erneut sichern.")
+    if secret_status.get("unreadable_mirror_passwords"):
+        profiles = ", ".join(secret_status["unreadable_mirror_passwords"])
+        raise ValueError(f"Backup abgebrochen: Remote-Passwörter von Mirror-Profilen können nicht entschlüsselt werden ({profiles}). Passwörter neu setzen und erneut sichern.")
     APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backup_path = APP_BACKUP_DIR / safe_backup_name(label)
     tmp_db = APP_DATA_DIR / f"backup-db-{secrets.token_hex(6)}.sqlite3"
@@ -8938,6 +10388,7 @@ def create_full_backup(label: str = "manual") -> Path:
         (APP_KEYRING_DIR, "keyrings"),
         (IMPORT_SCRIPT_DIR, "import-scripts"),
         (USER_SCRIPT_DIR, "user-scripts"),
+        (SSH_DIR, "ssh"),
     ]
     permissions = backup_permission_map(permission_sources)
     manifest = {
@@ -8945,7 +10396,7 @@ def create_full_backup(label: str = "manual") -> Path:
         "app_version": APP_VERSION,
         "created_at": now_iso(),
         "label": label,
-        "includes": ["database", "settings", "notification_secret_key", "config_export", "keyrings", "import_scripts", "user_scripts", "file_permissions"],
+        "includes": ["database", "settings", "application_secret_key", "config_export", "keyrings", "import_scripts", "user_scripts", "ssh_keys", "ssh_known_hosts", "file_permissions"],
     }
     try:
         with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -8960,6 +10411,7 @@ def create_full_backup(label: str = "manual") -> Path:
             add_dir_to_zip(zf, APP_KEYRING_DIR, "keyrings")
             add_dir_to_zip(zf, IMPORT_SCRIPT_DIR, "import-scripts")
             add_dir_to_zip(zf, USER_SCRIPT_DIR, "user-scripts")
+            add_dir_to_zip(zf, SSH_DIR, "ssh")
         add_event("info", f"Backup erstellt: {backup_path.name}")
         return backup_path
     finally:
@@ -9043,13 +10495,38 @@ def copy_table_rows(src_db: Path, table: str, replace: bool = False) -> int:
 
 def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include_users: bool = True) -> Dict[str, int]:
     tmp = safe_extract_zip_to_tmp(zip_path)
-    result = {"mirrors": 0, "healthchecks": 0, "schedules": 0, "users": 0, "api_tokens": 0, "keyrings": 0, "import_scripts": 0, "user_scripts": 0, "settings": 0, "secret_key": 0, "permissions": 0}
+    result = {"mirrors": 0, "healthchecks": 0, "schedules": 0, "users": 0, "api_tokens": 0, "keyrings": 0, "import_scripts": 0, "user_scripts": 0, "ssh_files": 0, "settings": 0, "secret_key": 0, "permissions": 0}
     try:
         manifest_path = tmp / "manifest.json"
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if manifest.get("format") != BACKUP_FORMAT:
                 raise ValueError("Das ZIP ist kein DebMirror-Manager-Vollbackup.")
+        # Restore the persistent encryption key before database/settings so
+        # encrypted notification and mirror credentials are readable as soon as
+        # their records are copied back into the application.
+        restored_secret_key = tmp / "secrets" / "notification-secrets.key"
+        if restored_secret_key.exists():
+            key_bytes = restored_secret_key.read_bytes().strip()
+            if Fernet is None:
+                raise ValueError("Verschlüsselungsbibliothek fehlt; Benachrichtigungs-Schlüssel kann nicht geprüft werden.")
+            try:
+                Fernet(key_bytes)
+            except Exception as exc:
+                raise ValueError("Benachrichtigungs-Schlüssel im Backup ist ungültig.") from exc
+            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp_key = NOTIFICATION_SECRET_KEY_PATH.with_suffix(".restore-tmp")
+            tmp_key.write_bytes(key_bytes + b"\n")
+            try:
+                tmp_key.chmod(0o600)
+            except OSError:
+                pass
+            tmp_key.replace(NOTIFICATION_SECRET_KEY_PATH)
+            try:
+                NOTIFICATION_SECRET_KEY_PATH.chmod(0o600)
+            except OSError:
+                pass
+            result["secret_key"] = 1
         db_snapshot = tmp / "database" / "debmirror-manager.sqlite3"
         if db_snapshot.exists():
             if replace:
@@ -9073,28 +10550,6 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                 result["mirrors"] = imported.get("mirrors", 0)
                 result["healthchecks"] = imported.get("healthchecks", 0)
                 result["settings"] = imported.get("settings", 0)
-        restored_secret_key = tmp / "secrets" / "notification-secrets.key"
-        if restored_secret_key.exists():
-            key_bytes = restored_secret_key.read_bytes().strip()
-            if Fernet is None:
-                raise ValueError("Verschlüsselungsbibliothek fehlt; Benachrichtigungs-Schlüssel kann nicht geprüft werden.")
-            try:
-                Fernet(key_bytes)
-            except Exception as exc:
-                raise ValueError("Benachrichtigungs-Schlüssel im Backup ist ungültig.") from exc
-            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp_key = NOTIFICATION_SECRET_KEY_PATH.with_suffix(".restore-tmp")
-            tmp_key.write_bytes(key_bytes + b"\n")
-            try:
-                tmp_key.chmod(0o600)
-            except OSError:
-                pass
-            tmp_key.replace(NOTIFICATION_SECRET_KEY_PATH)
-            try:
-                NOTIFICATION_SECRET_KEY_PATH.chmod(0o600)
-            except OSError:
-                pass
-            result["secret_key"] = 1
         if (tmp / "settings.json").exists():
             shutil.copy2(tmp / "settings.json", SETTINGS_PATH)
             result["settings"] += 1
@@ -9113,6 +10568,7 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
             (tmp / "keyrings", APP_KEYRING_DIR, "keyrings", "keyrings"),
             (tmp / "import-scripts", IMPORT_SCRIPT_DIR, "import_scripts", "import-scripts"),
             (tmp / "user-scripts", USER_SCRIPT_DIR, "user_scripts", "user-scripts"),
+            (tmp / "ssh", SSH_DIR, "ssh_files", "ssh"),
         ]:
             if folder.exists():
                 if replace and dest.exists():
@@ -9150,6 +10606,18 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                             except OSError:
                                 pass
                         result[key] += 1
+        if SSH_DIR.exists():
+            try:
+                SSH_DIR.chmod(0o700)
+                SSH_KEY_DIR.mkdir(parents=True, exist_ok=True)
+                SSH_KEY_DIR.chmod(0o700)
+                for key_path in SSH_KEY_DIR.iterdir():
+                    if key_path.is_file() and not key_path.is_symlink():
+                        key_path.chmod(0o600)
+                if SSH_KNOWN_HOSTS_PATH.exists():
+                    SSH_KNOWN_HOSTS_PATH.chmod(0o600)
+            except OSError:
+                pass
         migrate_notification_secret_storage()
         secret_status = notification_secret_storage_status()
         if secret_status["unreadable_fields"]:
@@ -9218,7 +10686,8 @@ def backup_download(name: str):
 
 EXPORT_MIRROR_COLUMNS = [
     "name", "enabled", "method", "host", "root_path", "target_path", "dists", "sections", "archs", "source_mode", "keyring", "keyring_fingerprint",
-    "postcleanup", "diff_mode", "progress", "verbose", "getcontents", "i18n", "timeout_seconds", "rsync_extra", "extra_options",
+    "postcleanup", "diff_mode", "progress", "verbose", "getcontents", "i18n", "timeout_seconds", "rsync_extra", "extra_options", "manual_extra_options", "remote_user",
+    "rsync_ssh_enabled", "rsync_ssh_user", "rsync_ssh_key", "rsync_ssh_port", "rsync_ssh_accept_new_host_key",
     "include_patterns", "exclude_patterns", "schedule_mode", "schedule_time", "schedule_weekday", "interval_hours",
 ]
 
@@ -9248,9 +10717,16 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
         for m in data.get("mirrors", []):
             clean = default_mirror_values({k: m.get(k) for k in EXPORT_MIRROR_COLUMNS if k in m})
             clean["target_path"] = normalize_target_path(str(clean.get("target_path") or ""))
-            clean["root_path"] = normalize_root_path(str(clean.get("root_path") or ""))
+            raw_config_root = str(clean.get("root_path") or "")
+            clean["root_path"] = validate_rsync_module_path(raw_config_root) if clean.get("method") == "rsync" else normalize_root_path(raw_config_root)
             clean["keyring"] = allowed_keyring_path(str(clean.get("keyring") or "")) if clean.get("keyring") else ""
             clean["keyring_fingerprint"] = normalize_fingerprint(str(clean.get("keyring_fingerprint") or ""))
+            clean["remote_password_enc"] = ""
+            clean["rsync_ssh_enabled"] = 1 if clean.get("rsync_ssh_enabled") else 0
+            clean["rsync_ssh_port"] = int(clean.get("rsync_ssh_port") or 22)
+            clean["rsync_ssh_accept_new_host_key"] = 1 if clean.get("rsync_ssh_accept_new_host_key") else 0
+            normalize_mirror_option_compatibility(clean)
+            validate_mirror_configuration(clean, require_ssh_key=False)
             clean["updated_at"] = now_iso()
             row = con.execute("SELECT id FROM mirrors WHERE name=?", (clean["name"],)).fetchone()
             if row and replace_existing:
@@ -9737,14 +11213,33 @@ def help_page():
     return render_template("markdown_page.html", title="Anleitung", content_html=render_markdown_light(content))
 
 
-BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.45\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
+BUILTIN_HELP = "# DebMirror Manager\n\nDie ausführliche Anleitung README.md wurde nicht gefunden. Bitte prüfe die Projektinstallation.\n"
+BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.75\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
 
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
 
+def cleanup_stale_job_auth_configs(max_age_seconds: int = 86400) -> None:
+    try:
+        JOB_AUTH_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - max(300, int(max_age_seconds))
+        stale_candidates: List[Path] = []
+        for pattern in ("job-*.conf", "job-*.rsync-pass", "scan-*.rsync-pass"):
+            stale_candidates.extend(JOB_AUTH_CONFIG_DIR.glob(pattern))
+        for path in stale_candidates:
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+    except Exception as exc:
+        log_webui_exception("cleanup_stale_job_auth_configs", exc)
+
+
 def create_app() -> Flask:
     init_db()
+    cleanup_stale_job_auth_configs()
     ensure_initial_user_from_legacy_config()
     migrate_notification_secret_storage()
     recover_stale_jobs()

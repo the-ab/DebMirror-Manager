@@ -130,7 +130,19 @@
   <section class="card">
     <h2>Speicher / Größe</h2>
     <dl>
-      <dt>Mirror-Größe</dt><dd><strong>{{ stats.size_h }}</strong>{% if stats.status %}<br><small>Status: {{ stats.status }}{% if stats.calculated_at %} · Stand: {{ stats.calculated_at }}{% endif %}</small>{% endif %}{% if stats.error %}<br><small>{{ stats.error }}</small>{% endif %}{% if is_admin %}<form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=mirror.id) }}" class="inline"><button type="submit">Größe neu berechnen</button></form>{% endif %}</dd>
+      <dt>Mirror-Größe</dt><dd>
+        <div class="size-value-actions">
+          <strong>{{ stats.size_h }}</strong>
+          {% if is_admin %}
+          <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=mirror.id) }}" class="inline size-refresh-form">
+            <button type="submit" class="icon-button size-refresh-button" title="Mirror-Größe jetzt neu berechnen" aria-label="Mirror-Größe für {{ mirror.name }} neu berechnen">↻</button>
+          </form>
+          {% endif %}
+        </div>
+        {% if stats.status %}<span class="badge {{ size_status_class(stats.status) }} size-status" title="{{ size_status_title(stats.status) }}">{{ size_status_label(stats.status) }}</span>{% endif %}
+        {% if stats.calculated_at %}<small class="size-check-time">letzte Prüfung: {{ stats.calculated_at }}</small>{% endif %}
+        {% if stats.error %}<br><small>{{ stats.error }}</small>{% endif %}
+      </dd>
       <dt>Ziel existiert</dt><dd>{{ 'Ja' if stats.exists else 'Nein' }}</dd>
       <dt>Basis frei</dt><dd>{{ storage.free_h }} von {{ storage.total_h }}</dd>
       <dt>Basis genutzt</dt><dd>{{ storage.percent }}%</dd>

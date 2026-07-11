@@ -25,6 +25,7 @@ RUN apt-get update \
         lftp \
         lz4 \
         rsync \
+        openssh-client \
         xz-utils \
         bzip2 \
         tzdata \
