@@ -1,5 +1,6 @@
 services:
   debmirror-manager:
+    image: debmirror-manager:latest
     build: .
     container_name: debmirror-manager
     env_file:

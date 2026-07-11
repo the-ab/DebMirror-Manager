@@ -153,6 +153,22 @@ INNER_PY
 }
 compose_has_containers() { local dc="$1"; $dc ps -q 2>/dev/null | grep -q .; }
 compose_has_running_containers() { local dc="$1"; $dc ps --status running -q 2>/dev/null | grep -q .; }
+cleanup_legacy_image_name() {
+  local legacy_image="${PROJECT_NAME}-${PROJECT_NAME}:latest"
+  local current_image="${PROJECT_NAME}:latest"
+  local legacy_id current_id
+  legacy_id="$(docker image inspect --format '{{.Id}}' "$legacy_image" 2>/dev/null || true)"
+  [ -n "$legacy_id" ] || return 0
+  current_id="$(docker image inspect --format '{{.Id}}' "$current_image" 2>/dev/null || true)"
+  if [ -n "$current_id" ] && [ "$legacy_id" = "$current_id" ]; then
+    docker image rm "$legacy_image" >/dev/null 2>&1 || true
+    log "Alte doppelte Image-Bezeichnung entfernt: ${legacy_image}"
+  elif docker image rm "$legacy_image" >/dev/null 2>&1; then
+    log "Nicht mehr verwendetes Alt-Image entfernt: ${legacy_image}"
+  else
+    log "Hinweis: Alt-Image ${legacy_image} ist noch in Benutzung und wurde nicht entfernt."
+  fi
+}
 build_and_start() {
   local dc="$1" use_nginx="$2"
   if [ "$NO_BUILD" -eq 1 ]; then log "--no-build gesetzt: Container werden nicht gebaut/gestartet."; return; fi
@@ -167,6 +183,7 @@ build_and_start() {
     $dc up -d --build --remove-orphans --force-recreate debmirror-manager
     $dc rm -sf mirror-nginx >/dev/null 2>&1 || true
   fi
+  cleanup_legacy_image_name
 }
 
 need_cmd python3

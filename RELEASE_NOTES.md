@@ -1,5 +1,28 @@
 # Release Notes
 
+## v0.1.77
+
+- Update-Kompatibilitätsfehler aus v0.1.76 behoben: `gunicorn.conf.py` liegt jetzt innerhalb von `app/` und wird dadurch auch vom älteren v0.1.75-Updater sicher übernommen.
+- Dockerfile lädt die Gunicorn-Konfiguration aus `/app/app/gunicorn.conf.py`; eine separate neue Datei im Projektstamm ist für den Build nicht mehr erforderlich.
+- Update aus v0.1.75 sowie aus einer nach dem fehlgeschlagenen v0.1.76-Build teilweise aktualisierten Installation unterstützt.
+- Expliziten Image-Namen `debmirror-manager:latest` in Docker Compose gesetzt; die automatische Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` entsteht nicht mehr.
+- `install.sh` und der neue v0.1.77-Updater bereinigen die frühere doppelte Image-Bezeichnung bei späteren Rebuilds/Updates; nach dem erstmaligen Wechsel mit einem älteren Updater kann das ungenutzte Alt-Image einmalig manuell entfernt werden.
+- Anleitung um Update-Wiederherstellung und eindeutige Image-Bezeichnung ergänzt.
+- VERSION auf 0.1.77 gesetzt.
+
+## v0.1.76
+
+- Flask-/Werkzeug-Entwicklungsserver durch den produktiven WSGI-Server Gunicorn ersetzt.
+- Gunicorn bewusst mit einem Worker und mehreren Threads konfiguriert, damit Scheduler, Job-Warteschlange und In-Process-Prozessstatus nicht mehrfach gestartet werden.
+- Lang laufende Live-Log-Verbindungen durch deaktivierten Worker-Timeout und SSE-Heartbeats abgesichert.
+- HTTP-Zugriffslog standardmäßig deaktiviert, damit periodische Live-Log-Aufrufe das Containerlog nicht füllen; über `WSGI_ACCESS_LOG=1` optional aktivierbar.
+- Live-Log-Abbruch beim Jobende behoben: nicht vorhandenen Aufruf `format_job_duration()` durch die zentrale Dauerberechnung `enrich_job_duration()` ersetzt.
+- Dauer, Ende-Status und Fehlerdiagnose werden nach Jobende wieder zuverlässig über das `done`-Ereignis an die offene Jobseite übertragen.
+- Normale Browser-Abbrüche und Verbindungs-Resets des Live-Logs werden ohne Traceback beendet.
+- SSE-Antworten um Cache-Sperre und `X-Accel-Buffering: no` ergänzt.
+- `gunicorn.conf.py`, WSGI-Einstellungen, Update-Sicherung und Anleitung ergänzt.
+- VERSION auf 0.1.76 gesetzt.
+
 ## v0.1.75
 
 - Hover-Designfehler am Größen-Refresh behoben: die bisherige Drehung des Buttons konnte in der Benutzerskript-Tabelle kurzzeitig einen horizontalen Scrollbalken erzeugen.

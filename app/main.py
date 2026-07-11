@@ -7081,53 +7081,80 @@ def job_stream(job_id: int):
         except Exception:
             position = 0
         last_status = None
-        while True:
-            with db() as con:
-                row = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if not row:
-                yield "event: error\ndata: Job nicht gefunden\n\n"
-                break
-            path = Path(row["log_path"])
-            if path.exists():
-                try:
-                    current_size = path.stat().st_size
-                    if position > current_size:
-                        position = 0
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        f.seek(position)
-                        chunk = f.read()
-                        position = f.tell()
-                    if chunk:
-                        data = json.dumps({"chunk": chunk, "status": row["status"], "offset": position})
+        last_heartbeat = time.monotonic()
+        try:
+            while True:
+                with db() as con:
+                    row = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+                if not row:
+                    yield "event: error\ndata: Job nicht gefunden\n\n"
+                    break
+                path = Path(row["log_path"])
+                if path.exists():
+                    try:
+                        current_size = path.stat().st_size
+                        if position > current_size:
+                            position = 0
+                        with open(path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(position)
+                            chunk = f.read()
+                            position = f.tell()
+                        if chunk:
+                            data = json.dumps({"chunk": chunk, "status": row["status"], "offset": position})
+                            yield f"event: log\ndata: {data}\n\n"
+                    except Exception as exc:
+                        data = json.dumps({"chunk": f"\n[Live-Log Fehler: {exc}]\n", "status": row["status"], "offset": position})
                         yield f"event: log\ndata: {data}\n\n"
-                except Exception as exc:
-                    data = json.dumps({"chunk": f"\n[Live-Log Fehler: {exc}]\n", "status": row["status"], "offset": position})
-                    yield f"event: log\ndata: {data}\n\n"
-            if row["status"] != last_status:
-                data = json.dumps({"status": row["status"]})
-                yield f"event: status\ndata: {data}\n\n"
-                last_status = row["status"]
-            if row["status"] not in {"queued", "running", "stopping"}:
-                time.sleep(1)
-                final_row = row_to_dict(row)
-                diagnosis_html = ""
-                try:
-                    diagnosis_html = render_template("_job_diagnosis.html", job=final_row, diagnosis=build_job_diagnosis(final_row))
-                    diag_data = json.dumps({"html": diagnosis_html})
-                    yield f"event: diagnosis\ndata: {diag_data}\n\n"
-                except Exception as exc:
-                    log_webui_exception(f"job_stream diagnosis job={job_id}", exc)
-                data = json.dumps({
-                    "status": row["status"],
-                    "finished_at": row["finished_at"] or "",
-                    "duration_h": format_job_duration(final_row) or "",
-                    "diagnosis_html": diagnosis_html,
-                })
-                yield f"event: done\ndata: {data}\n\n"
-                break
-            time.sleep(1)
+                if row["status"] != last_status:
+                    data = json.dumps({"status": row["status"]})
+                    yield f"event: status\ndata: {data}\n\n"
+                    last_status = row["status"]
+                if row["status"] not in {"queued", "running", "stopping"}:
+                    # Job- und Logschreiber erhalten kurz Zeit, die letzten Daten zu
+                    # persistieren, bevor Dauer und Diagnose an den Browser gehen.
+                    time.sleep(1)
+                    final_job = enrich_job_duration(row_to_dict(row))
+                    diagnosis_html = ""
+                    try:
+                        diagnosis_html = render_template(
+                            "_job_diagnosis.html",
+                            job=final_job,
+                            diagnosis=build_job_diagnosis(final_job),
+                        )
+                        diag_data = json.dumps({"html": diagnosis_html})
+                        yield f"event: diagnosis\ndata: {diag_data}\n\n"
+                    except Exception as exc:
+                        log_webui_exception(f"job_stream diagnosis job={job_id}", exc)
+                    data = json.dumps({
+                        "status": final_job.get("status") or "",
+                        "finished_at": final_job.get("finished_at") or "",
+                        "duration_h": final_job.get("duration_h") or "",
+                        "diagnosis_html": diagnosis_html,
+                    })
+                    yield f"event: done\ndata: {data}\n\n"
+                    break
 
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+                # SSE-Kommentar hält lange, ausgabearme Jobs durch Proxies und
+                # Browser-Verbindungen am Leben, ohne das sichtbare Log zu ändern.
+                now_monotonic = time.monotonic()
+                if now_monotonic - last_heartbeat >= 15:
+                    yield ": keep-alive\n\n"
+                    last_heartbeat = now_monotonic
+                time.sleep(1)
+        except GeneratorExit:
+            # Normaler Browser-Abbruch, z. B. beim Verlassen oder Neuladen der Seite.
+            return
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except OSError as exc:
+            if getattr(exc, "errno", None) in {32, 54, 104}:
+                return
+            raise
+
+    response = Response(stream_with_context(generate()), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 def read_log_tail(path: Path, max_bytes: int = 80_000) -> str:
     if not path.exists():
@@ -11214,7 +11241,7 @@ def help_page():
 
 
 BUILTIN_HELP = "# DebMirror Manager\n\nDie ausführliche Anleitung README.md wurde nicht gefunden. Bitte prüfe die Projektinstallation.\n"
-BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.75\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
+BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.77\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
 
 # ---------------------------------------------------------------------------
 # Startup

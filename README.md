@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.75**
+Aktuelle Version: **0.1.77**
 
 ## Grundprinzip
 
@@ -32,13 +32,29 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.75.zip
+unzip debmirror-manager-v0.1.77.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
 ```
 
 `install.sh` fragt die relevanten Werte ab, darunter persistenter Datenpfad, lokales Mirror-Verzeichnis, WebUI-Port, optionaler nginx-Mirror-HTTP-Container, Update-/Backup-Verzeichnisse, Job-Warteschlange, Retention, Dashboard-Limits, Größenberechnung, Speicherplatz-Sperre, Zeitzone und Admin-Zugang. Bei erneutem Aufruf liest `install.sh` vorhandene `.env`-Werte und schlägt sie als Defaults vor.
+
+### Webserver und Container-Logs
+
+Die WebUI läuft produktiv über **Gunicorn** und nicht über den Flask-/Werkzeug-Entwicklungsserver. Wegen des internen Schedulers, der Job-Warteschlange und der laufenden Prozessverwaltung verwendet DebMirror Manager genau **einen Gunicorn-Worker** mit mehreren Threads. Die Anzahl paralleler WebUI-/Live-Log-Verbindungen lässt sich mit `WSGI_THREADS` anpassen; mehrere Worker dürfen nicht konfiguriert werden.
+
+HTTP-Zugriffszeilen sind standardmäßig deaktiviert, damit die regelmäßigen Live-Log-Verbindungen das Containerlog nicht füllen. Bei Bedarf kann das Zugriffslog aktiviert werden:
+
+```text
+WSGI_THREADS=8
+WSGI_ACCESS_LOG=1
+WSGI_LOG_LEVEL=info
+```
+
+Live-Logs verwenden Server-Sent Events. Heartbeats halten auch ausgabearme, lange Jobs offen; ein normales Verlassen oder Neuladen der Jobseite wird nicht als Anwendungsfehler protokolliert.
+
+Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom neuen Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
 
 ## Update
 
@@ -50,7 +66,7 @@ cp /pfad/zur/debmirror-manager-vNEU.zip updates/
 ./update.sh
 ```
 
-`update.sh` prüft ZIP-Versionen, erstellt ein Backup, ersetzt Projektdateien und baut/startet Container automatisch neu. Wenn kein neues ZIP vorhanden ist, fragt `update.sh`, ob trotzdem Backup und Rebuild durchgeführt werden sollen. Direkter Rebuild:
+`update.sh` prüft ZIP-Versionen, erstellt ein Backup, ersetzt Projektdateien und baut/startet Container automatisch neu. Version 0.1.77 ist ausdrücklich auch mit dem Updater aus 0.1.75 kompatibel: Die Gunicorn-Konfiguration liegt innerhalb des immer übernommenen `app/`-Verzeichnisses. Dadurch kann auch eine nach dem v0.1.76-Buildfehler teilweise aktualisierte Installation direkt auf v0.1.77 aktualisiert werden. Wenn kein neues ZIP vorhanden ist, fragt `update.sh`, ob trotzdem Backup und Rebuild durchgeführt werden sollen. Direkter Rebuild:
 
 ```bash
 ./update.sh --rebuild

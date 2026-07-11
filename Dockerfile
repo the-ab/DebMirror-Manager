@@ -41,4 +41,4 @@ COPY README.md RELEASE_NOTES.md VERSION /app/
 RUN mkdir -p /app/data /app/logs /app/keyrings /import-scripts /mirror
 
 EXPOSE 8080
-CMD ["python", "-m", "app.main"]
+CMD ["gunicorn", "--config", "/app/app/gunicorn.conf.py", "app.main:app"]
