@@ -45,6 +45,17 @@
         <option value="{{ role }}" {% if edit_user and edit_user.role == role %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
+      <label>Sprache</label>
+      <select name="language">
+        {% for value, label in supported_languages.items() %}<option value="{{ value }}" {% if (edit_user and edit_user.language == value) or (not edit_user and value == 'de') %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      <label>Darstellung</label>
+      <select name="appearance">
+        {% set selected_appearance = edit_user.appearance if edit_user else 'light' %}
+        <option value="light" {% if selected_appearance == 'light' %}selected{% endif %}>Hell</option>
+        <option value="dark" {% if selected_appearance == 'dark' %}selected{% endif %}>Dark Mode</option>
+        <option value="auto" {% if selected_appearance == 'auto' %}selected{% endif %}>Automatisch nach Browser/System</option>
+      </select>
       <label class="check"><input type="checkbox" name="enabled" {% if not edit_user or edit_user.enabled %}checked{% endif %}> Aktiv</label>
       <button class="primary" type="submit">Speichern</button>
       {% if edit_user %}<a class="button" href="{{ url_for('users_page') }}">Abbrechen</a>{% endif %}
@@ -54,16 +65,18 @@
 
 <section class="card">
   <h2>Vorhandene Benutzer</h2>
-  <p class="hint">Die erste Anmeldung aus älteren Versionen wird automatisch übernommen. Rolle <strong>Benutzer</strong> hat Leserechte; kritische Änderungen und Job-Aktionen bleiben Admins vorbehalten.</p>
+  <p class="hint">{% if language == 'en' %}The first account from older versions is migrated automatically. The <strong>User</strong> role has read-only access; critical changes and job actions remain restricted to administrators.{% else %}Die erste Anmeldung aus älteren Versionen wird automatisch übernommen. Rolle <strong>Benutzer</strong> hat Leserechte; kritische Änderungen und Job-Aktionen bleiben Admins vorbehalten.{% endif %}</p>
   {% if users %}
   <div class="table-scroll">
     <table class="user-management-table mobile-card-table">
-      <thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>Letzter Login</th><th>Aktion</th></tr></thead>
+      <thead><tr><th>Benutzer</th><th>Rolle</th><th>Sprache</th><th>Darstellung</th><th>Status</th><th>Letzter Login</th><th>Aktion</th></tr></thead>
       <tbody>
       {% for u in users %}
         <tr>
-          <td data-label="Benutzer">{{ u.username }}</td>
+          <td data-label="Benutzer" translate="no">{{ u.username }}</td>
           <td data-label="Rolle">{{ u.role }}</td>
+          <td data-label="Sprache">{{ supported_languages.get(u.language, u.language) }}</td>
+          <td data-label="Darstellung">{% if u.appearance == 'dark' %}Dark Mode{% elif u.appearance == 'auto' %}Automatisch nach Browser/System{% else %}Hell{% endif %}</td>
           <td data-label="Status"><span class="badge {{ 'ok' if u.enabled else 'muted' }}">{{ 'aktiv' if u.enabled else 'inaktiv' }}</span></td>
           <td data-label="Letzter Login">{{ u.last_login_at or '-' }}</td>
           <td data-label="Aktion" class="actions">

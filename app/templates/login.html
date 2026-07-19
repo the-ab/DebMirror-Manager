@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de" data-theme="{{ appearance }}">
+<html lang="{{ language }}" data-theme="{{ appearance }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,6 +10,12 @@
   <div class="login-card">
     <h1>{{ app_name }}</h1>
     <p>Version {{ app_version }}</p>
+    <form method="post" action="{{ url_for('set_session_language') }}" class="login-language-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+      <label for="login-language">Sprache</label>
+      <select id="login-language" name="language" onchange="this.form.submit()">
+        {% for value, label in supported_languages.items() %}<option value="{{ value }}" {% if language == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </form>
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         {% for category, message in messages %}

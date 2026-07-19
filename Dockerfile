@@ -37,6 +37,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app /app/app
 COPY README.md RELEASE_NOTES.md VERSION /app/
+COPY app/docs/README.de.md app/docs/RELEASE_NOTES.de.md /app/
 
 RUN mkdir -p /app/data /app/logs /app/keyrings /import-scripts /mirror
 

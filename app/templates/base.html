@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="de" data-theme="{{ appearance }}">
+<html lang="{{ language }}" data-theme="{{ appearance }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
-  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <title{% block title_attributes %}{% endblock %}>{% block title %}{{ app_name }}{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
@@ -12,9 +12,9 @@
 <header class="topbar app-topbar">
   <div class="brand"><a href="{{ url_for('dashboard') }}">{{ app_name }}</a> <a class="version-link" href="{{ url_for('release_notes') }}" title="Release Notes öffnen">v{{ app_version }}</a></div>
   <div class="top-actions">
-    <span class="top-meta">Mirror-Basis: {{ mirror_base }} · Zeit: {{ app_timezone }} · Auth: {{ auth_source }}</span>
-    <span class="top-user">{% if current_user.username %}{{ current_user.username }} · {{ current_user.role }}{% else %}Gast{% endif %}</span>
-    {% if is_admin %}
+    <span class="top-meta">{% if language == 'en' %}Mirror base: {{ mirror_base }} · Time: {{ app_timezone }} · Authentication: {{ auth_source }}{% else %}Mirror-Basis: {{ mirror_base }} · Zeit: {{ app_timezone }} · Auth: {{ auth_source }}{% endif %}</span>
+    <a class="top-user top-user-link" href="{{ url_for('preferences_page') if current_user.username else url_for('login') }}" title="Persönliche Einstellungen">{% if current_user.username %}{{ current_user.username }} · {{ current_user.role }} · {{ language|upper }}{% else %}Gast{% endif %}</a>
+    {% if current_user.username %}
     <form method="post" action="{{ url_for('toggle_theme') }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <button class="linkbtn" type="submit" title="Darstellung umschalten">
         {% if appearance == 'dark' %}☀ Light{% elif appearance == 'auto' %}◐ Auto{% else %}☾ Dark{% endif %}

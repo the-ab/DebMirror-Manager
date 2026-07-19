@@ -58,7 +58,7 @@
       <select name="rsync_ssh_key">
         <option value="">Keinen vorhandenen Schlüssel auswählen</option>
         {% for item in ssh_private_keys %}
-        <option value="{{ item.name }}" {% if mirror.rsync_ssh_key == item.name %}selected{% endif %}>{{ item.name }}{% if item.fingerprint %} – {{ item.fingerprint }}{% endif %}</option>
+        <option value="{{ item.name }}" {% if mirror.rsync_ssh_key == item.name %}selected{% endif %} translate="no">{{ item.name }}{% if item.fingerprint %} – {{ item.fingerprint }}{% endif %}</option>
         {% endfor %}
       </select>
       <label>Neuen privaten SSH-Schlüssel hochladen</label>

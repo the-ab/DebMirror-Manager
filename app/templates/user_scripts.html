@@ -13,7 +13,7 @@
   <h2>Skript-Verzeichnis</h2>
   <p>Lege Skripte auf dem Host unter <code>/docker_data/debmirror-manager/user-scripts</code> ab. Im Container ist das <code>{{ user_script_dir }}</code>.</p>
   <p class="hint">Skripte werden ohne Shell-Textfeld ausgeführt. Erlaubt sind nur Dateien direkt in diesem Verzeichnis, keine Unterordner oder Symlinks.</p>
-  <p class="hint">Das optionale Zielverzeichnis wird <strong>nicht</strong> an das Skript übergeben und verändert die Ausführung nicht. Es dient nur dazu, für Sync-/Mirror-Skripte die Größe des erzeugten Zielverzeichnisses anzeigen und neu berechnen zu können.</p>
+  <p class="hint">{% if language == 'en' %}The optional target directory is <strong>not</strong> passed to the script and does not alter execution. It is used only to display and recalculate the generated target-directory size for sync or mirror scripts.{% else %}Das optionale Zielverzeichnis wird <strong>nicht</strong> an das Skript übergeben und verändert die Ausführung nicht. Es dient nur dazu, für Sync-/Mirror-Skripte die Größe des erzeugten Zielverzeichnisses anzeigen und neu berechnen zu können.{% endif %}</p>
 </section>
 
 {% if is_admin %}<section class="card">
@@ -34,7 +34,7 @@
     <tbody>
     {% for script in scripts %}
       <tr>
-        <td data-label="Name"><strong>{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
+        <td data-label="Name"><strong translate="no">{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
         <td data-label="Aktiv">
           {% if is_admin %}
           <form method="post" class="inline script-enabled-form" action="{{ url_for('user_scripts_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">

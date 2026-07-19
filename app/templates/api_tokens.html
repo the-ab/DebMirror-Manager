@@ -40,7 +40,7 @@ curl -X POST -H "Authorization: Bearer TOKEN" -H "Content-Type: application/json
   <div class="table-scroll"><table><thead><tr><th>Name</th><th>Status</th><th>Berechtigungen</th><th>Ablauf</th><th>Letzte Nutzung</th><th>Aktion</th></tr></thead><tbody>
   {% for t in tokens %}
     <tr>
-      <td>{{ t.name }}<br><small>erstellt von {{ t.created_by or '-' }} am {{ t.created_at }}</small></td>
+      <td><span translate="no">{{ t.name }}</span><br><small>erstellt von <span translate="no">{{ t.created_by or '-' }}</span> am <span translate="no">{{ t.created_at }}</span></small></td>
       <td><span class="badge {{ 'error' if t.expired else ('ok' if t.enabled else 'muted') }}">{{ 'abgelaufen' if t.expired else ('aktiv' if t.enabled else 'inaktiv') }}</span></td>
       <td><small>{{ t.scopes_h }}</small>{% if t.legacy %}<br><span class="badge warning">Legacy · weitreichend</span>{% endif %}</td>
       <td>{{ t.expires_at or 'ohne Ablauf (Legacy)' }}</td>

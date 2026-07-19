@@ -13,7 +13,7 @@
 
 <section class="card">
   <h2>Repository-Adresse prüfen</h2>
-  <p class="hint">Die Prüfung ist nicht auf Debian oder Ubuntu beschränkt. Sie sucht allgemein nach APT-Strukturen wie <code>dists/</code>, <code>Release</code>, <code>InRelease</code>, <code>Packages</code> und möglichen GPG-Key-Dateien.</p>
+  <p class="hint">{% if language == 'en' %}The check is not limited to Debian or Ubuntu. It searches generally for APT structures such as <code>dists/</code>, <code>Release</code>, <code>InRelease</code>, <code>Packages</code>, and possible GPG key files.{% else %}Die Prüfung ist nicht auf Debian oder Ubuntu beschränkt. Sie sucht allgemein nach APT-Strukturen wie <code>dists/</code>, <code>Release</code>, <code>InRelease</code>, <code>Packages</code> und möglichen GPG-Key-Dateien.{% endif %}</p>
   <p class="hint">Wenn an der Hauptadresse nichts gefunden wird, werden automatisch Suchpfad-Variablen relativ zur eingegebenen Adresse geprüft, zum Beispiel <code>deb/</code>, <code>debian/</code>, <code>repo/</code> oder <code>repository/</code>.</p>
   <form method="post" enctype="multipart/form-data" class="grid-form" id="repository-scan-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="action" value="scan_url">
@@ -22,7 +22,7 @@
     </label>
     <label>Verzeichnistiefe
       <input name="scan_depth" type="number" min="0" max="{{ max_scan_depth }}" value="{{ scan_depth if scan_depth is defined else default_scan_depth }}">
-      <small>Default: {{ default_scan_depth }}. Höhere Werte prüfen mehr Unterverzeichnisse, können aber länger dauern.</small>
+      <small>{% if language == 'en' %}Default: {{ default_scan_depth }}. Higher values check more subdirectories but may take longer.{% else %}Default: {{ default_scan_depth }}. Höhere Werte prüfen mehr Unterverzeichnisse, können aber länger dauern.{% endif %}</small>
     </label>
     <details class="option-picker scan-auth-picker">
       <summary>Optionale Zugangsdaten für HTTP/HTTPS oder FTP</summary>
@@ -43,7 +43,7 @@
       <label>Vorhandener privater Schlüssel
         <select name="scan_rsync_ssh_key">
           <option value="">Keinen Schlüssel auswählen</option>
-          {% for item in ssh_private_keys %}<option value="{{ item.name }}" {% if scan_ssh_values.rsync_ssh_key == item.name %}selected{% endif %}>{{ item.name }}{% if item.fingerprint %} – {{ item.fingerprint }}{% endif %}</option>{% endfor %}
+          {% for item in ssh_private_keys %}<option value="{{ item.name }}" {% if scan_ssh_values.rsync_ssh_key == item.name %}selected{% endif %} translate="no">{{ item.name }}{% if item.fingerprint %} – {{ item.fingerprint }}{% endif %}</option>{% endfor %}
         </select>
       </label>
       <label>Neuen privaten Schlüssel hochladen

@@ -47,8 +47,8 @@ Verwendung:
 
 Update-Paket:
   ZIP und zugehörige SHA-256-Datei nach ${UPDATE_DIR}/ kopieren, z. B.:
-    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.78.zip
-    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.78.zip.sha256
+    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.79.zip
+    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.79.zip.sha256
   Danach nur noch ausführen:
     ./update.sh
 USAGE
@@ -217,7 +217,9 @@ create_backups() {
   [ -d "app" ] && tar -czf "$backup_base/app-project-files.tar.gz" app
   [ -d "nginx" ] && tar -czf "$backup_base/nginx-config.tar.gz" nginx
   [ -f "README.md" ] && cp README.md "$backup_base/README.md"
+  [ -f "README.de.md" ] && cp README.de.md "$backup_base/README.de.md"
   [ -f "RELEASE_NOTES.md" ] && cp RELEASE_NOTES.md "$backup_base/RELEASE_NOTES.md"
+  [ -f "RELEASE_NOTES.de.md" ] && cp RELEASE_NOTES.de.md "$backup_base/RELEASE_NOTES.de.md"
 
   log "Projekt-Konfiguration gesichert: $backup_base"
 
@@ -389,8 +391,8 @@ source_root = candidates[0]
 
 items_to_copy = [
     '.env.example', 'Dockerfile', 'docker-compose.yml', 'requirements.txt',
-    'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md',
-    'RELEASE_NOTES.md', 'VERSION', 'app', 'nginx'
+    'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md', 'README.de.md',
+    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'VERSION', 'app', 'nginx'
 ]
 for name in items_to_copy:
     src = source_root / name
@@ -531,6 +533,18 @@ perform_package_update() {
   return 0
 }
 
+
+sync_localized_document_files() {
+  local name
+  for name in README.de.md RELEASE_NOTES.de.md; do
+    if [ ! -f "$name" ] && [ -f "app/docs/$name" ]; then
+      cp "app/docs/$name" "$name"
+      chmod 600 "$name"
+      log "Lokalisierte Dokumentdatei ergänzt: $name"
+    fi
+  done
+}
+
 print_update_notes() {
   cat <<UPDATE_TEXT
 
@@ -551,6 +565,7 @@ UPDATE_TEXT
 }
 
 main() {
+  sync_localized_document_files
   print_update_notes
   need_cmd python3
   need_cmd docker

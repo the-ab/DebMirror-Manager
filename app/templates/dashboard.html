@@ -44,7 +44,7 @@
       <h2>Warteschlange</h2>
       <p class="summary-value">{{ active_jobs_count }}/{{ max_parallel_jobs }}</p>
       <small>Jobs: {{ queue_count }} wartend</small>
-      <small class="queue-size-line">Größen: {{ size_queue_state.running_count }} laufend · {{ size_queue_state.total_waiting }} wartend</small>
+      <small class="queue-size-line">{% if language == 'en' %}Sizes: {{ size_queue_state.running_count }} running · {{ size_queue_state.total_waiting }} waiting{% else %}Größen: {{ size_queue_state.running_count }} laufend · {{ size_queue_state.total_waiting }} wartend{% endif %}</small>
       {% if active_job %}<p><a href="{{ url_for('job_detail', job_id=active_job.id) }}">#{{ active_job.id }} {{ active_job.mirror_name }}</a> <span class="badge {{ active_job.status }}">{{ active_job.status }}</span></p>{% else %}<p>Keine aktiven Jobs.</p>{% endif %}
       {% if size_queue_state.running_count or size_queue_state.total_waiting %}
         <p class="queue-size-detail">
@@ -104,7 +104,7 @@
           <tbody>
           {% for m in mirrors %}
             <tr>
-              <td data-label="Name" data-sort-value="{{ m.name|lower }}"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.host }}/{{ m.root_path }} → {{ m.target_path }}</small></td>
+              <td data-label="Name" data-sort-value="{{ m.name|lower }}"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong translate="no">{{ m.name }}</strong></a><br><small translate="no">{{ m.host }}/{{ m.root_path }} → {{ m.target_path }}</small></td>
               <td data-label="Status" data-sort-value="{{ m.dashboard_status.label|lower }}">{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
               <td data-label="Art" data-sort-value="mirror"><span class="badge muted">Mirror</span></td>
               <td data-label="Größe" data-sort-value="{{ m.size_info.bytes if m.size_info.bytes is not none else -1 }}">
@@ -139,7 +139,7 @@
           {% endfor %}
           {% for script in user_scripts %}
             <tr>
-              <td data-label="Name" data-sort-value="{{ script.name|lower }}"><a href="{{ url_for('user_scripts_page') }}"><strong>{{ script.name }}</strong></a><br><small><code>{{ script.path }}</code></small></td>
+              <td data-label="Name" data-sort-value="{{ script.name|lower }}"><a href="{{ url_for('user_scripts_page') }}"><strong translate="no">{{ script.name }}</strong></a><br><small><code>{{ script.path }}</code></small></td>
               <td data-label="Status" data-sort-value="{{ script.dashboard_status.label|lower }}">{% if script.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=script.dashboard_status.job_id) }}"><span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ script.dashboard_status.class }}" title="{{ script.dashboard_status.title }}">{{ script.dashboard_status.label }}</span>{% endif %}</td>
               <td data-label="Art" data-sort-value="script"><span class="badge muted">Script</span></td>
               <td data-label="Größe" data-sort-value="{{ script.target_size_info.bytes if script.target_path and script.target_size_info.bytes is not none else -1 }}">
@@ -239,7 +239,7 @@
           <tbody>
           {% for c in healthchecks[:8] %}
             <tr>
-              <td><a href="{{ url_for('healthchecks_page') }}"><strong>{{ c.name }}</strong></a></td>
+              <td><a href="{{ url_for('healthchecks_page') }}"><strong translate="no">{{ c.name }}</strong></a></td>
               <td>{% if c.last_ok is none %}<span class="badge muted">nie geprüft</span>{% elif c.last_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">Fehler</span>{% endif %}</td>
               <td>{% if c.last_latency_ms is not none %}{{ c.last_latency_ms }} ms{% else %}-{% endif %}</td>
               <td>{{ c.last_check_at or '-' }}</td>

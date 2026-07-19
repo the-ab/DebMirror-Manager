@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% block title_attributes %} translate="no"{% endblock %}
 {% block title %}{{ mirror.name }} - {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>{{ mirror.name }}</h1>
+    <h1 translate="no">{{ mirror.name }}</h1>
     <p>{{ mirror.host }}/{{ mirror.root_path }} → {{ mirror.target_path }}</p>
   </div>
   <div class="actions">
@@ -178,7 +179,7 @@
     <tbody>
     {% for s in schedules %}
       <tr>
-        <td>{{ s.name }}</td>
+        <td translate="no">{{ s.name }}</td>
         <td>{{ s.schedule_type }}{% if s.schedule_type == 'interval' %} · alle {{ s.interval_hours }}h{% endif %}</td>
         <td>{{ s.times }}</td>
         <td>{{ s.weekdays }}</td>

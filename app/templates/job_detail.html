@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Job #{{ job.id }} - {{ job.mirror_name }}</h1>
+    <h1>Job #{{ job.id }} - <span translate="no">{{ job.mirror_name }}</span></h1>
     <p>Typ: <strong>{{ job.job_type or 'mirror' }}</strong>{% if job.script_name %} · Script: <code>{{ job.script_name }}</code>{% endif %}</p>
     <p>Status: <span id="status" class="badge {{ job.status }}">{{ job.status }}</span> | Start: {{ job.started_at }} | Ende: <span id="finished-at">{{ job.finished_at or '-' }}</span> | Dauer: <strong id="duration">{{ job.duration_h or '-' }}</strong></p>
   </div>
@@ -21,7 +21,7 @@
 <section class="card">
   <h2>Befehl</h2>
   <pre class="code">{{ job.command }}</pre>
-  {% if job.error_message %}<p class="error-text">{{ job.error_message }}</p>{% endif %}
+  {% if job.error_message %}<p class="error-text" translate="no">{{ job.error_message }}</p>{% endif %}
 </section>
 
 <div id="diagnosis-wrapper">

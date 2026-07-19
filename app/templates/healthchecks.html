@@ -67,7 +67,7 @@ http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
       <tbody>
       {% for c in checks %}
         <tr>
-          <td data-label="Name"><strong>{{ c.name }}</strong><br><small>{{ c.method }} erwartet {{ c.expected_status }}, alle {{ c.interval_minutes }} min</small></td>
+          <td data-label="Name"><strong translate="no">{{ c.name }}</strong><br><small>{{ c.method }} erwartet {{ c.expected_status }}, alle {{ c.interval_minutes }} min</small></td>
           <td data-label="URL"><code class="breakable-code">{{ c.url }}</code>{% if c.allow_private %}<br><span class="badge warning">privates Ziel erlaubt</span>{% endif %}</td>
           <td data-label="Status">
             {% if c.last_ok is none %}
@@ -76,7 +76,7 @@ http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
               <span class="badge ok">OK {{ c.last_status_code }}</span>
             {% else %}
               <span class="badge error">Fehler {{ c.last_status_code or '-' }}</span>
-              {% if c.last_error %}<small class="healthcheck-error">{{ c.last_error }}</small>{% endif %}
+              {% if c.last_error %}<small class="healthcheck-error" translate="no">{{ c.last_error }}</small>{% endif %}
             {% endif %}
           </td>
           <td data-label="Letzte Prüfung">{{ c.last_check_at or '-' }}</td>

@@ -17,7 +17,7 @@
   </section>
   <section class="card">
     <h2>Export-Vorschau</h2>
-    <p class="hint">Benutzer, Passwörter und API-Tokens werden aus Sicherheitsgründen nicht exportiert.</p>
+    <p class="hint">{% if language == 'en' %}Users, passwords, and API tokens are excluded from the export for security reasons.{% else %}Benutzer, Passwörter und API-Tokens werden aus Sicherheitsgründen nicht exportiert.{% endif %}</p>
     <pre class="code small-code">{{ export_preview }}</pre>
   </section>
 </div>

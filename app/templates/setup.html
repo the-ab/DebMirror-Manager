@@ -1,15 +1,21 @@
 <!doctype html>
-<html lang="de" data-theme="{{ appearance }}">
+<html lang="{{ language }}" data-theme="{{ appearance }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ersteinrichtung - {{ app_name }}</title>
+  <title>{% if language == 'en' %}Initial setup{% else %}Ersteinrichtung{% endif %} - {{ app_name }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body class="login-body">
   <div class="login-card">
     <h1>{{ app_name }}</h1>
-    <p>Version {{ app_version }} · Ersteinrichtung</p>
+    <p>Version {{ app_version }} · {% if language == 'en' %}Initial setup{% else %}Ersteinrichtung{% endif %}</p>
+    <form method="post" action="{{ url_for('set_session_language') }}" class="login-language-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+      <label for="setup-language">Sprache</label>
+      <select id="setup-language" name="language" onchange="this.form.submit()">
+        {% for value, label in supported_languages.items() %}<option value="{{ value }}" {% if language == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </form>
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         {% for category, message in messages %}
@@ -25,6 +31,11 @@
       <input type="password" name="password" minlength="{{ min_password_length }}" required>
       <label>Passwort wiederholen</label>
       <input type="password" name="password2" minlength="{{ min_password_length }}" required>
+      <input type="hidden" name="language" value="{{ language }}">
+      <label>Darstellung</label>
+      <select name="appearance">
+        <option value="light">Hell</option><option value="dark">Dark Mode</option><option value="auto">Automatisch nach Browser/System</option>
+      </select>
       <button type="submit" class="primary full">Admin-Zugang speichern</button>
     </form>
   </div>

@@ -24,7 +24,7 @@
     <span><strong>{{ job_retention_days }}</strong> Tage Aufbewahrung</span>
     <span><strong>{{ job_list_limit }}</strong> Jobs in Listen</span>
   </div>
-  {% if is_admin %}<p class="hint">Diese Werte änderst du unter <a href="{{ url_for('settings_page') }}">System → Einstellungen</a>.</p>{% else %}<p class="hint">Diese Werte sind globale Systemeinstellungen und können nur von Admin-Benutzern geändert werden.</p>{% endif %}
+  {% if is_admin %}<p class="hint">{% if language == 'en' %}Change these values under <a href="{{ url_for('settings_page') }}">System → Settings</a>.{% else %}Diese Werte änderst du unter <a href="{{ url_for('settings_page') }}">System → Einstellungen</a>.{% endif %}</p>{% else %}<p class="hint">{% if language == 'en' %}These are global system settings and can be changed only by administrators.{% else %}Diese Werte sind globale Systemeinstellungen und können nur von Admin-Benutzern geändert werden.{% endif %}</p>{% endif %}
 </section>
 
 <section class="card compact-card">
@@ -36,13 +36,13 @@
     <tbody>
     {% for s in schedules %}
       <tr>
-        <td><strong>{{ s.name }}</strong>{% if s.origin == 'profile' %}<br><span class="badge info">Profilzeitplan</span>{% endif %}{% if s.dry_run %}<br><small>Dry-Run</small>{% endif %}</td>
+        <td><strong translate="no">{{ s.name }}</strong>{% if s.origin == 'profile' %}<br><span class="badge info">Profilzeitplan</span>{% endif %}{% if s.dry_run %}<br><small>Dry-Run</small>{% endif %}</td>
         <td>
           {% if s.job_kind == 'script' %}
             <span class="badge info">script</span>
-            {% if (s.script_selection or 'single') == 'all' %}alle Benutzerskripte{% elif (s.script_selection or 'single') == 'selected' %}{{ s.script_names or '-' }}{% else %}{{ s.script_name or '-' }}{% endif %}
+            {% if (s.script_selection or 'single') == 'all' %}alle Benutzerskripte{% elif (s.script_selection or 'single') == 'selected' %}<span translate="no">{{ s.script_names or '-' }}</span>{% else %}<span translate="no">{{ s.script_name or '-' }}</span>{% endif %}
           {% elif s.mirror_id %}
-            {{ s.mirror_name }}
+            <span translate="no">{{ s.mirror_name }}</span>
           {% else %}
             <span class="badge info">global</span> alle aktiven Profile
           {% endif %}
@@ -96,7 +96,7 @@
     <label class="mirror-field">Mirror-Ziel
       <select name="mirror_id" id="mirror_id">
         <option value="" {% if not form.mirror_id %}selected{% endif %}>Global: alle aktiven Profile</option>
-        {% for m in mirrors %}<option value="{{ m.id }}" {% if form.mirror_id == m.id %}selected{% endif %}>{{ m.name }}</option>{% endfor %}
+        {% for m in mirrors %}<option value="{{ m.id }}" {% if form.mirror_id == m.id %}selected{% endif %} translate="no">{{ m.name }}</option>{% endfor %}
       </select>
       <small>Nur für Job-Typ Mirror. Leer bedeutet: alle aktiven Profile.</small>
     </label>
@@ -112,15 +112,15 @@
 
     <label class="script-field script-single-field">Benutzerskript einzeln
       <select name="script_name" id="script_name">
-        <option value="">-- Script auswählen --</option>
-        {% for script in user_scripts %}<option value="{{ script.name }}" {% if form.script_name == script.name %}selected{% endif %}>{{ script.name }}</option>{% endfor %}
+        <option value="">-- Skript auswählen --</option>
+        {% for script in user_scripts %}<option value="{{ script.name }}" {% if form.script_name == script.name %}selected{% endif %} translate="no">{{ script.name }}</option>{% endfor %}
       </select>
       <small>Skripte liegen unter <code>/docker_data/debmirror-manager/user-scripts</code>.</small>
     </label>
 
     <label class="script-field script-selected-field">Benutzerskripte selektieren
       <select name="script_names" id="script_names" multiple size="6">
-        {% for script in user_scripts %}<option value="{{ script.name }}" {% if script.name in selected_scripts %}selected{% endif %}>{{ script.name }}</option>{% endfor %}
+        {% for script in user_scripts %}<option value="{{ script.name }}" {% if script.name in selected_scripts %}selected{% endif %} translate="no">{{ script.name }}</option>{% endfor %}
       </select>
       <small>Mehrfachauswahl mit Strg/Shift. Jeder ausgewählte Eintrag wird als eigener Job in die Warteschlange gelegt.</small>
     </label>

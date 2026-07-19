@@ -65,6 +65,7 @@ except Exception:  # pragma: no cover - dependency should be installed in contai
     Scrypt = None
 
 from app import APP_NAME, APP_VERSION
+from app.i18n import SUPPORTED_APPEARANCES, SUPPORTED_LANGUAGES, normalize_appearance, normalize_language, translate_html, translate_text
 
 # Alle neu erzeugten Verwaltungs-, Schlüssel-, Log- und Backup-Dateien sind
 # standardmäßig nur für den Container-/Host-Administrator zugänglich.
@@ -356,7 +357,9 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 last_login_at TEXT DEFAULT '',
-                session_version INTEGER NOT NULL DEFAULT 1
+                session_version INTEGER NOT NULL DEFAULT 1,
+                language TEXT NOT NULL DEFAULT 'de',
+                appearance TEXT NOT NULL DEFAULT 'light'
             );
 
             CREATE TABLE IF NOT EXISTS api_tokens (
@@ -436,6 +439,12 @@ def init_db() -> None:
         user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)").fetchall()}
         if "session_version" not in user_columns:
             con.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
+        if "language" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'de'")
+        if "appearance" not in user_columns:
+            legacy_appearance = normalize_appearance(load_settings().get("appearance"), "light")
+            con.execute("ALTER TABLE users ADD COLUMN appearance TEXT NOT NULL DEFAULT 'light'")
+            con.execute("UPDATE users SET appearance=?", (legacy_appearance,))
 
         token_columns = {row["name"] for row in con.execute("PRAGMA table_info(api_tokens)").fetchall()}
         if "scopes" not in token_columns:
@@ -1165,7 +1174,7 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
 
 def list_users() -> List[Dict[str, Any]]:
     with db() as con:
-        return [row_to_dict(r) for r in con.execute("SELECT id, username, role, enabled, created_at, updated_at, last_login_at, session_version FROM users ORDER BY username COLLATE NOCASE").fetchall()]
+        return [row_to_dict(r) for r in con.execute("SELECT id, username, role, enabled, created_at, updated_at, last_login_at, session_version, language, appearance FROM users ORDER BY username COLLATE NOCASE").fetchall()]
 
 
 def enabled_admin_count(exclude_user_id: Optional[int] = None) -> int:
@@ -1189,12 +1198,22 @@ def validate_admin_continuity(user_id: Optional[int], role: str, enabled: int, d
         raise ValueError("Der letzte aktive Administrator darf nicht gelöscht, deaktiviert oder zum normalen Benutzer herabgestuft werden.")
 
 
-def create_or_update_user(username: str, password: Optional[str], role: str = "admin", enabled: int = 1, user_id: Optional[int] = None) -> int:
+def create_or_update_user(
+    username: str,
+    password: Optional[str],
+    role: str = "admin",
+    enabled: int = 1,
+    user_id: Optional[int] = None,
+    language: str = "de",
+    appearance: str = "light",
+) -> int:
     username = (username or "").strip()
     if not username:
         raise ValueError("Benutzername darf nicht leer sein.")
     if role not in {"admin", "user"}:
         raise ValueError("Ungültige Rolle.")
+    language = normalize_language(language)
+    appearance = normalize_appearance(appearance)
     if password is not None and len(password) < MIN_PASSWORD_LENGTH:
         raise ValueError(f"Das Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen lang sein.")
     with db() as con:
@@ -1202,21 +1221,41 @@ def create_or_update_user(username: str, password: Optional[str], role: str = "a
             if password is None:
                 raise ValueError("Passwort fehlt.")
             cur = con.execute(
-                "INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version) VALUES (?, ?, ?, ?, ?, ?, 1)",
-                (username, hash_password(password), role, enabled, now_iso(), now_iso()),
+                "INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version, language, appearance) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (username, hash_password(password), role, enabled, now_iso(), now_iso(), language, appearance),
             )
             return int(cur.lastrowid)
+        current = con.execute("SELECT username, role, enabled FROM users WHERE id=?", (int(user_id),)).fetchone()
+        if not current:
+            raise ValueError("Benutzer wurde nicht gefunden.")
+        security_changed = bool(
+            password
+            or str(current["username"]) != username
+            or str(current["role"]) != role
+            or int(current["enabled"] or 0) != int(enabled or 0)
+        )
+        version_increment = 1 if security_changed else 0
         if password:
             con.execute(
-                "UPDATE users SET username=?, password_hash=?, role=?, enabled=?, updated_at=?, session_version=session_version+1 WHERE id=?",
-                (username, hash_password(password), role, enabled, now_iso(), user_id),
+                "UPDATE users SET username=?, password_hash=?, role=?, enabled=?, language=?, appearance=?, updated_at=?, session_version=session_version+? WHERE id=?",
+                (username, hash_password(password), role, enabled, language, appearance, now_iso(), version_increment, user_id),
             )
         else:
             con.execute(
-                "UPDATE users SET username=?, role=?, enabled=?, updated_at=?, session_version=session_version+1 WHERE id=?",
-                (username, role, enabled, now_iso(), user_id),
+                "UPDATE users SET username=?, role=?, enabled=?, language=?, appearance=?, updated_at=?, session_version=session_version+? WHERE id=?",
+                (username, role, enabled, language, appearance, now_iso(), version_increment, user_id),
             )
         return user_id
+
+
+def update_user_preferences(user_id: int, language: str, appearance: str) -> None:
+    language = normalize_language(language)
+    appearance = normalize_appearance(appearance)
+    with db() as con:
+        con.execute(
+            "UPDATE users SET language=?, appearance=?, updated_at=? WHERE id=?",
+            (language, appearance, now_iso(), int(user_id)),
+        )
 
 
 def ensure_initial_user_from_legacy_config() -> None:
@@ -1233,8 +1272,8 @@ def ensure_initial_user_from_legacy_config() -> None:
     try:
         with db() as con:
             con.execute(
-                "INSERT OR IGNORE INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version) VALUES (?, ?, 'admin', 1, ?, ?, 1)",
-                (cfg["username"], migrated_hash, now_iso(), now_iso()),
+                "INSERT OR IGNORE INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version, language, appearance) VALUES (?, ?, 'admin', 1, ?, ?, 1, 'de', ?)",
+                (cfg["username"], migrated_hash, now_iso(), now_iso(), normalize_appearance(load_settings().get("appearance"), "light")),
             )
         settings = load_settings()
         settings.pop("admin_username", None)
@@ -1331,6 +1370,7 @@ def establish_user_session(user: Dict[str, Any]) -> None:
     session["username"] = str(user["username"])
     session["role"] = str(user.get("role") or "user")
     session["session_version"] = int(user.get("session_version") or 1)
+    session["language"] = normalize_language(user.get("language"))
     session["logged_in_at"] = int(time.time())
 
 
@@ -1367,6 +1407,7 @@ def current_user() -> Dict[str, Any]:
     session["username"] = str(user["username"])
     session["role"] = str(user.get("role") or "user")
     session["session_version"] = db_version
+    session["language"] = normalize_language(user.get("language"))
     session["authenticated"] = True
     session.permanent = True
     return user
@@ -1600,6 +1641,12 @@ def add_security_headers(response: Response):
         response.headers.setdefault("Pragma", "no-cache")
     if request.is_secure or app.config.get("SESSION_COOKIE_SECURE"):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    content_type = str(response.headers.get("Content-Type") or "").lower()
+    if "text/html" in content_type and response.direct_passthrough is False and current_language() == "en":
+        try:
+            response.set_data(translate_html(response.get_data(as_text=True), "en"))
+        except Exception:
+            pass
     return response
 
 
@@ -1660,6 +1707,8 @@ def setup():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         password2 = request.form.get("password2", "")
+        language = normalize_language(request.form.get("language") or session.get("language"))
+        appearance = normalize_appearance(request.form.get("appearance"), "light")
         try:
             if not username:
                 raise ValueError("Benutzername darf nicht leer sein.")
@@ -1667,7 +1716,7 @@ def setup():
                 raise ValueError(f"Das Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen lang sein.")
             if password != password2:
                 raise ValueError("Die Passwort-Wiederholung passt nicht.")
-            create_or_update_user(username, password, role="admin", enabled=1)
+            create_or_update_user(username, password, role="admin", enabled=1, language=language, appearance=appearance)
             user = get_user_by_username(username)
             if not user:
                 raise RuntimeError("Der neue Administrator konnte nicht geladen werden.")
@@ -1682,7 +1731,7 @@ def setup():
             return redirect(safe_redirect_target(request.args.get("next", ""), url_for("dashboard")))
         except Exception as exc:
             flash(str(exc), "danger")
-    return render_template("setup.html", app_name=APP_NAME, app_version=APP_VERSION, min_password_length=MIN_PASSWORD_LENGTH)
+    return render_template("setup.html", app_name=APP_NAME, app_version=APP_VERSION, min_password_length=MIN_PASSWORD_LENGTH, supported_languages=SUPPORTED_LANGUAGES, supported_appearances=SUPPORTED_APPEARANCES)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -1713,7 +1762,9 @@ def login():
 @app.route("/logout", methods=["POST"])
 def logout():
     username = str(session.get("username") or "")
+    language = current_language()
     session.clear()
+    session["language"] = language
     if username:
         add_event("info", f"Abmeldung: {username} von {client_ip()}.")
     return redirect(url_for("login"))
@@ -1725,16 +1776,6 @@ def settings_page():
     if request.method == "POST":
         action = request.form.get("action")
         try:
-            if action == "set_appearance":
-                appearance = request.form.get("appearance", "light").strip()
-                if appearance not in {"light", "dark", "auto"}:
-                    raise ValueError("Ungültiger Darstellungsmodus.")
-                settings = load_settings()
-                settings["appearance"] = appearance
-                settings["appearance_updated_at"] = now_iso()
-                save_settings(settings)
-                flash("Darstellung wurde gespeichert.", "success")
-                return redirect(url_for("settings_page"))
             if action == "save_storage_guard":
                 storage_enabled = 1 if request.form.get("storage_guard_enabled") == "on" else 0
                 storage_threshold = int(request.form.get("storage_guard_threshold_percent", str(DEFAULT_STORAGE_GUARD_THRESHOLD_PERCENT)) or DEFAULT_STORAGE_GUARD_THRESHOLD_PERCENT)
@@ -4804,26 +4845,60 @@ def recover_stale_jobs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Appearance / Dark Mode
+# Per-user language and appearance
 # ---------------------------------------------------------------------------
 
+def current_language() -> str:
+    user = current_user()
+    if user:
+        return normalize_language(user.get("language"))
+    return normalize_language(session.get("language") or request.accept_languages.best_match(list(SUPPORTED_LANGUAGES)) or "de")
+
+
 def current_appearance() -> str:
-    settings = load_settings()
-    value = str(settings.get("appearance") or "light").strip().lower()
-    if value not in {"light", "dark", "auto"}:
-        return "light"
-    return value
+    user = current_user()
+    if user:
+        return normalize_appearance(user.get("appearance"), "light")
+    return normalize_appearance(session.get("appearance"), "light")
+
+
+@app.route("/preferences", methods=["GET", "POST"])
+@require_auth
+def preferences_page():
+    user = current_user()
+    if request.method == "POST":
+        language = normalize_language(request.form.get("language"))
+        appearance = normalize_appearance(request.form.get("appearance"))
+        update_user_preferences(int(user["id"]), language, appearance)
+        session["language"] = language
+        session["appearance"] = appearance
+        flash("Persönliche Einstellungen wurden gespeichert.", "success")
+        return redirect(url_for("preferences_page"))
+    return render_template(
+        "preferences.html",
+        selected_language=normalize_language(user.get("language")),
+        selected_appearance=normalize_appearance(user.get("appearance")),
+        supported_languages=SUPPORTED_LANGUAGES,
+    )
+
+
+@app.route("/language", methods=["POST"])
+def set_session_language():
+    language = normalize_language(request.form.get("language"))
+    session["language"] = language
+    target = safe_redirect_target(request.form.get("next", ""), request.referrer or url_for("login"))
+    return redirect(target)
 
 
 @app.route("/theme/toggle", methods=["POST"])
-@require_admin
+@require_auth
 def toggle_theme():
+    user = current_user()
     current = current_appearance()
-    settings = load_settings()
-    settings["appearance"] = "light" if current == "dark" else "dark"
-    settings["appearance_updated_at"] = now_iso()
-    save_settings(settings)
-    return redirect(request.referrer or url_for("dashboard"))
+    appearance = "light" if current == "dark" else "dark"
+    update_user_preferences(int(user["id"]), current_language(), appearance)
+    session["appearance"] = appearance
+    return redirect(safe_redirect_target(request.referrer or "", url_for("dashboard")))
 
 
 # ---------------------------------------------------------------------------
@@ -4876,6 +4951,8 @@ def inject_globals():
         "mirror_base": str(MIRROR_BASE),
         "app_timezone": app_timezone_name(),
         "appearance": current_appearance(),
+        "language": current_language(),
+        "supported_languages": SUPPORTED_LANGUAGES,
         "current_user": current_user(),
         "is_admin": is_admin_user(),
         "csrf_token": csrf_token(),
@@ -10548,7 +10625,7 @@ def users_page():
         try:
             uid = int(request.args.get("edit", "0"))
             with db() as con:
-                row = con.execute("SELECT id, username, role, enabled FROM users WHERE id=?", (uid,)).fetchone()
+                row = con.execute("SELECT id, username, role, enabled, language, appearance FROM users WHERE id=?", (uid,)).fetchone()
                 edit_user = row_to_dict(row) if row else None
         except Exception:
             edit_user = None
@@ -10571,7 +10648,7 @@ def users_page():
                     raise ValueError("Die Passwort-Wiederholung passt nicht.")
                 if not user.get("id"):
                     raise ValueError("Der aktuell angemeldete Benutzer konnte nicht eindeutig ermittelt werden.")
-                create_or_update_user(username, password, role=user.get("role", "admin"), enabled=1, user_id=int(user["id"]))
+                create_or_update_user(username, password, role=user.get("role", "admin"), enabled=1, user_id=int(user["id"]), language=normalize_language(user.get("language")), appearance=normalize_appearance(user.get("appearance")))
                 settings = load_settings()
                 settings.pop("admin_username", None)
                 settings.pop("admin_password_hash", None)
@@ -10587,10 +10664,12 @@ def users_page():
                 password = request.form.get("password", "") or None
                 role = request.form.get("role", "user")
                 enabled = bool_from_form("enabled")
+                language = normalize_language(request.form.get("language"))
+                appearance = normalize_appearance(request.form.get("appearance"))
                 if uid is None and not password:
                     raise ValueError("Für neue Benutzer muss ein Passwort gesetzt werden.")
                 validate_admin_continuity(uid, role, int(enabled), deleting=False)
-                create_or_update_user(username, password, role=role, enabled=enabled, user_id=uid)
+                create_or_update_user(username, password, role=role, enabled=enabled, user_id=uid, language=language, appearance=appearance)
                 flash("Benutzer gespeichert.", "success")
                 add_event("info", f"Benutzer gespeichert: {username}")
                 return redirect(url_for("users_page"))
@@ -10614,6 +10693,7 @@ def users_page():
         edit_user=edit_user,
         auth_config=admin_config() or {},
         settings_path=str(SETTINGS_PATH),
+        supported_languages=SUPPORTED_LANGUAGES,
     )
 
 
@@ -11405,7 +11485,7 @@ def build_config_export() -> Dict[str, Any]:
     for m in list_mirrors():
         mirrors.append({k: m.get(k) for k in EXPORT_MIRROR_COLUMNS if k in m})
     settings = load_settings()
-    safe_settings = {k: v for k, v in settings.items() if k in {"appearance", "max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"}}
+    safe_settings = {k: v for k, v in settings.items() if k in {"max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"}}
     if isinstance(settings.get("notify"), dict):
         notify_export = dict(settings["notify"])
         for field in SECRET_FIELDS:
@@ -11498,7 +11578,7 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
     safe_settings = data.get("settings") or {}
     if isinstance(safe_settings, dict):
         current = load_settings()
-        for key in ("appearance", "notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"):
+        for key in ("notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"):
             if key in safe_settings:
                 current[key] = safe_settings[key]
                 imported["settings"] += 1
@@ -11907,24 +11987,45 @@ def render_markdown_light(markdown_text: str) -> str:
     return "\n".join(out)
 
 
+def localized_document_path(english_name: str, german_name: str) -> Path:
+    root = Path(__file__).resolve().parents[1]
+    selected_name = german_name if current_language() == "de" else english_name
+    candidates = [
+        root / selected_name,
+        Path(__file__).resolve().parent / "docs" / selected_name,
+        root / english_name,
+        Path(__file__).resolve().parent / "docs" / english_name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return root / selected_name
+
+
 @app.route("/release-notes")
 @require_auth
 def release_notes():
-    notes_path = Path(__file__).resolve().parents[1] / "RELEASE_NOTES.md"
-    content = notes_path.read_text(encoding="utf-8") if notes_path.exists() else BUILTIN_RELEASE_NOTES
-    return render_template("markdown_page.html", title="Release Notes", content_html=render_markdown_light(content))
+    notes_path = localized_document_path("RELEASE_NOTES.md", "RELEASE_NOTES.de.md")
+    content = notes_path.read_text(encoding="utf-8") if notes_path.exists() else BUILTIN_RELEASE_NOTES[current_language()]
+    return render_template("markdown_page.html", title=translate_text("Release Notes", current_language()), content_html=render_markdown_light(content))
 
 
 @app.route("/help")
 @require_auth
 def help_page():
-    readme_path = Path(__file__).resolve().parents[1] / "README.md"
-    content = readme_path.read_text(encoding="utf-8") if readme_path.exists() else BUILTIN_HELP
-    return render_template("markdown_page.html", title="Anleitung", content_html=render_markdown_light(content))
+    readme_path = localized_document_path("README.md", "README.de.md")
+    content = readme_path.read_text(encoding="utf-8") if readme_path.exists() else BUILTIN_HELP[current_language()]
+    return render_template("markdown_page.html", title=translate_text("Anleitung", current_language()), content_html=render_markdown_light(content))
 
 
-BUILTIN_HELP = "# DebMirror Manager\n\nDie ausführliche Anleitung README.md wurde nicht gefunden. Bitte prüfe die Projektinstallation.\n"
-BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.78\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
+BUILTIN_HELP = {
+    "de": "# DebMirror Manager\n\nDie ausführliche Anleitung README.de.md wurde nicht gefunden. Bitte prüfe die Projektinstallation.\n",
+    "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
+}
+BUILTIN_RELEASE_NOTES = {
+    "de": "# Release Notes\n\n## v0.1.79\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v0.1.79\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+}
 
 # ---------------------------------------------------------------------------
 # Startup

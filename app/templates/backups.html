@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Backup / Wiederherstellen - {{ app_name }}{% endblock %}
+{% block title %}{% if language == 'en' %}Backup / Restore{% else %}Backup / Wiederherstellen{% endif %} - {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page-head compact-head">
   <div>
@@ -23,7 +23,7 @@
       <label>Backup-Passwort wiederholen
         <input type="password" name="backup_password2" minlength="{{ min_password_length }}" autocomplete="new-password" required>
       </label>
-      <p class="hint">Das Passwort wird nicht gespeichert und ist für die Wiederherstellung zwingend erforderlich. Mindestens {{ min_password_length }} Zeichen.</p>
+      <p class="hint">{% if language == 'en' %}The password is not stored and is mandatory for restoration. Use at least {{ min_password_length }} characters.{% else %}Das Passwort wird nicht gespeichert und ist für die Wiederherstellung zwingend erforderlich. Mindestens {{ min_password_length }} Zeichen.{% endif %}</p>
       <div class="form-actions"><button class="primary" type="submit">Backup erstellen</button></div>
     </form>
     <small>Backup-Verzeichnis im Container: <code>{{ backup_dir }}</code></small>
@@ -58,7 +58,7 @@
       <tbody>
       {% for b in backups %}
         <tr>
-          <td><strong>{{ b.name }}</strong>{% if b.manifest.label %}<br><small>{{ b.manifest.label }}</small>{% endif %}</td>
+          <td><strong translate="no">{{ b.name }}</strong>{% if b.manifest.label %}<br><small translate="no">{{ b.manifest.label }}</small>{% endif %}</td>
           <td>{% if b.encrypted %}<span class="badge ok">verschlüsselt</span>{% else %}<span class="badge warning">Legacy · unverschlüsselt</span>{% endif %}</td>
           <td>{{ b.manifest.app_version or '-' }}</td>
           <td><small>{{ b.mtime }}</small></td>

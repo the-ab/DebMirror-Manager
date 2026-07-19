@@ -64,7 +64,7 @@
       <h3>Zeitdarstellung</h3>
       <label>Lokale Zeitzone</label>
       <input name="app_timezone" value="{{ app_timezone }}" placeholder="Europe/Berlin">
-      <small>Standard ist <code>Europe/Berlin</code>. Die Einstellung wirkt auf neue Log-, Job- und WebUI-Zeitstempel. <code>install.sh</code> schreibt denselben Wert zusätzlich in die <code>.env</code>.</small>
+      <small>{% if language == 'en' %}The default is <code>Europe/Berlin</code>. The setting applies to new log, job, and WebUI timestamps. <code>install.sh</code> also writes the same value to <code>.env</code>.{% else %}Standard ist <code>Europe/Berlin</code>. Die Einstellung wirkt auf neue Log-, Job- und WebUI-Zeitstempel. <code>install.sh</code> schreibt denselben Wert zusätzlich in die <code>.env</code>.{% endif %}</small>
 
       <button class="primary" type="submit">Job-/System-Einstellungen speichern</button>
     </form>
@@ -116,19 +116,9 @@
   </section>
 
   <section class="card settings-card">
-    <h2>Darstellung</h2>
-    <p>Aktueller Modus: <strong>{{ appearance }}</strong></p>
-    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-      <input type="hidden" name="action" value="set_appearance">
-      <label>Modus</label>
-      <select name="appearance">
-        <option value="light" {% if appearance == 'light' %}selected{% endif %}>Hell</option>
-        <option value="dark" {% if appearance == 'dark' %}selected{% endif %}>Dark Mode</option>
-        <option value="auto" {% if appearance == 'auto' %}selected{% endif %}>Automatisch nach Browser/System</option>
-      </select>
-      <button class="primary" type="submit">Darstellung speichern</button>
-    </form>
-    <p class="hint">Der Umschalter oben rechts wechselt schnell zwischen Hell und Dunkel.</p>
+    <h2>Persönliche Einstellungen</h2>
+    <p>Sprache und Darstellung werden für jeden Benutzer getrennt gespeichert.</p>
+    <a class="button" href="{{ url_for('preferences_page') }}">Sprache und Darstellung öffnen</a>
   </section>
 </div>
 

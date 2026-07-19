@@ -18,7 +18,7 @@
     {% for j in jobs %}
       <tr>
         <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
-        <td>{{ j.mirror_name }}</td>
+        <td translate="no">{{ j.mirror_name }}</td>
         <td>{{ j.job_type or 'mirror' }}</td>
         <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
         <td>{{ 'Ja' if j.dry_run else 'Nein' }}</td>

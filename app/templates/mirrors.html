@@ -54,7 +54,7 @@
     <tbody>
     {% for m in mirrors %}
       <tr>
-        <td data-label="Name" data-sort-value="{{ m.name|lower }}"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong>{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
+        <td data-label="Name" data-sort-value="{{ m.name|lower }}"><a href="{{ url_for('mirror_detail', mirror_id=m.id) }}"><strong translate="no">{{ m.name }}</strong></a><br><small>{{ m.target_path }}</small></td>
         <td data-label="Status" class="status-cell" data-sort-value="{{ m.dashboard_status.label|lower }}">{% if m.dashboard_status.job_id %}<a class="badge-link" href="{{ url_for('job_detail', job_id=m.dashboard_status.job_id) }}"><span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span></a>{% else %}<span class="badge {{ m.dashboard_status.class }}" title="{{ m.dashboard_status.title }}">{{ m.dashboard_status.label }}</span>{% endif %}</td>
         <td data-label="Mirror-Größe" data-sort-value="{{ m.size_info.bytes if m.size_info.bytes is not none else -1 }}">
           <div class="size-value-actions">

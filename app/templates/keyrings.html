@@ -52,7 +52,7 @@
     {% if master_fingerprints %}
       <div class="master-fingerprint-list">{% for fp in master_fingerprints %}<code>{{ fp }}</code>{% endfor %}</div>
     {% endif %}
-    <p class="hint"><strong>Normaler Neuaufbau:</strong> liest <code>archive/</code> und <code>keyserver/</code> neu ein und behält Entfernsperren. <strong>Vollständiger Neuaufbau:</strong> löscht zusätzlich diese Sperren, sodass bewusst entfernte Keys wieder aufgenommen werden können.</p>
+    <p class="hint">{% if language == 'en' %}<strong>Normal rebuild:</strong> reloads <code>archive/</code> and <code>keyserver/</code> while preserving removal exclusions. <strong>Complete rebuild:</strong> also clears these exclusions so deliberately removed keys can be included again.{% else %}<strong>Normaler Neuaufbau:</strong> liest <code>archive/</code> und <code>keyserver/</code> neu ein und behält Entfernsperren. <strong>Vollständiger Neuaufbau:</strong> löscht zusätzlich diese Sperren, sodass bewusst entfernte Keys wieder aufgenommen werden können.{% endif %}</p>
   </details>
 
   <div class="actions compact-actions master-overview-actions">
@@ -295,7 +295,7 @@
                 <select name="profile_mirror_id" required>
                   <option value="">Profil wählen</option>
                   {% for mirror in mirror_choices %}
-                  <option value="{{ mirror.id }}">{{ mirror.name }}{% if not mirror.enabled %} · inaktiv{% endif %}</option>
+                  <option value="{{ mirror.id }}" translate="no">{{ mirror.name }}{% if not mirror.enabled %} · {% if language == 'en' %}inactive{% else %}inaktiv{% endif %}{% endif %}</option>
                   {% endfor %}
                 </select>
               </label>
@@ -308,7 +308,7 @@
               <ul class="usage-list compact-list">
               {% for m in key.used_by %}
                 <li>
-                  <a href="{{ url_for('mirror_detail', mirror_id=m.id) }}">{{ m.name }}</a>
+                  <a href="{{ url_for('mirror_detail', mirror_id=m.id) }}" translate="no">{{ m.name }}</a>
                   <span class="badge muted">{{ m.usage_type or 'zugeordnet' }}</span>
                   {% if not m.enabled %}<span class="badge muted">inaktiv</span>{% endif %}
                   <form method="post" class="inline" onsubmit="return confirm('Zuordnung zu diesem Profil entfernen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">

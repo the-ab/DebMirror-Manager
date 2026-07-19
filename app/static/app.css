@@ -1014,3 +1014,8 @@ button.locked-button:disabled {
 .table-action-row th { padding: .25rem .5rem .05rem; border-bottom: 0; }
 .size-bulk-action-cell { text-align: left; }
 .size-bulk-action-cell .table-header-action { width: 100%; max-width: 5.2rem; }
+
+.top-user-link { text-decoration: none; }
+.login-language-form { margin: .75rem 0 1rem; }
+.login-language-form label { margin-top: 0; }
+.preference-card { max-width: 900px; }

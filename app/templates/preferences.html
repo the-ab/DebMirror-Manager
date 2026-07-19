@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Persönliche Einstellungen - {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Persönliche Einstellungen</h1>
+    <p>Sprache und Darstellung werden ausschließlich für dein Benutzerkonto gespeichert.</p>
+  </div>
+</div>
+
+<section class="card settings-card preference-card">
+  <h2>Sprache und Darstellung</h2>
+  <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <div class="grid two">
+      <div>
+        <label for="preference-language">Sprache</label>
+        <select id="preference-language" name="language">
+          {% for value, label in supported_languages.items() %}
+          <option value="{{ value }}" {% if selected_language == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <small>Die WebUI, Anleitung und Release Notes werden in der gewählten Sprache angezeigt.</small>
+      </div>
+      <div>
+        <label for="preference-appearance">Darstellung</label>
+        <select id="preference-appearance" name="appearance">
+          <option value="light" {% if selected_appearance == 'light' %}selected{% endif %}>Hell</option>
+          <option value="dark" {% if selected_appearance == 'dark' %}selected{% endif %}>Dark Mode</option>
+          <option value="auto" {% if selected_appearance == 'auto' %}selected{% endif %}>Automatisch nach Browser/System</option>
+        </select>
+        <small>{% if language == 'en' %}This setting applies only to {{ current_user.username }} and does not affect other accounts.{% else %}Diese Einstellung gilt nur für {{ current_user.username }} und bleibt auf anderen Konten unverändert.{% endif %}</small>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="primary" type="submit">Einstellungen speichern</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

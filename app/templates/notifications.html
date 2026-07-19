@@ -18,7 +18,7 @@
     <label>SMTP Port</label><input type="number" name="smtp_port" value="{{ notify.smtp_port }}">
     <label class="check"><input type="checkbox" name="smtp_tls" {% if notify.smtp_tls %}checked{% endif %}> STARTTLS verwenden</label>
     <label>SMTP Benutzer</label><input name="smtp_username" value="{{ notify.smtp_username }}">
-    <label>SMTP Passwort <small>{% if notify.smtp_password_set %}gesetzt, leer lassen = unverändert{% else %}nicht gesetzt{% endif %}</small></label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="{% if notify.smtp_password_set %}********{% endif %}">
+    <label>{% if language == 'en' %}SMTP password{% else %}SMTP Passwort{% endif %} <small>{% if notify.smtp_password_set %}{% if language == 'en' %}set; leave empty to keep{% else %}gesetzt, leer lassen = unverändert{% endif %}{% else %}{% if language == 'en' %}not set{% else %}nicht gesetzt{% endif %}{% endif %}</small></label><input type="password" name="smtp_password" autocomplete="new-password" placeholder="{% if notify.smtp_password_set %}********{% endif %}">
     <label>Von</label><input name="smtp_from" value="{{ notify.smtp_from }}">
     <label>An</label><input name="smtp_to" value="{{ notify.smtp_to }}" placeholder="admin@example.local">
   </fieldset>
