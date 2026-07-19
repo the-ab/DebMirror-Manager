@@ -18,7 +18,7 @@
 
 {% if is_admin %}<section class="card">
   <h2>Skript hochladen</h2>
-  <form method="post" enctype="multipart/form-data">
+  <form method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="action" value="upload">
     <input type="file" name="script_file" required>
     <button type="submit">Hochladen</button>
@@ -37,7 +37,7 @@
         <td data-label="Name"><strong>{{ script.name }}</strong><br><small><code>{{ script.path }}</code></small></td>
         <td data-label="Aktiv">
           {% if is_admin %}
-          <form method="post" class="inline script-enabled-form" action="{{ url_for('user_scripts_page') }}">
+          <form method="post" class="inline script-enabled-form" action="{{ url_for('user_scripts_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="action" value="set_enabled">
             <input type="hidden" name="script_name" value="{{ script.name }}">
             <label class="inline-check"><input type="checkbox" name="enabled" {% if script.enabled %}checked{% endif %} onchange="this.form.submit()"> aktiv</label>
@@ -55,7 +55,7 @@
               {% if script.target_size_info.status %}<span class="badge {{ size_status_class(script.target_size_info.status) }} size-status" title="{{ size_status_title(script.target_size_info.status) }}">{{ size_status_label(script.target_size_info.status) }}</span>{% endif %}
               {% if script.target_size_info.calculated_at %}<small class="size-check-time">letzte Prüfung: {{ script.target_size_info.calculated_at }}</small>{% endif %}
               {% if is_admin %}
-              <form method="post" class="inline target-size-recalc-form" action="{{ url_for('user_scripts_page') }}">
+              <form method="post" class="inline target-size-recalc-form" action="{{ url_for('user_scripts_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="recalculate_size">
                 <input type="hidden" name="script_name" value="{{ script.name }}">
                 <button type="submit" class="icon-button size-refresh-button" title="Skript-Zielgröße jetzt neu berechnen" aria-label="Zielgröße für {{ script.name }} neu berechnen">↻</button>
@@ -68,7 +68,7 @@
           {% endif %}
           {% if is_admin %}
           <div class="script-target-actions">
-            <form method="post" class="script-target-form" action="{{ url_for('user_scripts_page') }}">
+            <form method="post" class="script-target-form" action="{{ url_for('user_scripts_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="save_target">
               <input type="hidden" name="script_name" value="{{ script.name }}">
               <input name="target_path" value="{{ script.target_path }}" placeholder="z. B. /mirror/ubuntu" aria-label="Zielverzeichnis nur für Größenberechnung">
@@ -85,13 +85,13 @@
           {% if script.start_block_reason %}
             <button type="button" class="locked-button" disabled title="{{ script.start_block_reason }}"><span>Als Job starten</span></button>
           {% else %}
-            <form method="post" class="inline" action="{{ url_for('user_scripts_page') }}">
+            <form method="post" class="inline" action="{{ url_for('user_scripts_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="run">
               <input type="hidden" name="script_name" value="{{ script.name }}">
               <button class="primary" type="submit">Als Job starten</button>
             </form>
           {% endif %}
-          <form method="post" class="inline" action="{{ url_for('user_script_delete', script_name=script.name) }}" onsubmit="return confirm('Skript wirklich löschen?');">
+          <form method="post" class="inline" action="{{ url_for('user_script_delete', script_name=script.name) }}" onsubmit="return confirm('Skript wirklich löschen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button class="danger" type="submit">Löschen</button>
           </form>
           {% else %}<small>Nur Ansicht</small>{% endif %}

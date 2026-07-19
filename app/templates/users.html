@@ -16,29 +16,29 @@
       <dt>Benutzer</dt><dd>{{ auth_config.username }}</dd>
       <dt>Settings-Datei</dt><dd><code>{{ settings_path }}</code></dd>
     </dl>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="change_password">
       <label>Aktuelles Passwort</label>
       <input type="password" name="current_password" required autocomplete="current-password">
       <label>Benutzername</label>
       <input name="username" value="{{ auth_config.username }}" required autocomplete="username">
       <label>Neues Passwort</label>
-      <input type="password" name="password" minlength="8" required autocomplete="new-password">
+      <input type="password" name="password" minlength="{{ min_password_length }}" required autocomplete="new-password">
       <label>Neues Passwort wiederholen</label>
-      <input type="password" name="password2" minlength="8" required autocomplete="new-password">
+      <input type="password" name="password2" minlength="{{ min_password_length }}" required autocomplete="new-password">
       <button class="primary" type="submit">Eigenen Zugang ändern</button>
     </form>
   </section>
 
   <section class="card">
     <h2>{% if edit_user %}Benutzer bearbeiten{% else %}Benutzer anlegen{% endif %}</h2>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="save">
       <input type="hidden" name="user_id" value="{{ edit_user.id if edit_user else '' }}">
       <label>Benutzername</label>
       <input name="username" value="{{ edit_user.username if edit_user else '' }}" required>
       <label>Passwort {% if edit_user %}<small>leer lassen = unverändert</small>{% endif %}</label>
-      <input type="password" name="password" minlength="8" {% if not edit_user %}required{% endif %}>
+      <input type="password" name="password" minlength="{{ min_password_length }}" {% if not edit_user %}required{% endif %}>
       <label>Rolle</label>
       <select name="role">
         {% for role,label in [('admin','Admin'),('user','Benutzer')] %}
@@ -69,7 +69,7 @@
           <td data-label="Aktion" class="actions">
             <a class="button" href="{{ url_for('users_page', edit=u.id) }}">Bearbeiten</a>
             {% if current_user.id != u.id %}
-            <form method="post" class="inline" onsubmit="return confirm('Benutzer wirklich löschen?');">
+            <form method="post" class="inline" onsubmit="return confirm('Benutzer wirklich löschen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="delete"><input type="hidden" name="user_id" value="{{ u.id }}">
               <button class="danger" type="submit">Löschen</button>
             </form>

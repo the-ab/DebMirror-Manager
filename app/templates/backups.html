@@ -4,18 +4,26 @@
 <div class="page-head compact-head">
   <div>
     <h1>Backup / Wiederherstellen</h1>
-    <p>Vollbackup für Serverwechsel oder Totalausfall. Gesichert werden Konfiguration, Datenbank, Benutzer/API-Tokens, Keyrings, Skripte, verwaltete SSH-Schlüssel und <code>known_hosts</code> einschließlich ihrer Dateirechte sowie der Verschlüsselungs-Schlüssel für Zugangsdaten; Mirror-Daten selbst bleiben außen vor.</p>
+    <p>Vollbackup für Serverwechsel oder Totalausfall. Neue Backups werden mit einem eigenen Passwort verschlüsselt. Mirror-Daten selbst bleiben außen vor.</p>
   </div>
 </div>
 
 <div class="grid two backup-compact-grid">
   <section class="card compact-card">
-    <h2>Backup erstellen</h2>
+    <h2>Verschlüsseltes Backup erstellen</h2>
     <form method="post" class="grid-form compact-form">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="create">
       <label>Bezeichnung
         <input name="label" placeholder="z. B. vor-update oder serverwechsel">
       </label>
+      <label>Backup-Passwort
+        <input type="password" name="backup_password" minlength="{{ min_password_length }}" autocomplete="new-password" required>
+      </label>
+      <label>Backup-Passwort wiederholen
+        <input type="password" name="backup_password2" minlength="{{ min_password_length }}" autocomplete="new-password" required>
+      </label>
+      <p class="hint">Das Passwort wird nicht gespeichert und ist für die Wiederherstellung zwingend erforderlich. Mindestens {{ min_password_length }} Zeichen.</p>
       <div class="form-actions"><button class="primary" type="submit">Backup erstellen</button></div>
     </form>
     <small>Backup-Verzeichnis im Container: <code>{{ backup_dir }}</code></small>
@@ -24,15 +32,20 @@
   <section class="card compact-card">
     <h2>Backup hochladen und wiederherstellen</h2>
     <form method="post" enctype="multipart/form-data" class="grid-form compact-form" onsubmit="return confirm('Backup wirklich wiederherstellen?');">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="restore_upload">
-      <label>Backup-ZIP
-        <input type="file" name="backup_file" accept=".zip" required>
+      <label>Backup-Datei
+        <input type="file" name="backup_file" accept=".dmmbackup,.zip" required>
       </label>
-      <label class="inline-check"><input type="checkbox" name="replace" value="on"> vorhandene Profile/Benutzer/Healthchecks vorher ersetzen</label>
-      <label class="inline-check"><input type="checkbox" name="include_users" value="on" checked> Benutzer und API-Tokens mit wiederherstellen</label>
+      <label>Backup-Passwort
+        <input type="password" name="backup_password" autocomplete="current-password" placeholder="nur bei .dmmbackup erforderlich">
+      </label>
+      <label class="inline-check"><input type="checkbox" name="replace" value="on"> vorhandene Profile, Healthchecks und Zeitpläne vorher ersetzen</label>
+      <label class="inline-check"><input type="checkbox" name="include_users" value="on" checked> Benutzer wiederherstellen</label>
+      <label class="inline-check"><input type="checkbox" name="include_api_tokens" value="on"> API-Tokens ausdrücklich wiederherstellen</label>
+      <p class="hint">Nach der Wiederherstellung von Benutzern oder API-Tokens wird die aktuelle Sitzung aus Sicherheitsgründen beendet.</p>
       <div class="form-actions"><button class="warning" type="submit">Wiederherstellen</button></div>
     </form>
-    <small>Mirror-Daten unter <code>{{ mirror_base }}</code> werden nicht gesichert, weil Repository-Spiegel sehr groß sein können.</small>
   </section>
 </div>
 
@@ -41,11 +54,12 @@
   {% if backups %}
   <div class="table-scroll">
     <table class="compact-table">
-      <thead><tr><th>Datei</th><th>Version</th><th>Datum</th><th>Größe</th><th>Aktionen</th></tr></thead>
+      <thead><tr><th>Datei</th><th>Schutz</th><th>Version</th><th>Datum</th><th>Größe</th><th>Aktionen</th></tr></thead>
       <tbody>
       {% for b in backups %}
         <tr>
           <td><strong>{{ b.name }}</strong>{% if b.manifest.label %}<br><small>{{ b.manifest.label }}</small>{% endif %}</td>
+          <td>{% if b.encrypted %}<span class="badge ok">verschlüsselt</span>{% else %}<span class="badge warning">Legacy · unverschlüsselt</span>{% endif %}</td>
           <td>{{ b.manifest.app_version or '-' }}</td>
           <td><small>{{ b.mtime }}</small></td>
           <td>{{ b.size_h }}</td>
@@ -53,13 +67,17 @@
             <div class="backup-actions-row">
               <a class="button" href="{{ url_for('backup_download', name=b.name) }}">Download</a>
               <form method="post" class="inline backup-restore-inline" onsubmit="return confirm('Backup wirklich wiederherstellen? Aktuelle Daten können überschrieben werden.');">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="restore_existing">
                 <input type="hidden" name="backup_name" value="{{ b.name }}">
+                {% if b.encrypted %}<input type="password" name="backup_password" placeholder="Backup-Passwort" required autocomplete="current-password">{% endif %}
                 <input type="hidden" name="include_users" value="on">
                 <label class="inline-check small-check"><input type="checkbox" name="replace" value="on"> ersetzen</label>
+                <label class="inline-check small-check"><input type="checkbox" name="include_api_tokens" value="on"> Tokens</label>
                 <button type="submit">Wiederherstellen</button>
               </form>
               <form method="post" class="inline" onsubmit="return confirm('Backup löschen?');">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="delete">
                 <input type="hidden" name="backup_name" value="{{ b.name }}">
                 <button class="danger" type="submit">Löschen</button>
@@ -71,7 +89,7 @@
       </tbody>
     </table>
   </div>
-  <p class="hint">Hinweis: „Wiederherstellen“ übernimmt standardmäßig Benutzer und API-Tokens. Nutze den Upload-Bereich, wenn du weitere Optionen setzen möchtest.</p>
+  <p class="hint">Alte ZIP-Backups bleiben für Migrationen lesbar, enthalten ihre Geheimnisse aber unverschlüsselt. Nach erfolgreicher Erstellung eines neuen verschlüsselten Backups sollten alte ZIP-Dateien gelöscht oder extern verschlüsselt archiviert werden.</p>
   {% else %}
     <p>Noch keine Backups vorhanden.</p>
   {% endif %}

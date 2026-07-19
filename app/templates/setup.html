@@ -18,13 +18,13 @@
       {% endif %}
     {% endwith %}
     <p class="hint">Es ist noch kein gültiger Admin-Zugang eingerichtet oder es wird noch das Standardpasswort verwendet.</p>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <label>Benutzername</label>
       <input type="text" name="username" value="admin" autofocus required>
       <label>Neues Passwort</label>
-      <input type="password" name="password" minlength="8" required>
+      <input type="password" name="password" minlength="{{ min_password_length }}" required>
       <label>Passwort wiederholen</label>
-      <input type="password" name="password2" minlength="8" required>
+      <input type="password" name="password2" minlength="{{ min_password_length }}" required>
       <button type="submit" class="primary full">Admin-Zugang speichern</button>
     </form>
   </div>

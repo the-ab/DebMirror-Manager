@@ -12,7 +12,7 @@
 <div class="grid two healthcheck-editor-grid">
   <section class="card">
     <h2>{% if edit_check %}Healthcheck bearbeiten{% else %}Healthcheck anlegen{% endif %}</h2>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="save">
       <input type="hidden" name="check_id" value="{{ edit_check.id if edit_check else '' }}">
       <label>Name</label>
@@ -41,6 +41,8 @@
         </div>
       </div>
       <label class="check"><input type="checkbox" name="enabled" {% if not edit_check or edit_check.enabled %}checked{% endif %}> Aktiv</label>
+      <label class="check"><input type="checkbox" name="allow_private" {% if edit_check and edit_check.allow_private %}checked{% endif %}> Private oder lokale Zieladresse ausdrücklich erlauben</label>
+      <p class="hint">Lokale Ziele wie 127.0.0.1, private LAN-Adressen und Docker-Netze sind standardmäßig gesperrt. Aktiviere diese Option nur für bewusst konfigurierte interne Healthchecks.</p>
       <div class="actions form-actions-left">
         <button class="primary" type="submit">Speichern</button>
         {% if edit_check %}<a class="button" href="{{ url_for('healthchecks_page') }}">Abbrechen</a>{% endif %}
@@ -66,7 +68,7 @@ http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
       {% for c in checks %}
         <tr>
           <td data-label="Name"><strong>{{ c.name }}</strong><br><small>{{ c.method }} erwartet {{ c.expected_status }}, alle {{ c.interval_minutes }} min</small></td>
-          <td data-label="URL"><code class="breakable-code">{{ c.url }}</code></td>
+          <td data-label="URL"><code class="breakable-code">{{ c.url }}</code>{% if c.allow_private %}<br><span class="badge warning">privates Ziel erlaubt</span>{% endif %}</td>
           <td data-label="Status">
             {% if c.last_ok is none %}
               <span class="badge muted">nie geprüft</span>
@@ -81,9 +83,9 @@ http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
           <td data-label="Latenz">{% if c.last_latency_ms is not none %}{{ c.last_latency_ms }} ms{% else %}-{% endif %}</td>
           <td data-label="Aktion" class="actions healthcheck-actions">
             {% if is_admin %}
-            <form method="post" class="inline"><input type="hidden" name="action" value="run"><input type="hidden" name="check_id" value="{{ c.id }}"><button type="submit">Jetzt prüfen</button></form>
+            <form method="post" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="run"><input type="hidden" name="check_id" value="{{ c.id }}"><button type="submit">Jetzt prüfen</button></form>
             <a class="button" href="{{ url_for('healthchecks_page', edit=c.id) }}">Bearbeiten</a>
-            <form method="post" class="inline" onsubmit="return confirm('Healthcheck löschen?');"><input type="hidden" name="action" value="delete"><input type="hidden" name="check_id" value="{{ c.id }}"><button class="danger" type="submit">Löschen</button></form>
+            <form method="post" class="inline" onsubmit="return confirm('Healthcheck löschen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="check_id" value="{{ c.id }}"><button class="danger" type="submit">Löschen</button></form>
             {% else %}<small>Nur Ansicht</small>{% endif %}
           </td>
         </tr>

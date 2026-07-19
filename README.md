@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.77**
+Aktuelle Version: **0.1.78**
 
 ## Grundprinzip
 
@@ -32,7 +32,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.77.zip
+unzip debmirror-manager-v0.1.78.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -63,10 +63,11 @@ Zukünftige Updates werden in `updates/` kopiert:
 ```bash
 cd debmirror-manager
 cp /pfad/zur/debmirror-manager-vNEU.zip updates/
+cp /pfad/zur/debmirror-manager-vNEU.zip.sha256 updates/
 ./update.sh
 ```
 
-`update.sh` prüft ZIP-Versionen, erstellt ein Backup, ersetzt Projektdateien und baut/startet Container automatisch neu. Version 0.1.77 ist ausdrücklich auch mit dem Updater aus 0.1.75 kompatibel: Die Gunicorn-Konfiguration liegt innerhalb des immer übernommenen `app/`-Verzeichnisses. Dadurch kann auch eine nach dem v0.1.76-Buildfehler teilweise aktualisierte Installation direkt auf v0.1.77 aktualisiert werden. Wenn kein neues ZIP vorhanden ist, fragt `update.sh`, ob trotzdem Backup und Rebuild durchgeführt werden sollen. Direkter Rebuild:
+`update.sh` prüft ZIP-Versionen, erstellt ein Backup, ersetzt Projektdateien und baut/startet Container automatisch neu. Ab v0.1.78 verlangt der Updater zusätzlich einen vertrauenswürdig bezogenen SHA-256-Wert. Am einfachsten werden ZIP und gleichnamige Datei `<paket>.zip.sha256` gemeinsam nach `updates/` kopiert. Alternativ kann der Wert interaktiv eingegeben oder einmalig über `UPDATE_EXPECTED_SHA256` gesetzt werden. Update-ZIPs werden außerdem vor dem Entpacken auf Pfadtraversal, Sonderdateien, Eintragsanzahl, entpackte Gesamtgröße und verdächtige Kompressionsverhältnisse geprüft. Wenn kein neues ZIP vorhanden ist, fragt `update.sh`, ob trotzdem Backup und Rebuild durchgeführt werden sollen. Direkter Rebuild:
 
 ```bash
 ./update.sh --rebuild
@@ -411,7 +412,7 @@ Beide Eingaben werden serverseitig validiert. Fehler in einem Block verändern d
 
 ### Backup / Wiederherstellen
 
-Erstellt und verwaltet WebUI-Vollbackups. Enthalten sind Datenbank, Einstellungen, der separate Verschlüsselungs-Schlüssel für Benachrichtigungs- und Mirror-Zugangsdaten, Keyrings, Import-Skripte, Benutzerskripte sowie die verwalteten SSH-Privatschlüssel und `known_hosts`. Beim Restore wird der Verschlüsselungs-Schlüssel vor Datenbank und `settings.json` eingespielt. SSH-Verzeichnisse werden mit Modus `0700`, private Schlüssel und `known_hosts` mit `0600` wiederhergestellt. Vor dem Backup werden gespeicherte Geheimwerte geprüft; bei nicht entschlüsselbaren Werten wird das Backup abgebrochen. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
+Erstellt und verwaltet WebUI-Vollbackups. Neue Backups werden als `.dmmbackup` mit AES-256-GCM verschlüsselt; das notwendige Backup-Passwort muss mindestens zwölf Zeichen lang sein, wird nicht gespeichert und ist beim Restore erneut erforderlich. Enthalten sind Datenbank, Einstellungen, der separate Verschlüsselungs-Schlüssel für Benachrichtigungs- und Mirror-Zugangsdaten, Keyrings, Import-Skripte, Benutzerskripte sowie die verwalteten SSH-Privatschlüssel und `known_hosts`. Beim Restore wird der Verschlüsselungs-Schlüssel vor Datenbank und `settings.json` eingespielt. SSH-Verzeichnisse werden mit Modus `0700`, private Schlüssel und `known_hosts` mit `0600` wiederhergestellt. Vor dem Backup werden gespeicherte Geheimwerte geprüft; bei nicht entschlüsselbaren Werten wird das Backup abgebrochen. Alte unverschlüsselte `.zip`-Backups bleiben lesbar, werden in der Oberfläche jedoch deutlich als Legacy-Backup markiert. Der Restore begrenzt Anzahl, Einzelgröße, Gesamtgröße und Kompressionsverhältnis der Einträge und weist symbolische Links sowie Sonderdateien ab. Große Mirror-Daten unter `/mirror` werden bewusst nicht gesichert.
 
 ### Konfig Export/Import
 
@@ -430,7 +431,7 @@ Normale Benutzer dürfen keine kritischen Änderungen durchführen und keine Job
 
 ### API
 
-API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeichert. Tokens können aktiviert, deaktiviert und gelöscht werden. Die REST-Schnittstelle umfasst:
+API-Tokens werden nur einmal beim Erstellen angezeigt und danach gehasht gespeichert. Neue Tokens besitzen eine frei wählbare Ablaufzeit und getrennte Berechtigungen für Lesen, Mirror-Jobs starten, Benutzerskripte starten, Jobs stoppen und Healthchecks ausführen. Tokens können aktiviert, deaktiviert und gelöscht werden. Bestehende Tokens aus Versionen vor v0.1.78 werden aus Kompatibilitätsgründen als weitreichende Legacy-Tokens übernommen und sollten nach dem Update durch minimal berechtigte Tokens ersetzt werden. Die REST-Schnittstelle umfasst:
 
 ```text
 GET  /api/v1/status
@@ -462,6 +463,21 @@ Schreibende API-Aktionen prüfen dieselben Aktiv-, Rollen-, Speicher- und Konfli
 - Key-Fingerprints sollten gegen Hersteller-/Projekt-Dokumentation geprüft werden
 
 Wichtig: Ab v0.1.67 verwendet die Anwendung für verschlüsselte Geheimwerte nicht mehr ausschließlich `APP_SECRET_KEY`, sondern den persistenten Schlüssel `/app/data/notification-secrets.key`. Ab v0.1.70 schützt dieser Schlüssel zusätzlich Remote-Passwörter von Mirror-Profilen. Er ist Bestandteil neu erstellter Vollbackups. Alte Backups ohne diesen Schlüssel können verschlüsselte Zugangsdaten nach einer Neuinstallation nur dann lesen, wenn der damalige `APP_SECRET_KEY` noch vorhanden ist; andernfalls müssen die betroffenen Geheimwerte einmal neu gesetzt und danach erneut gesichert werden.
+
+### Sicherheitsmodell ab v0.1.78
+
+- Die Ersteinrichtung unter `/setup` ist nach Anlage des ersten Benutzers endgültig geschlossen; URL-Parameter können sie nicht erneut öffnen.
+- Jede Sitzung ist an Benutzer-ID, Benutzername, Aktivstatus und eine serverseitige Sitzungsversionsnummer gebunden. Löschen, Deaktivieren, Rollenänderung oder Passwortänderung widerrufen bestehende Sitzungen sofort.
+- Der letzte aktive Administrator kann nicht gelöscht, deaktiviert oder herabgestuft werden.
+- Alle schreibenden WebUI-Anfragen sind durch CSRF-Tokens geschützt. API-Aufrufe verwenden stattdessen Bearer-Tokens mit Scopes.
+- Fehlgeschlagene Anmeldungen werden pro Benutzer und Quell-IP begrenzt und im Ereignisprotokoll erfasst.
+- Sitzungen laufen standardmäßig nach zwölf Stunden ab. `APP_HTTPS_ONLY=1` setzt sichere Cookies und erzwingt den vorgesehenen HTTPS-Betrieb; bei einem Reverse-Proxy müssen `TRUST_PROXY_HEADERS` und `TRUSTED_HOSTS` korrekt gesetzt sein.
+- Sicherheitsheader verhindern Framing, MIME-Sniffing und unnötige Browserberechtigungen. Dynamische Antworten werden nicht zwischengespeichert.
+- URL-Importe und externe Webhooks blockieren standardmäßig private, lokale, Link-Local- und reservierte Zieladressen. Lokale Healthchecks müssen pro Eintrag ausdrücklich erlaubt werden; weitere interne Ziele können eng über `OUTBOUND_PRIVATE_HOST_ALLOWLIST` freigegeben werden.
+- OpenPGP-Vertrauensbindungen verwenden ausschließlich vollständige 40-stellige Fingerprints. Eindeutig auflösbare ältere Kurz-IDs werden automatisch migriert, unklare Kurz-IDs entfernt und als Ereignis gemeldet.
+- Die automatische Annahme neuer SSH-Hostschlüssel ist für neue Profile standardmäßig aus. Der erste Hostschlüssel sollte kontrolliert in `known_hosts` aufgenommen werden.
+- Verwaltungs-, Datenbank-, Schlüssel-, Log- und Backup-Dateien werden mit restriktiver `umask` und Besitzerrechten angelegt. Der Container startet mit `no-new-privileges`, begrenzten Linux-Capabilities und PID-Limit.
+- Direkter HTTP-Betrieb bleibt für abgeschottete Verwaltungsnetze technisch möglich, überträgt Zugangsdaten jedoch unverschlüsselt. Für produktive Nutzung ist ein HTTPS-Reverse-Proxy und eine Firewall-Begrenzung des WebUI-Ports erforderlich.
 
 ## Notfall: Admin-Passwort zurücksetzen
 

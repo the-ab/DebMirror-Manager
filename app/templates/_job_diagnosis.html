@@ -12,7 +12,7 @@
       <strong>Passende vorhandene Keys gefunden.</strong><br>
       Master-Keyring und Archiv-Keyrings werden getrennt angezeigt. Wähle die benötigten Fingerprints aus und übernimm sie gemeinsam; danach wird automatisch ein bereinigter Profil-Keyring erzeugt.
     </div>
-    <form method="post" action="{{ url_for('keyrings') }}" class="diagnosis-key-form">
+    <form method="post" action="{{ url_for('keyrings') }}" class="diagnosis-key-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="assign_matching_keys">
       <input type="hidden" name="assign_mirror_id" value="{{ job.mirror_id }}">
 
@@ -105,7 +105,7 @@
     </div>
     {% endif %}
     {% for key in diagnosis.missing_keys %}
-      <form method="post" action="{{ url_for('keyrings') }}" class="inline-form">
+      <form method="post" action="{{ url_for('keyrings') }}" class="inline-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="action" value="keyserver">
         <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
         <input type="hidden" name="assign_mirror_id" value="{{ job.mirror_id }}">

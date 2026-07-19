@@ -13,9 +13,9 @@
     {% if start_block_reason %}
       <button type="button" class="locked-button" disabled title="{{ start_block_reason }}"><span>Jetzt starten</span></button>
     {% else %}
-      <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><button class="primary" type="submit">Jetzt starten</button></form>
+      <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="primary" type="submit">Jetzt starten</button></form>
     {% endif %}
-    {% if not start_block_reason or start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run starten</button></form>{% endif %}
+    {% if not start_block_reason or start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run starten</button></form>{% endif %}
     {% endif %}
   </div>
 </div>
@@ -48,7 +48,7 @@
           {% if k.missing %}<span class="badge danger">fehlt</span>{% elif not k.active %}<span class="badge muted">inaktiv</span>{% endif %}
           {% if k.fingerprints %}<br><small>{% for fp in k.fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</small>{% endif %}
           {% if k.legacy_whole_file %}<br><span class="badge warning">Altzuordnung: alle Keys aus Datei</span>{% endif %}
-          <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="inline" onsubmit="return confirm('Key-Zuordnung entfernen?');">
+          <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="inline" onsubmit="return confirm('Key-Zuordnung entfernen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="action" value="remove_assignment">
             <input type="hidden" name="filename" value="{{ '' if k.master_assignment else k.name }}">
             <input type="hidden" name="fingerprint" value="{{ k.selected_fingerprint or '' }}">
@@ -63,7 +63,7 @@
 
     <details>
       <summary>Zuordnungen bearbeiten</summary>
-      <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="compact-form">
+      <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="compact-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="action" value="save_assignments">
         <div class="checkbox-list">
         {% for key in keyring_options %}
@@ -79,7 +79,7 @@
         </div>
         <button class="primary" type="submit">Profil-Keyring erzeugen</button>
       </form>
-      <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="inline">
+      <form method="post" action="{{ url_for('mirror_keyrings_save', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="action" value="rebuild_profile_keyring">
         {% if profile_keyrings %}
           <button type="submit">Profil-Keyring neu erzeugen</button>
@@ -94,7 +94,7 @@
     <h2>Client-Export</h2>
     <p>Erzeugt ein ZIP für APT-Clients mit bereinigtem Profil-Keyring, Deb822-Quelle, klassischer .list-Datei und kurzer Installationsanleitung.</p>
     {% if mirror.keyring %}
-    <form method="post" action="{{ url_for('mirror_client_export', mirror_id=mirror.id) }}" class="client-export-form">
+    <form method="post" action="{{ url_for('mirror_client_export', mirror_id=mirror.id) }}" class="client-export-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <label>Client-Basis-URL des veröffentlichten Mirrors</label>
       <input name="client_base_url" placeholder="z. B. https://mirror.lan/{{ mirror.name|lower }}" required>
       <p class="hint">Die URL muss auf deinen veröffentlichten Mirror zeigen, nicht auf die Upstream-Quelle {{ mirror.method }}://{{ mirror.host }}/{{ mirror.root_path }}.</p>
@@ -134,7 +134,7 @@
         <div class="size-value-actions">
           <strong>{{ stats.size_h }}</strong>
           {% if is_admin %}
-          <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=mirror.id) }}" class="inline size-refresh-form">
+          <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=mirror.id) }}" class="inline size-refresh-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="icon-button size-refresh-button" title="Mirror-Größe jetzt neu berechnen" aria-label="Mirror-Größe für {{ mirror.name }} neu berechnen">↻</button>
           </form>
           {% endif %}
@@ -152,7 +152,7 @@
   <section class="card danger-zone">
     <h2>Gefahrenzone</h2>
     <p>Das Löschen entfernt nur das Profil und die Job-Historie, nicht die Mirror-Dateien im Zielverzeichnis.</p>
-    {% if is_admin %}<form method="post" action="{{ url_for('mirror_delete', mirror_id=mirror.id) }}" onsubmit="return confirm('Mirror-Profil wirklich löschen?');"><button class="danger" type="submit">Mirror-Profil löschen</button></form>{% endif %}
+    {% if is_admin %}<form method="post" action="{{ url_for('mirror_delete', mirror_id=mirror.id) }}" onsubmit="return confirm('Mirror-Profil wirklich löschen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Mirror-Profil löschen</button></form>{% endif %}
   </section>
 </div>
 

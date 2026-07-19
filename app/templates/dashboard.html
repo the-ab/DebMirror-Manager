@@ -87,7 +87,7 @@
           <tr class="table-action-row">
             <th colspan="3"></th>
             <th class="size-bulk-action-cell">
-              <form method="post" action="{{ url_for('all_sizes_recalculate') }}" class="inline all-size-refresh-form" title="Alle vorhandenen Mirror- und Skript-Zielverzeichnisse aktualisieren">
+              <form method="post" action="{{ url_for('all_sizes_recalculate') }}" class="inline all-size-refresh-form" title="Alle vorhandenen Mirror- und Skript-Zielverzeichnisse aktualisieren"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <button type="submit" class="table-header-action" aria-label="Alle Größen aktualisieren">↻ Alle</button>
               </form>
             </th>
@@ -111,7 +111,7 @@
                 <div class="size-value-actions">
                   <strong>{{ m.size_info.size_h }}</strong>
                   {% if is_admin %}
-                  <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=m.id) }}" class="inline size-refresh-form">
+                  <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=m.id) }}" class="inline size-refresh-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="icon-button size-refresh-button" title="Mirror-Größe jetzt neu berechnen" aria-label="Mirror-Größe für {{ m.name }} neu berechnen">↻</button>
                   </form>
                   {% endif %}
@@ -128,9 +128,9 @@
                 {% elif is_admin %}
                   {% if m.start_block_reason %}
                     <button type="button" class="locked-button" disabled title="{{ m.start_block_reason }}"><span>Start</span></button>
-                    {% if m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
+                    {% if m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
                   {% else %}
-                    <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
+                    <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button type="submit">Start</button></form>
                   {% endif %}
                 {% else %}<small>Nur Ansicht</small>
                 {% endif %}
@@ -147,7 +147,7 @@
                   <div class="size-value-actions">
                     <strong>{{ script.target_size_info.size_h }}</strong>
                     {% if is_admin %}
-                    <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline size-refresh-form">
+                    <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline size-refresh-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                       <input type="hidden" name="action" value="recalculate_size">
                       <input type="hidden" name="script_name" value="{{ script.name }}">
                       <button type="submit" class="icon-button size-refresh-button" title="Skript-Zielgröße jetzt neu berechnen" aria-label="Zielgröße für {{ script.name }} neu berechnen">↻</button>
@@ -170,7 +170,7 @@
                   {% if script.start_block_reason %}
                     <button type="button" class="locked-button" disabled title="{{ script.start_block_reason }}"><span>Start</span></button>
                   {% else %}
-                    <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline">
+                    <form method="post" action="{{ url_for('user_scripts_page') }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                       <input type="hidden" name="action" value="run">
                       <input type="hidden" name="script_name" value="{{ script.name }}">
                       <button type="submit">Start</button>

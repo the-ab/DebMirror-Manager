@@ -56,15 +56,15 @@
   </details>
 
   <div class="actions compact-actions master-overview-actions">
-    <form method="post" class="inline">
+    <form method="post" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="rebuild_master_keyring">
       <button type="submit">Master neu aufbauen</button>
     </form>
-    <form method="post" class="inline" onsubmit="return confirm('Master-Keyring vollständig aus allen Quelldateien neu aufbauen und bisherige Entfernsperren löschen? Dadurch können bewusst entfernte Keys wieder importiert werden.');">
+    <form method="post" class="inline" onsubmit="return confirm('Master-Keyring vollständig aus allen Quelldateien neu aufbauen und bisherige Entfernsperren löschen? Dadurch können bewusst entfernte Keys wieder importiert werden.');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="rebuild_master_keyring_full">
       <button type="submit">Vollständig neu aufbauen</button>
     </form>
-    <form method="post" class="inline">
+    <form method="post" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="rebuild_all_profile_keyrings">
       <button type="submit">Profil-Keyrings neu erzeugen</button>
     </form>
@@ -109,7 +109,7 @@
         </tbody>
       </table>
     </div>
-    <form method="post" class="grid two compact-form">
+    <form method="post" class="grid two compact-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="import_previewed">
       <input type="hidden" name="preview_token" value="{{ import_preview.token }}">
       <input type="hidden" name="expected_fingerprint" value="{{ import_preview.expected or prefill_fp or '' }}">
@@ -133,7 +133,7 @@
 <div class="grid two">
   <section class="card">
     <h2>Key-Datei hochladen</h2>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <label>Key-Datei</label>
       <input type="file" name="keyfile" required>
       <label>Erwarteter Fingerprint optional</label>
@@ -152,7 +152,7 @@
   </section>
   <section class="card">
     <h2>Key aus URL importieren</h2>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <label>URL</label>
       <input name="url" placeholder="https://..." required>
       <label>Dateiname</label>
@@ -171,7 +171,7 @@
   </section>
   <section class="card">
     <h2>ASCII-Key einfügen</h2>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <label>ASCII-armored Public Key</label>
       <textarea name="key_text" rows="8" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----"></textarea>
       <label>Dateiname optional</label>
@@ -186,7 +186,7 @@
   </section>
   <section class="card">
     <h2>Key vom Keyserver importieren</h2>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="keyserver">
       <label>Fingerprint / Key-ID</label>
       <input name="fingerprint" value="{{ prefill_fp or '' }}" placeholder="z. B. 811CA850DB161B9BD803F90199BB41D37A182BAE" required>
@@ -249,7 +249,7 @@
           <div class="actions compact-actions master-key-actions">
             <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='gpg') }}">.gpg</a>
             <a class="button" href="{{ url_for('master_keyring_export_single_key', fingerprint=key.fingerprint, fmt='asc') }}">.asc</a>
-            <form method="post" class="inline" onsubmit="return confirm('Diesen Key wirklich aus dem Master-Keyring entfernen?');">
+            <form method="post" class="inline" onsubmit="return confirm('Diesen Key wirklich aus dem Master-Keyring entfernen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="delete_master_key">
               <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
               <button class="danger" type="submit" {% if key.used_by %}disabled title="Key ist noch Profilen zugeordnet"{% endif %}>Aus Master entfernen</button>
@@ -288,7 +288,7 @@
         <div class="keyring-usage master-key-usage-grid">
           <div>
             <h4>Profil zuordnen</h4>
-            <form method="post" class="inline-form keyring-assign-form">
+            <form method="post" class="inline-form keyring-assign-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="assign_keyring_to_profile">
               <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
               <label>Mirror-Profil
@@ -311,7 +311,7 @@
                   <a href="{{ url_for('mirror_detail', mirror_id=m.id) }}">{{ m.name }}</a>
                   <span class="badge muted">{{ m.usage_type or 'zugeordnet' }}</span>
                   {% if not m.enabled %}<span class="badge muted">inaktiv</span>{% endif %}
-                  <form method="post" class="inline" onsubmit="return confirm('Zuordnung zu diesem Profil entfernen?');">
+                  <form method="post" class="inline" onsubmit="return confirm('Zuordnung zu diesem Profil entfernen?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                     <input type="hidden" name="action" value="unassign_keyring_from_profile">
                     <input type="hidden" name="fingerprint" value="{{ key.fingerprint }}">
                     <input type="hidden" name="profile_mirror_id" value="{{ m.id }}">
@@ -349,7 +349,7 @@
           <td>{% for fp in a.fingerprints %}<code>{{ fp }}</code>{% if not loop.last %}<br>{% endif %}{% else %}-{% endfor %}</td>
           <td>{% if a.subkey_fingerprints %}{{ a.subkey_fingerprints|length }}{% else %}0{% endif %}</td>
           <td>
-            <form method="post" class="inline" onsubmit="return confirm('Import-/Quelldatei wirklich löschen? Der aktuelle Master-Keyring bleibt unverändert, ein späterer Neuaufbau nutzt diese Datei dann aber nicht mehr.');">
+            <form method="post" class="inline" onsubmit="return confirm('Import-/Quelldatei wirklich löschen? Der aktuelle Master-Keyring bleibt unverändert, ein späterer Neuaufbau nutzt diese Datei dann aber nicht mehr.');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <input type="hidden" name="action" value="delete_archived_keyring">
               <input type="hidden" name="filename" value="{{ a.name }}">
               <input type="hidden" name="source_type" value="{{ a.source_type }}">

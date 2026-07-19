@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head"><div><h1>Benachrichtigungen</h1><p>Mail, Telegram und Discord für Job-Ergebnisse und Healthcheck-Fehler.</p><p class="hint">Geheimwerte werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten vorhandene Werte. Der separate Datenschlüssel wird in Vollbackups gesichert und beim Restore wiederhergestellt.</p>{% if not notify.encryption_available %}<p class="alert alert-warning">Hinweis: Verschlüsselungsbibliothek nicht verfügbar. Prüfe das Container-Image und führe das Update erneut aus.</p>{% elif not notify.secret_storage_readable %}<p class="alert alert-warning">Gespeicherte Benachrichtigungs-Geheimwerte können nicht entschlüsselt werden: {{ notify.unreadable_secret_fields|join(', ') }}. Setze die betroffenen Werte neu und erstelle anschließend ein neues Vollbackup.</p>{% elif notify.secret_key_present %}<p class="hint">Verschlüsselungs-Schlüssel vorhanden: <code>{{ notify.secret_key_path }}</code></p>{% endif %}</div></div>
 {% if test_results %}<section class="card"><h2>Testergebnis</h2><ul>{% for r in test_results %}<li>{{ r }}</li>{% endfor %}</ul></section>{% endif %}
-<form method="post" class="card form-grid">
+<form method="post" class="card form-grid"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
   <fieldset>
     <legend>Allgemein</legend>
     <label class="check"><input type="checkbox" name="enabled" {% if notify.enabled %}checked{% endif %}> Benachrichtigungen aktivieren</label>

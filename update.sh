@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 APP_NAME="DebMirror Manager"
 PROJECT_NAME="debmirror-manager"
@@ -45,8 +46,9 @@ Verwendung:
   ./update.sh --no-build      Nur Dateien aktualisieren, Container nicht bauen/starten
 
 Update-Paket:
-  ZIP nach ${UPDATE_DIR}/ kopieren, z. B.:
-    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.5.zip
+  ZIP und zugehörige SHA-256-Datei nach ${UPDATE_DIR}/ kopieren, z. B.:
+    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.78.zip
+    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.78.zip.sha256
   Danach nur noch ausführen:
     ./update.sh
 USAGE
@@ -151,6 +153,7 @@ import_env_if_missing() {
     choice="${choice:-1}"
     if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -gt 0 ] && [ "$choice" -le "${#candidates[@]}" ]; then
       cp "${candidates[$((choice-1))]}" "$ENV_FILE"
+      chmod 600 "$ENV_FILE"
       log ".env wurde aus ${candidates[$((choice-1))]} übernommen."
       return
     fi
@@ -158,6 +161,7 @@ import_env_if_missing() {
 
   [ -f "$ENV_EXAMPLE" ] || error_exit "$ENV_EXAMPLE fehlt."
   cp "$ENV_EXAMPLE" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
   log ".env wurde aus .env.example erstellt. Bitte danach Zugang/Ports prüfen."
 }
 
@@ -206,6 +210,7 @@ create_backups() {
 
   if [ -f "$ENV_FILE" ]; then
     cp "$ENV_FILE" "$backup_base/.env"
+    chmod 600 "$backup_base/.env"
   fi
   [ -f "docker-compose.yml" ] && cp docker-compose.yml "$backup_base/docker-compose.yml"
   [ -f "VERSION" ] && cp VERSION "$backup_base/VERSION"
@@ -227,6 +232,42 @@ create_backups() {
     log "Persistente Daten gesichert: $BACKUP_DIR/update-${TS}-persistent-v${PROJECT_VERSION}.tar.gz"
   else
     log "Keine persistenten Daten unter $BASE_DATA/data, $BASE_DATA/keyrings oder $BASE_DATA/import-scripts gefunden."
+  fi
+}
+
+verify_update_checksum() {
+  local zip_file="$1"
+  local expected="${UPDATE_EXPECTED_SHA256:-}"
+  local sidecar="${zip_file}.sha256"
+  local require_checksum
+  require_checksum="$(env_value_or_default UPDATE_REQUIRE_CHECKSUM 1)"
+
+  if [ -z "$expected" ] && [ -f "$sidecar" ]; then
+    expected="$(awk 'match(tolower($0), /[0-9a-f]{64}/) {print substr(tolower($0), RSTART, RLENGTH); exit}' "$sidecar")"
+  fi
+  if [ -z "$expected" ] && [ "$ASSUME_YES" -eq 0 ]; then
+    printf 'Erwarteten SHA-256-Wert des Update-ZIPs eingeben (leer = Abbruch, wenn Prüfung erforderlich): '
+    read -r expected
+  fi
+  expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f' | grep -oE '[0-9a-f]{64}' | head -n1 || true)"
+
+  case "${require_checksum,,}" in
+    0|false|no|off|n|nein)
+      if [ -z "$expected" ]; then
+        log "WARNUNG: SHA-256-Prüfung wurde ausdrücklich deaktiviert."
+        return 0
+      fi
+      ;;
+    *)
+      [ -n "$expected" ] || error_exit "Für das Update fehlt der vertrauenswürdig bezogene SHA-256-Wert. Lege ${sidecar} ab oder setze UPDATE_EXPECTED_SHA256."
+      ;;
+  esac
+
+  if [ -n "$expected" ]; then
+    local actual
+    actual="$(sha256sum "$zip_file" | awk '{print $1}')"
+    [ "$actual" = "$expected" ] || error_exit "SHA-256-Prüfung fehlgeschlagen. Erwartet: $expected, erhalten: $actual"
+    log "SHA-256-Prüfung erfolgreich: $actual"
   fi
 }
 
@@ -293,44 +334,67 @@ PY
 safe_extract_and_copy_update() {
   local zip_file="$1"
   local tmp_dir="$2"
-  python3 - "$zip_file" "$tmp_dir" "$(pwd -P)" <<'PY'
+  python3 - "$zip_file" "$tmp_dir" "$(pwd -P)" <<'PYZIP'
 from pathlib import Path
-import os, shutil, stat, sys, zipfile
+import shutil, stat, sys, zipfile
 
 zip_file = Path(sys.argv[1]).resolve()
 tmp_dir = Path(sys.argv[2]).resolve()
 target_root = Path(sys.argv[3]).resolve()
 extract_root = tmp_dir / 'extract'
-extract_root.mkdir(parents=True, exist_ok=True)
+extract_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+max_entries = 10000
+max_total = 512 * 1024 * 1024
+max_file = 256 * 1024 * 1024
+max_ratio = 200
 
 with zipfile.ZipFile(zip_file) as zf:
-    for info in zf.infolist():
+    infos = zf.infolist()
+    if len(infos) > max_entries:
+        raise SystemExit(f'Update-ZIP enthält zu viele Einträge: {len(infos)} > {max_entries}')
+    total = 0
+    for info in infos:
         name = info.filename
+        mode = (info.external_attr >> 16) & 0o170000
         if not name or name.startswith('/') or '..' in Path(name).parts:
             raise SystemExit(f'Unsicherer ZIP-Pfad: {name}')
-    zf.extractall(extract_root)
+        if mode and mode not in {stat.S_IFREG, stat.S_IFDIR}:
+            raise SystemExit(f'Sonderdatei oder symbolischer Link im ZIP nicht erlaubt: {name}')
+        if info.file_size > max_file:
+            raise SystemExit(f'ZIP-Eintrag ist zu groß: {name}')
+        total += info.file_size
+        if total > max_total:
+            raise SystemExit('Update-ZIP überschreitet die erlaubte entpackte Gesamtgröße.')
+        if info.compress_size and info.file_size / max(1, info.compress_size) > max_ratio:
+            raise SystemExit(f'Verdächtiges Kompressionsverhältnis bei: {name}')
+        destination = (extract_root / name).resolve()
+        if extract_root not in destination.parents and destination != extract_root:
+            raise SystemExit(f'ZIP-Pfad verlässt das Ziel: {name}')
+        if info.is_dir():
+            destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with zf.open(info) as src, destination.open('wb') as dst:
+            shutil.copyfileobj(src, dst, length=1024 * 1024)
+        destination.chmod(0o600)
 
 candidates = []
 for path in extract_root.rglob('VERSION'):
     root = path.parent
     if (root / 'docker-compose.yml').exists() and (root / 'app').is_dir():
         candidates.append(root)
-if not candidates:
-    raise SystemExit('Im ZIP wurde kein gültiger debmirror-manager Projektordner gefunden.')
+if len(candidates) != 1:
+    raise SystemExit('Im ZIP wurde nicht genau ein gültiger debmirror-manager Projektordner gefunden.')
 source_root = candidates[0]
 
-preserve = {'.env', 'updates'}
 items_to_copy = [
     '.env.example', 'Dockerfile', 'docker-compose.yml', 'requirements.txt',
     'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md',
     'RELEASE_NOTES.md', 'VERSION', 'app', 'nginx'
 ]
-
 for name in items_to_copy:
     src = source_root / name
     if not src.exists():
-        continue
-    if name in preserve:
         continue
     dst = target_root / name
     if dst.exists() or dst.is_symlink():
@@ -346,9 +410,11 @@ for name in items_to_copy:
 for script in ['install.sh', 'set-admin-password.sh', 'update.sh']:
     path = target_root / script
     if path.exists():
-        mode = path.stat().st_mode
-        path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-PY
+        path.chmod(0o755)
+path = target_root / '.env'
+if path.exists():
+    path.chmod(0o600)
+PYZIP
 }
 
 compose_has_containers() {
@@ -428,6 +494,7 @@ perform_package_update() {
   log "Update-Paket gefunden: $zip_file"
   log "Aktuelle Version: ${PROJECT_VERSION}"
   log "Paket-Version: ${target_version}"
+  verify_update_checksum "$zip_file"
 
   if ! version_gt "$target_version" "$PROJECT_VERSION"; then
     log "Keine neuere Version im Paket. Es wird kein Datei-Update durchgeführt."
@@ -455,7 +522,11 @@ perform_package_update() {
   merge_env_example
 
   mkdir -p "${UPDATE_DIR}/installed"
-  mv "$zip_file" "${UPDATE_DIR}/installed/$(basename "$zip_file" .zip)-installed-${TS}.zip"
+  local installed_zip="${UPDATE_DIR}/installed/$(basename "$zip_file" .zip)-installed-${TS}.zip"
+  mv "$zip_file" "$installed_zip"
+  if [ -f "${zip_file}.sha256" ]; then
+    mv "${zip_file}.sha256" "${installed_zip}.sha256"
+  fi
   log "Update-ZIP wurde nach ${UPDATE_DIR}/installed verschoben."
   return 0
 }
@@ -472,9 +543,9 @@ Update-Backups: ${BACKUP_DIR}
 Update-Verzeichnis: $(pwd -P)/${UPDATE_DIR}
 
 Neuer Standardablauf:
-  1. Neues Release-ZIP nach ${UPDATE_DIR}/ kopieren
+  1. Neues Release-ZIP und die gleichnamige .sha256-Datei nach ${UPDATE_DIR}/ kopieren
   2. ./update.sh ausführen
-  3. update.sh erkennt neuere Version, sichert Daten, ersetzt Projektdateien und baut/startet Container
+  3. update.sh prüft SHA-256 und Version, sichert Daten, ersetzt Projektdateien und baut/startet Container
 
 UPDATE_TEXT
 }

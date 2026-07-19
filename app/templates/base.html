@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}{{ app_name }}{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
@@ -14,14 +15,14 @@
     <span class="top-meta">Mirror-Basis: {{ mirror_base }} · Zeit: {{ app_timezone }} · Auth: {{ auth_source }}</span>
     <span class="top-user">{% if current_user.username %}{{ current_user.username }} · {{ current_user.role }}{% else %}Gast{% endif %}</span>
     {% if is_admin %}
-    <form method="post" action="{{ url_for('toggle_theme') }}" class="inline">
+    <form method="post" action="{{ url_for('toggle_theme') }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <button class="linkbtn" type="submit" title="Darstellung umschalten">
         {% if appearance == 'dark' %}☀ Light{% elif appearance == 'auto' %}◐ Auto{% else %}☾ Dark{% endif %}
       </button>
     </form>
     {% endif %}
     {% if auth_enabled %}
-    <form method="post" action="{{ url_for('logout') }}" class="inline"><button class="linkbtn" type="submit">Logout</button></form>
+    <form method="post" action="{{ url_for('logout') }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="linkbtn" type="submit">Logout</button></form>
     {% endif %}
   </div>
 </header>
@@ -102,6 +103,23 @@
 </div>
 <script>
 (function () {
+  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  var csrfValue = csrfMeta ? csrfMeta.getAttribute('content') : '';
+  var originalFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    var options = init ? Object.assign({}, init) : {};
+    var method = String(options.method || 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      var targetUrl = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+      var parsed = new URL(targetUrl || window.location.href, window.location.href);
+      if (parsed.origin === window.location.origin) {
+        var headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined));
+        headers.set('X-CSRF-Token', csrfValue);
+        options.headers = headers;
+      }
+    }
+    return originalFetch(input, options);
+  };
   document.querySelectorAll('.side-nav details.side-section').forEach(function (item) {
     item.addEventListener('toggle', function () {
       if (!item.open) return;

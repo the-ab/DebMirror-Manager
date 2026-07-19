@@ -20,7 +20,7 @@
 
   <section class="card settings-card">
     <h2>Jobs / Warteschlange / Logs</h2>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="save_system_settings">
       <label>Maximal gleichzeitig laufende Jobs</label>
       <input type="number" min="1" max="16" name="max_parallel_jobs" value="{{ max_parallel_jobs }}">
@@ -82,7 +82,7 @@
     {% if storage_guard.blocked %}
       <div class="notice danger compact-notice"><strong>Speicherplatz-Sperre:</strong> {{ storage_guard.message }}</div>
     {% endif %}
-    <form method="post" class="compact-storage-form">
+    <form method="post" class="compact-storage-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="save_storage_guard">
       <label class="check"><input type="checkbox" name="storage_guard_enabled" {% if storage_guard_enabled %}checked{% endif %}> Speicherplatz-Sperre für Mirror-Jobs aktivieren</label>
       <small>Dry-Runs und Benutzerskripte werden nicht blockiert. Wartende echte Mirror-Jobs starten erst wieder, wenn der Grenzwert unterschritten ist.</small>
@@ -118,7 +118,7 @@
   <section class="card settings-card">
     <h2>Darstellung</h2>
     <p>Aktueller Modus: <strong>{{ appearance }}</strong></p>
-    <form method="post">
+    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="set_appearance">
       <label>Modus</label>
       <select name="appearance">

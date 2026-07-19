@@ -16,6 +16,7 @@ import re
 import secrets
 import signal
 import shutil
+import socket
 import stat
 import smtplib
 import sqlite3
@@ -38,6 +39,8 @@ except Exception:  # pragma: no cover
 from flask import (
     Flask,
     Response,
+    abort,
+    g,
     flash,
     jsonify,
     redirect,
@@ -48,15 +51,24 @@ from flask import (
     stream_with_context,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 try:
     from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 except Exception:  # pragma: no cover - dependency should be installed in container
     Fernet = None
     InvalidToken = Exception
+    AESGCM = None
+    Scrypt = None
 
 from app import APP_NAME, APP_VERSION
+
+# Alle neu erzeugten Verwaltungs-, Schlüssel-, Log- und Backup-Dateien sind
+# standardmäßig nur für den Container-/Host-Administrator zugänglich.
+os.umask(0o077)
 
 APP_DATA_DIR = Path(os.environ.get("APP_DATA_DIR", "/app/data"))
 APP_LOG_DIR = Path(os.environ.get("APP_LOG_DIR", "/app/logs"))
@@ -97,6 +109,20 @@ DEFAULT_AUTO_SIZE_IDLE_MINUTES = int(os.environ.get("AUTO_SIZE_IDLE_MINUTES", "1
 DEFAULT_STORAGE_GUARD_ENABLED = int(os.environ.get("STORAGE_GUARD_ENABLED", "1"))
 DEFAULT_STORAGE_GUARD_THRESHOLD_PERCENT = int(os.environ.get("STORAGE_GUARD_THRESHOLD_PERCENT", "95"))
 DEFAULT_APP_TIMEZONE = os.environ.get("APP_TIMEZONE", os.environ.get("TZ", "Europe/Berlin")).strip() or "Europe/Berlin"
+MIN_PASSWORD_LENGTH = max(12, int(os.environ.get("MIN_PASSWORD_LENGTH", "12")))
+SESSION_LIFETIME_HOURS = max(1, int(os.environ.get("SESSION_LIFETIME_HOURS", "12")))
+LOGIN_MAX_ATTEMPTS = max(3, int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5")))
+LOGIN_WINDOW_SECONDS = max(60, int(os.environ.get("LOGIN_WINDOW_SECONDS", "900")))
+LOGIN_LOCK_SECONDS = max(60, int(os.environ.get("LOGIN_LOCK_SECONDS", "900")))
+RESTORE_MAX_ENTRIES = max(100, int(os.environ.get("RESTORE_MAX_ENTRIES", "10000")))
+RESTORE_MAX_UNCOMPRESSED_BYTES = max(16 * 1024 * 1024, int(os.environ.get("RESTORE_MAX_UNCOMPRESSED_BYTES", str(512 * 1024 * 1024))))
+RESTORE_MAX_FILE_BYTES = max(4 * 1024 * 1024, int(os.environ.get("RESTORE_MAX_FILE_BYTES", str(256 * 1024 * 1024))))
+RESTORE_MAX_COMPRESSION_RATIO = max(10, int(os.environ.get("RESTORE_MAX_COMPRESSION_RATIO", "200")))
+BACKUP_ENCRYPTED_MAGIC = b"DMMBACKUP2\n"
+BACKUP_KDF_N = 2 ** 15
+BACKUP_KDF_R = 8
+BACKUP_KDF_P = 1
+OUTBOUND_PRIVATE_HOST_ALLOWLIST = [item.strip().lower() for item in os.environ.get("OUTBOUND_PRIVATE_HOST_ALLOWLIST", "").split(",") if item.strip()]
 
 # Lokale Zeit für Logeinträge und WebUI-Ausgaben. Falls die Zone ungültig ist,
 # bleibt die Python-Standardzeit aktiv, aber die Anwendung bricht nicht ab.
@@ -140,10 +166,37 @@ try:
 except OSError:
     pass
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on", "j", "ja"}
+
+
+def validated_secret_key() -> str:
+    value = os.environ.get("APP_SECRET_KEY", "").strip()
+    if len(value) < 32 or value in {"dev-change-me", "please-change-this-secret", "please-change-me"}:
+        raise RuntimeError("APP_SECRET_KEY fehlt oder ist unsicher. Bitte install.sh ausführen oder einen zufälligen Wert mit mindestens 32 Zeichen setzen.")
+    return value
+
+
 app = Flask(__name__)
-app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-change-me")
-app.config["SESSION_COOKIE_NAME"] = "debmirror_manager_session"
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.secret_key = validated_secret_key()
+app.config.update(
+    SESSION_COOKIE_NAME="debmirror_manager_session",
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=env_bool("APP_HTTPS_ONLY", False),
+    PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=SESSION_LIFETIME_HOURS),
+    MAX_CONTENT_LENGTH=max(16 * 1024 * 1024, int(os.environ.get("MAX_UPLOAD_BYTES", str(128 * 1024 * 1024)))),
+    MAX_FORM_MEMORY_SIZE=2 * 1024 * 1024,
+    MAX_FORM_PARTS=200,
+)
+trusted_hosts = [item.strip() for item in os.environ.get("TRUSTED_HOSTS", "").split(",") if item.strip()]
+if trusted_hosts:
+    app.config["TRUSTED_HOSTS"] = trusted_hosts
+if env_bool("TRUST_PROXY_HEADERS", False):
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
 RUNNING_PROCESSES: Dict[int, subprocess.Popen] = {}
 RUNNING_PROCESSES_LOCK = threading.Lock()
@@ -158,6 +211,42 @@ PROFILE_SCAN_AUTH_CONTEXT = threading.local()
 PROFILE_SCAN_JOB_TTL_SECONDS = 3600
 PROFILE_SCAN_JOB_MAX_ENTRIES = 40
 NOTIFICATION_SECRET_KEY_LOCK = threading.Lock()
+
+
+def secure_chmod(path: Path, mode: int) -> None:
+    try:
+        if path.exists() and not path.is_symlink():
+            path.chmod(mode)
+    except OSError:
+        pass
+
+
+def ensure_secure_runtime_permissions() -> None:
+    secure_dirs = (APP_DATA_DIR, APP_LOG_DIR, APP_KEYRING_DIR, KEY_IMPORT_PREVIEW_DIR, MASTER_KEYRING_DIR, PROFILE_KEYRING_DIR, ARCHIVE_KEYRING_DIR, KEYSERVER_KEYRING_DIR, APP_BACKUP_DIR, IMPORT_SCRIPT_DIR, USER_SCRIPT_DIR, JOB_AUTH_CONFIG_DIR, SSH_DIR, SSH_KEY_DIR)
+    for directory in secure_dirs:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        secure_chmod(directory, 0o700)
+    for file_path in (DB_PATH, SETTINGS_PATH, NOTIFICATION_SECRET_KEY_PATH, SSH_KNOWN_HOSTS_PATH, WEBUI_ERROR_LOG):
+        secure_chmod(file_path, 0o600)
+    for pattern_dir, pattern in ((APP_BACKUP_DIR, "*"), (APP_DATA_DIR, "*.sqlite3*"), (APP_LOG_DIR, "*.log*")):
+        try:
+            for file_path in pattern_dir.glob(pattern):
+                if file_path.is_file() and not file_path.is_symlink():
+                    secure_chmod(file_path, 0o600)
+        except OSError:
+            pass
+    for directory, executable in ((APP_KEYRING_DIR, False), (SSH_DIR, False), (IMPORT_SCRIPT_DIR, True), (USER_SCRIPT_DIR, True)):
+        try:
+            for file_path in directory.rglob("*"):
+                if file_path.is_dir() and not file_path.is_symlink():
+                    secure_chmod(file_path, 0o700)
+                elif file_path.is_file() and not file_path.is_symlink():
+                    secure_chmod(file_path, 0o700 if executable else 0o600)
+        except OSError:
+            pass
 
 
 def _normalized_size_path(path_value: str) -> str:
@@ -178,6 +267,7 @@ def db() -> sqlite3.Connection:
     # Ein großzügiger Busy-Timeout verhindert "database is locked" bei kurzen
     # Schreibkollisionen, ohne die Anwendung unnötig komplex zu machen.
     con = sqlite3.connect(DB_PATH, timeout=60)
+    secure_chmod(DB_PATH, 0o600)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA busy_timeout=60000")
     con.execute("PRAGMA foreign_keys=ON")
@@ -219,7 +309,7 @@ def init_db() -> None:
                 rsync_ssh_user TEXT DEFAULT '',
                 rsync_ssh_key TEXT DEFAULT '',
                 rsync_ssh_port INTEGER NOT NULL DEFAULT 22,
-                rsync_ssh_accept_new_host_key INTEGER NOT NULL DEFAULT 1,
+                rsync_ssh_accept_new_host_key INTEGER NOT NULL DEFAULT 0,
                 include_patterns TEXT DEFAULT '',
                 exclude_patterns TEXT DEFAULT '',
                 schedule_mode TEXT NOT NULL DEFAULT 'manual',
@@ -265,7 +355,8 @@ def init_db() -> None:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_login_at TEXT DEFAULT ''
+                last_login_at TEXT DEFAULT '',
+                session_version INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS api_tokens (
@@ -275,7 +366,18 @@ def init_db() -> None:
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 last_used_at TEXT DEFAULT '',
-                created_by TEXT DEFAULT ''
+                created_by TEXT DEFAULT '',
+                scopes TEXT NOT NULL DEFAULT 'read',
+                expires_at TEXT DEFAULT '',
+                last_used_ip TEXT DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                identifier TEXT PRIMARY KEY,
+                failures INTEGER NOT NULL DEFAULT 0,
+                first_failed_at TEXT NOT NULL,
+                last_failed_at TEXT NOT NULL,
+                locked_until TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS healthchecks (
@@ -287,6 +389,7 @@ def init_db() -> None:
                 timeout_seconds INTEGER NOT NULL DEFAULT 10,
                 interval_minutes INTEGER NOT NULL DEFAULT 60,
                 enabled INTEGER NOT NULL DEFAULT 1,
+                allow_private INTEGER NOT NULL DEFAULT 0,
                 last_check_at TEXT DEFAULT '',
                 last_ok INTEGER DEFAULT NULL,
                 last_status_code INTEGER DEFAULT NULL,
@@ -330,6 +433,35 @@ def init_db() -> None:
             );
             """
         )
+        user_columns = {row["name"] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "session_version" not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1")
+
+        token_columns = {row["name"] for row in con.execute("PRAGMA table_info(api_tokens)").fetchall()}
+        if "scopes" not in token_columns:
+            # Bestehende Tokens behalten aus Kompatibilitätsgründen ihren bisherigen
+            # Funktionsumfang; neue Tokens starten standardmäßig nur lesend.
+            con.execute("ALTER TABLE api_tokens ADD COLUMN scopes TEXT NOT NULL DEFAULT 'read,run_mirrors,run_scripts,stop_jobs,healthchecks'")
+        if "expires_at" not in token_columns:
+            con.execute("ALTER TABLE api_tokens ADD COLUMN expires_at TEXT DEFAULT ''")
+        if "last_used_ip" not in token_columns:
+            con.execute("ALTER TABLE api_tokens ADD COLUMN last_used_ip TEXT DEFAULT ''")
+
+        health_columns = {row["name"] for row in con.execute("PRAGMA table_info(healthchecks)").fetchall()}
+        if "allow_private" not in health_columns:
+            con.execute("ALTER TABLE healthchecks ADD COLUMN allow_private INTEGER NOT NULL DEFAULT 0")
+            # Vorhandene lokale Healthchecks werden als bewusst konfiguriert
+            # übernommen, damit das Sicherheitsupdate ihre Funktion nicht stoppt.
+            rows = con.execute("SELECT id, url FROM healthchecks").fetchall()
+            for row in rows:
+                try:
+                    host = urllib.parse.urlsplit(row["url"]).hostname or ""
+                    ip = ipaddress.ip_address(host.strip("[]"))
+                    if not ip.is_global:
+                        con.execute("UPDATE healthchecks SET allow_private=1 WHERE id=?", (row["id"],))
+                except Exception:
+                    pass
+
         columns = {row["name"] for row in con.execute("PRAGMA table_info(mirrors)").fetchall()}
         if "extra_options" not in columns:
             con.execute("ALTER TABLE mirrors ADD COLUMN extra_options TEXT DEFAULT ''")
@@ -350,7 +482,7 @@ def init_db() -> None:
         if "rsync_ssh_port" not in columns:
             con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_port INTEGER NOT NULL DEFAULT 22")
         if "rsync_ssh_accept_new_host_key" not in columns:
-            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_accept_new_host_key INTEGER NOT NULL DEFAULT 1")
+            con.execute("ALTER TABLE mirrors ADD COLUMN rsync_ssh_accept_new_host_key INTEGER NOT NULL DEFAULT 0")
 
         # v0.1.71 bot irrtümlich Passwortauthentifizierung für rsync-Daemons an.
         # Diese Kombination wird nicht weitergeführt. Vorhandene rsync-Zugangsdaten
@@ -591,6 +723,7 @@ def save_settings(settings: Dict[str, Any]) -> None:
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = SETTINGS_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    secure_chmod(tmp, 0o600)
     tmp.replace(SETTINGS_PATH)
     try:
         SETTINGS_PATH.chmod(0o600)
@@ -981,6 +1114,11 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256${iterations}${salt}${encoded}"
 
 
+def password_hash_is_supported(stored: str) -> bool:
+    value = stored or ""
+    return value.startswith("pbkdf2_sha256$") or value.startswith(("pbkdf2:", "scrypt:"))
+
+
 def verify_password_hash(stored: str, password: str) -> bool:
     stored = stored or ""
     if stored.startswith("pbkdf2_sha256$"):
@@ -997,7 +1135,9 @@ def verify_password_hash(stored: str, password: str) -> bool:
             return check_password_hash(stored, password)
         except Exception:
             return False
-    return hmac.compare_digest(stored, password)
+    # Klartext- und unbekannte Legacy-Formate werden nicht mehr zur Anmeldung
+    # akzeptiert. Die einmalige Migration erfolgt ausschließlich beim Start.
+    return False
 
 
 def password_is_default(value: str) -> bool:
@@ -1025,7 +1165,28 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
 
 def list_users() -> List[Dict[str, Any]]:
     with db() as con:
-        return [row_to_dict(r) for r in con.execute("SELECT id, username, role, enabled, created_at, updated_at, last_login_at FROM users ORDER BY username COLLATE NOCASE").fetchall()]
+        return [row_to_dict(r) for r in con.execute("SELECT id, username, role, enabled, created_at, updated_at, last_login_at, session_version FROM users ORDER BY username COLLATE NOCASE").fetchall()]
+
+
+def enabled_admin_count(exclude_user_id: Optional[int] = None) -> int:
+    with db() as con:
+        if exclude_user_id is None:
+            row = con.execute("SELECT COUNT(*) AS n FROM users WHERE enabled=1 AND role='admin'").fetchone()
+        else:
+            row = con.execute("SELECT COUNT(*) AS n FROM users WHERE enabled=1 AND role='admin' AND id<>?", (int(exclude_user_id),)).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def validate_admin_continuity(user_id: Optional[int], role: str, enabled: int, deleting: bool = False) -> None:
+    if not user_id:
+        return
+    with db() as con:
+        row = con.execute("SELECT role, enabled FROM users WHERE id=?", (int(user_id),)).fetchone()
+    if not row or row["role"] != "admin" or int(row["enabled"] or 0) != 1:
+        return
+    would_remove_admin = deleting or role != "admin" or int(enabled or 0) != 1
+    if would_remove_admin and enabled_admin_count(exclude_user_id=int(user_id)) == 0:
+        raise ValueError("Der letzte aktive Administrator darf nicht gelöscht, deaktiviert oder zum normalen Benutzer herabgestuft werden.")
 
 
 def create_or_update_user(username: str, password: Optional[str], role: str = "admin", enabled: int = 1, user_id: Optional[int] = None) -> int:
@@ -1034,25 +1195,25 @@ def create_or_update_user(username: str, password: Optional[str], role: str = "a
         raise ValueError("Benutzername darf nicht leer sein.")
     if role not in {"admin", "user"}:
         raise ValueError("Ungültige Rolle.")
-    if password is not None and len(password) < 8:
-        raise ValueError("Das Passwort muss mindestens 8 Zeichen lang sein.")
+    if password is not None and len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Das Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen lang sein.")
     with db() as con:
         if user_id is None:
             if password is None:
                 raise ValueError("Passwort fehlt.")
             cur = con.execute(
-                "INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version) VALUES (?, ?, ?, ?, ?, ?, 1)",
                 (username, hash_password(password), role, enabled, now_iso(), now_iso()),
             )
             return int(cur.lastrowid)
         if password:
             con.execute(
-                "UPDATE users SET username=?, password_hash=?, role=?, enabled=?, updated_at=? WHERE id=?",
+                "UPDATE users SET username=?, password_hash=?, role=?, enabled=?, updated_at=?, session_version=session_version+1 WHERE id=?",
                 (username, hash_password(password), role, enabled, now_iso(), user_id),
             )
         else:
             con.execute(
-                "UPDATE users SET username=?, role=?, enabled=?, updated_at=? WHERE id=?",
+                "UPDATE users SET username=?, role=?, enabled=?, updated_at=?, session_version=session_version+1 WHERE id=?",
                 (username, role, enabled, now_iso(), user_id),
             )
         return user_id
@@ -1064,12 +1225,22 @@ def ensure_initial_user_from_legacy_config() -> None:
     cfg = legacy_admin_config()
     if not cfg:
         return
+    stored = str(cfg.get("password_hash") or "")
+    # Ältere Installationen konnten APP_PASSWORD im Klartext verwenden. Dieser
+    # Wert wird einmalig in einen modernen Hash migriert und danach nie wieder
+    # direkt zur Anmeldung akzeptiert.
+    migrated_hash = stored if password_hash_is_supported(stored) else hash_password(stored)
     try:
         with db() as con:
             con.execute(
-                "INSERT OR IGNORE INTO users(username, password_hash, role, enabled, created_at, updated_at) VALUES (?, ?, 'admin', 1, ?, ?)",
-                (cfg["username"], cfg["password_hash"], now_iso(), now_iso()),
+                "INSERT OR IGNORE INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version) VALUES (?, ?, 'admin', 1, ?, ?, 1)",
+                (cfg["username"], migrated_hash, now_iso(), now_iso()),
             )
+        settings = load_settings()
+        settings.pop("admin_username", None)
+        settings.pop("admin_password_hash", None)
+        settings["legacy_auth_migrated_at"] = now_iso()
+        save_settings(settings)
     except Exception:
         pass
 
@@ -1094,7 +1265,11 @@ def legacy_admin_config() -> Optional[Dict[str, str]]:
 
 
 def admin_config() -> Optional[Dict[str, str]]:
-    """Return current visible auth config. Users table has priority."""
+    """Return display information about the configured authentication source.
+
+    This helper is never used to authorize a request. Authorization is based
+    exclusively on the exact, enabled database user bound to the session.
+    """
     try:
         username = session.get("username") or ""
     except RuntimeError:
@@ -1105,12 +1280,15 @@ def admin_config() -> Optional[Dict[str, str]]:
             if username:
                 row = con.execute("SELECT * FROM users WHERE username=? AND enabled=1", (username,)).fetchone()
             if not row:
-                row = con.execute("SELECT * FROM users WHERE enabled=1 ORDER BY role='admin' DESC, id ASC LIMIT 1").fetchone()
+                row = con.execute("SELECT * FROM users WHERE enabled=1 AND role='admin' ORDER BY id ASC LIMIT 1").fetchone()
             if row:
                 return {"source": "Benutzerverwaltung", "username": row["username"], "password_hash": row["password_hash"], "role": row["role"]}
     except Exception:
         pass
-    return legacy_admin_config()
+    cfg = legacy_admin_config()
+    if cfg:
+        return {**cfg, "role": "admin"}
+    return None
 
 
 def setup_required() -> bool:
@@ -1121,33 +1299,77 @@ def auth_enabled() -> bool:
     return not setup_required()
 
 
-def verify_user_login(username: str, password: str) -> Optional[Dict[str, Any]]:
+def verify_user_password(username: str, password: str) -> Optional[Dict[str, Any]]:
     user = get_user_by_username(username)
-    if user and int(user.get("enabled") or 0) == 1 and verify_password_hash(user["password_hash"], password):
-        with db() as con:
-            con.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), user["id"]))
-        return user
-    return None
+    if not user or int(user.get("enabled") or 0) != 1:
+        return None
+    if not verify_password_hash(str(user.get("password_hash") or ""), password):
+        return None
+    return user
+
+
+def verify_user_login(username: str, password: str) -> Optional[Dict[str, Any]]:
+    user = verify_user_password(username, password)
+    if not user:
+        return None
+    with db() as con:
+        con.execute("UPDATE users SET last_login_at=? WHERE id=?", (now_iso(), user["id"]))
+        row = con.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+    return row_to_dict(row) if row else None
 
 
 def verify_admin_login(username: str, password: str) -> bool:
-    user = verify_user_login(username, password)
-    if user:
-        return True
-    cfg = legacy_admin_config()
-    if not cfg:
-        return False
-    return hmac.compare_digest(username, cfg["username"]) and verify_password_hash(cfg["password_hash"], password)
+    user = verify_user_password(username, password)
+    return bool(user and user.get("role") == "admin")
+
+
+def establish_user_session(user: Dict[str, Any]) -> None:
+    session.clear()
+    session.permanent = True
+    session["authenticated"] = True
+    session["user_id"] = int(user["id"])
+    session["username"] = str(user["username"])
+    session["role"] = str(user.get("role") or "user")
+    session["session_version"] = int(user.get("session_version") or 1)
+    session["logged_in_at"] = int(time.time())
 
 
 def current_user() -> Dict[str, Any]:
-    username = session.get("username", "")
-    if username:
-        user = get_user_by_username(username)
-        if user:
-            return user
-    cfg = admin_config() or {}
-    return {"username": cfg.get("username", ""), "role": cfg.get("role", "admin"), "enabled": 1}
+    if not session.get("authenticated"):
+        return {}
+    user_id = session.get("user_id")
+    username = str(session.get("username") or "")
+    try:
+        with db() as con:
+            row = None
+            if user_id:
+                row = con.execute("SELECT * FROM users WHERE id=?", (int(user_id),)).fetchone()
+            elif username:
+                # Einmalige, sichere Übernahme einer noch aus v0.1.77 stammenden
+                # Sitzung. Es wird nur derselbe aktivierte Benutzer übernommen.
+                row = con.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    except Exception:
+        row = None
+    if not row or int(row["enabled"] or 0) != 1:
+        session.clear()
+        return {}
+    user = row_to_dict(row)
+    if username and str(user.get("username") or "") != username:
+        session.clear()
+        return {}
+    session_version = int(session.get("session_version") or 0)
+    db_version = int(user.get("session_version") or 1)
+    if session_version and session_version != db_version:
+        session.clear()
+        return {}
+    # Upgrade an old but still valid session to the versioned session format.
+    session["user_id"] = int(user["id"])
+    session["username"] = str(user["username"])
+    session["role"] = str(user.get("role") or "user")
+    session["session_version"] = db_version
+    session["authenticated"] = True
+    session.permanent = True
+    return user
 
 
 def is_admin_user() -> bool:
@@ -1157,11 +1379,235 @@ def is_admin_user() -> bool:
         return False
 
 
+def safe_redirect_target(value: str, fallback: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return fallback
+    parsed = urllib.parse.urlsplit(candidate)
+    if parsed.scheme or parsed.netloc or not candidate.startswith("/") or candidate.startswith("//"):
+        return fallback
+    return candidate
+
+
+def client_ip() -> str:
+    return str(request.remote_addr or "unknown")[:128]
+
+
+def _private_target_allowlisted(hostname: str, address: ipaddress._BaseAddress) -> bool:
+    host_n = (hostname or "").strip("[]").lower().rstrip(".")
+    for entry in OUTBOUND_PRIVATE_HOST_ALLOWLIST:
+        clean = entry.strip().lower()
+        if not clean:
+            continue
+        if clean == host_n or clean == str(address):
+            return True
+        try:
+            if address in ipaddress.ip_network(clean, strict=False):
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def validate_outbound_url(
+    url: str,
+    *,
+    allowed_schemes: Iterable[str] = ("https",),
+    allow_private: bool = False,
+    allow_credentials: bool = False,
+) -> str:
+    value = (url or "").strip()
+    parsed = urllib.parse.urlsplit(value)
+    allowed = {str(item).lower() for item in allowed_schemes}
+    if parsed.scheme.lower() not in allowed:
+        raise ValueError(f"Nicht erlaubtes URL-Protokoll: {parsed.scheme or '-'}")
+    if not parsed.hostname:
+        raise ValueError("URL enthält keinen gültigen Hostnamen.")
+    if (parsed.username is not None or parsed.password is not None) and not allow_credentials:
+        raise ValueError("Zugangsdaten innerhalb einer URL sind nicht erlaubt.")
+    hostname = parsed.hostname.strip("[]").rstrip(".")
+    try:
+        infos = socket.getaddrinfo(hostname, parsed.port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Hostname konnte nicht aufgelöst werden: {hostname}") from exc
+    addresses = []
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        except ValueError:
+            continue
+        if addr not in addresses:
+            addresses.append(addr)
+    if not addresses:
+        raise ValueError("Für die URL wurde keine gültige Zieladresse ermittelt.")
+    for address in addresses:
+        if address.is_global:
+            continue
+        if allow_private or _private_target_allowlisted(hostname, address):
+            continue
+        raise ValueError(f"Private, lokale oder reservierte Zieladresse ist nicht erlaubt: {hostname} ({address})")
+    return value
+
+
+class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, *, allowed_schemes: Iterable[str], allow_private: bool, allow_credentials: bool):
+        super().__init__()
+        self.allowed_schemes = tuple(allowed_schemes)
+        self.allow_private = allow_private
+        self.allow_credentials = allow_credentials
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validated = validate_outbound_url(
+            urllib.parse.urljoin(req.full_url, newurl),
+            allowed_schemes=self.allowed_schemes,
+            allow_private=self.allow_private,
+            allow_credentials=self.allow_credentials,
+        )
+        return super().redirect_request(req, fp, code, msg, headers, validated)
+
+
+def safe_urlopen(
+    target: Any,
+    *,
+    timeout: int,
+    allowed_schemes: Iterable[str] = ("https",),
+    allow_private: bool = False,
+    allow_credentials: bool = False,
+):
+    url = target.full_url if isinstance(target, urllib.request.Request) else str(target)
+    validate_outbound_url(
+        url,
+        allowed_schemes=allowed_schemes,
+        allow_private=allow_private,
+        allow_credentials=allow_credentials,
+    )
+    opener = urllib.request.build_opener(
+        SafeRedirectHandler(
+            allowed_schemes=allowed_schemes,
+            allow_private=allow_private,
+            allow_credentials=allow_credentials,
+        )
+    )
+    return opener.open(target, timeout=timeout)
+
+
+def read_response_limited(response: Any, max_bytes: int) -> bytes:
+    data = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"Remote-Datei überschreitet das Limit von {format_bytes(max_bytes)}.")
+    return data
+
+
+def _login_attempt_identifiers(username: str) -> List[str]:
+    clean_user = (username or "").strip().lower()[:128]
+    return [f"ip:{client_ip()}", f"user:{clean_user}"]
+
+
+def login_block_state(username: str) -> Tuple[bool, int]:
+    now_ts = time.time()
+    blocked_for = 0
+    with db() as con:
+        for identifier in _login_attempt_identifiers(username):
+            row = con.execute("SELECT locked_until FROM login_attempts WHERE identifier=?", (identifier,)).fetchone()
+            if not row:
+                continue
+            try:
+                remaining = int(float(row["locked_until"] or 0) - now_ts)
+            except Exception:
+                remaining = 0
+            blocked_for = max(blocked_for, remaining)
+    return blocked_for > 0, max(0, blocked_for)
+
+
+def record_login_failure(username: str) -> None:
+    now_ts = time.time()
+    for identifier in _login_attempt_identifiers(username):
+        with db() as con:
+            row = con.execute("SELECT * FROM login_attempts WHERE identifier=?", (identifier,)).fetchone()
+            failures = 1
+            first_ts = now_ts
+            if row:
+                try:
+                    previous_first = float(row["first_failed_at"] or 0)
+                    if now_ts - previous_first <= LOGIN_WINDOW_SECONDS:
+                        failures = int(row["failures"] or 0) + 1
+                        first_ts = previous_first
+                except Exception:
+                    pass
+            locked_until = now_ts + LOGIN_LOCK_SECONDS if failures >= LOGIN_MAX_ATTEMPTS else 0
+            con.execute(
+                "INSERT INTO login_attempts(identifier, failures, first_failed_at, last_failed_at, locked_until) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(identifier) DO UPDATE SET failures=excluded.failures, first_failed_at=excluded.first_failed_at, last_failed_at=excluded.last_failed_at, locked_until=excluded.locked_until",
+                (identifier, failures, str(first_ts), str(now_ts), str(locked_until)),
+            )
+    add_event("warning", f"Fehlgeschlagene Anmeldung für Benutzer '{(username or '').strip()[:80]}' von {client_ip()}.")
+
+
+def clear_login_failures(username: str) -> None:
+    with db() as con:
+        con.executemany("DELETE FROM login_attempts WHERE identifier=?", [(value,) for value in _login_attempt_identifiers(username)])
+        con.execute("DELETE FROM login_attempts WHERE CAST(last_failed_at AS REAL) < ?", (time.time() - 7 * 86400,))
+
+
+def csrf_token() -> str:
+    token = str(session.get("_csrf_token") or "")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.before_request
+def enforce_request_security():
+    if app.config.get("SESSION_COOKIE_SECURE") and not request.is_secure:
+        target = urllib.parse.urlunsplit(("https", request.host, request.path, request.query_string.decode("utf-8", "ignore"), ""))
+        return redirect(target, code=308)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.path.startswith("/api/"):
+        expected = str(session.get("_csrf_token") or "")
+        supplied = str(request.form.get("_csrf_token") or request.headers.get("X-CSRF-Token") or "")
+        if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+            abort(400, description="Ungültige oder fehlende CSRF-Sicherheitsprüfung. Bitte Seite neu laden und erneut versuchen.")
+
+
+
+
+@app.errorhandler(400)
+def bad_request_handler(exc):
+    description = getattr(exc, "description", "Ungültige Anfrage.")
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        try:
+            add_event("warning", f"Abgewiesene Anfrage ({request.method} {request.path}) von {client_ip()}: {description}")
+        except Exception:
+            pass
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": str(description)}), 400
+    return render_template("error.html", title="Ungültige Anfrage", message=str(description), back_url=url_for("dashboard") if current_user() else url_for("login")), 400
+
+
+@app.after_request
+def add_security_headers(response: Response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; "
+        "img-src 'self' data:; connect-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+    )
+    if request.endpoint != "static":
+        response.headers.setdefault("Cache-Control", "no-store, private")
+        response.headers.setdefault("Pragma", "no-cache")
+    if request.is_secure or app.config.get("SESSION_COOKIE_SECURE"):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
 def deny_non_admin(message: str = "Diese Funktion ist nur für Admin-Benutzer verfügbar."):
     if request.path.startswith("/api/"):
         return jsonify({"ok": False, "error": "Forbidden"}), 403
     flash(message, "danger")
-    return redirect(request.referrer or url_for("dashboard"))
+    return redirect(safe_redirect_target(request.referrer or "", url_for("dashboard")))
 
 
 def require_admin_write(view):
@@ -1170,9 +1616,10 @@ def require_admin_write(view):
     def wrapped(*args, **kwargs):
         if setup_required():
             return redirect(url_for("setup", next=request.path))
-        if not session.get("authenticated"):
+        user = current_user()
+        if not user:
             return redirect(url_for("login", next=request.path))
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and not is_admin_user():
+        if request.method not in {"GET", "HEAD", "OPTIONS"} and user.get("role") != "admin":
             return deny_non_admin("Normale Benutzer haben nur Leserechte. Änderungen, Starts, Stopps und Importe sind Admin-Funktionen.")
         return view(*args, **kwargs)
     return wrapped
@@ -1183,29 +1630,32 @@ def require_admin(view):
     def wrapped(*args, **kwargs):
         if setup_required():
             return redirect(url_for("setup", next=request.path))
-        if not session.get("authenticated"):
+        user = current_user()
+        if not user:
             return redirect(url_for("login", next=request.path))
-        if not is_admin_user():
+        if user.get("role") != "admin":
             return deny_non_admin()
         return view(*args, **kwargs)
     return wrapped
+
 
 def require_auth(view):
     @functools.wraps(view)
     def wrapped(*args, **kwargs):
         if setup_required():
             return redirect(url_for("setup", next=request.path))
-        if session.get("authenticated"):
+        if current_user():
             return view(*args, **kwargs)
         return redirect(url_for("login", next=request.path))
-
     return wrapped
 
 
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    if not setup_required() and not request.args.get("force"):
-        return redirect(url_for("dashboard") if session.get("authenticated") else url_for("login"))
+    # Die Ersteinrichtung ist nach dem ersten aktivierten Benutzer endgültig
+    # geschlossen. Weitere Administratoren werden nur in /users angelegt.
+    if not setup_required():
+        return redirect(url_for("dashboard") if current_user() else url_for("login"))
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -1213,53 +1663,59 @@ def setup():
         try:
             if not username:
                 raise ValueError("Benutzername darf nicht leer sein.")
-            if len(password) < 8:
-                raise ValueError("Das Passwort muss mindestens 8 Zeichen lang sein.")
+            if len(password) < MIN_PASSWORD_LENGTH:
+                raise ValueError(f"Das Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen lang sein.")
             if password != password2:
                 raise ValueError("Die Passwort-Wiederholung passt nicht.")
             create_or_update_user(username, password, role="admin", enabled=1)
+            user = get_user_by_username(username)
+            if not user:
+                raise RuntimeError("Der neue Administrator konnte nicht geladen werden.")
             settings = load_settings()
             settings.pop("admin_username", None)
             settings.pop("admin_password_hash", None)
             settings["auth_updated_at"] = now_iso()
             save_settings(settings)
-            session.clear()
-            session["authenticated"] = True
-            session["username"] = username
-            session["role"] = "admin"
-            add_event("info", "Admin-Zugang über Ersteinrichtung gesetzt.")
+            establish_user_session(user)
+            add_event("info", f"Admin-Zugang über Ersteinrichtung gesetzt: {username} von {client_ip()}.")
             flash("Admin-Zugang wurde eingerichtet.", "success")
-            return redirect(request.args.get("next") or url_for("dashboard"))
+            return redirect(safe_redirect_target(request.args.get("next", ""), url_for("dashboard")))
         except Exception as exc:
             flash(str(exc), "danger")
-    return render_template("setup.html", app_name=APP_NAME, app_version=APP_VERSION)
+    return render_template("setup.html", app_name=APP_NAME, app_version=APP_VERSION, min_password_length=MIN_PASSWORD_LENGTH)
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if setup_required():
-        return redirect(url_for("setup", next=request.args.get("next") or url_for("dashboard")))
+        return redirect(url_for("setup", next=safe_redirect_target(request.args.get("next", ""), url_for("dashboard"))))
+    if current_user():
+        return redirect(safe_redirect_target(request.args.get("next", ""), url_for("dashboard")))
     if request.method == "POST":
-        username = request.form.get("username", "")
+        username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        user = verify_user_login(username, password)
-        if user or verify_admin_login(username, password):
-            session.clear()
-            session["authenticated"] = True
+        blocked, remaining = login_block_state(username)
+        if blocked:
+            add_event("warning", f"Blockierter Anmeldeversuch für '{username[:80]}' von {client_ip()}.")
+            flash(f"Zu viele fehlgeschlagene Anmeldeversuche. Bitte in etwa {max(1, (remaining + 59) // 60)} Minute(n) erneut versuchen.", "danger")
+        else:
+            user = verify_user_login(username, password)
             if user:
-                session["username"] = user["username"]
-                session["role"] = user["role"]
-            else:
-                session["username"] = username
-                session["role"] = "admin"
-            return redirect(request.args.get("next") or url_for("dashboard"))
-        flash("Login fehlgeschlagen. Prüfe Benutzername, Passwort und ob der Container nach .env-Änderungen neu erstellt wurde.", "danger")
+                clear_login_failures(username)
+                establish_user_session(user)
+                add_event("info", f"Anmeldung erfolgreich: {user['username']} von {client_ip()}.")
+                return redirect(safe_redirect_target(request.args.get("next", ""), url_for("dashboard")))
+            record_login_failure(username)
+            flash("Login fehlgeschlagen. Benutzername oder Passwort ist ungültig.", "danger")
     return render_template("login.html", app_name=APP_NAME, app_version=APP_VERSION, auth_source=(admin_config() or {}).get("source", "unbekannt"))
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
+    username = str(session.get("username") or "")
     session.clear()
+    if username:
+        add_event("info", f"Abmeldung: {username} von {client_ip()}.")
     return redirect(url_for("login"))
 
 
@@ -2039,6 +2495,8 @@ def validate_mirror_configuration(values: Dict[str, Any], require_ssh_key: bool 
         if timeout_number < 1:
             raise ValueError("Timeout muss mindestens 1 Sekunde betragen.")
     validate_mirror_remote_credentials(method, str(values.get("remote_user") or ""), str(values.get("remote_password_enc") or ""))
+    if str(values.get("keyring_fingerprint") or "").strip():
+        values["keyring_fingerprint"] = require_full_fingerprint(str(values.get("keyring_fingerprint") or ""), allow_empty=False)
     validate_rsync_ssh_settings(values, require_key=require_ssh_key)
     extra_options = parse_extra_options(str(values.get("extra_options") or ""))
     flags = {item.split("=", 1)[0] for item in extra_options}
@@ -2797,7 +3255,7 @@ def default_mirror_values(overrides: Optional[Dict[str, Any]] = None) -> Dict[st
         "rsync_ssh_user": "",
         "rsync_ssh_key": "",
         "rsync_ssh_port": 22,
-        "rsync_ssh_accept_new_host_key": 1,
+        "rsync_ssh_accept_new_host_key": 0,
         "include_patterns": "",
         "exclude_patterns": "",
         "schedule_mode": "manual",
@@ -2814,12 +3272,21 @@ def normalize_fingerprint(value: str) -> str:
     return re.sub(r"[^A-Fa-f0-9]", "", value or "").upper()
 
 
+def require_full_fingerprint(value: str, label: str = "OpenPGP-Fingerprint", *, allow_empty: bool = True) -> str:
+    normalized = normalize_fingerprint(value)
+    if not normalized and allow_empty:
+        return ""
+    if len(normalized) != 40:
+        raise ValueError(f"{label} muss als vollständiger 40-stelliger Fingerprint angegeben werden; kurze Key-IDs sind nicht ausreichend sicher.")
+    return normalized
+
+
 def keyring_fingerprint_matches(path: str, expected: str) -> bool:
-    expected_n = normalize_fingerprint(expected)
+    expected_n = require_full_fingerprint(expected, allow_empty=True)
     if not expected_n:
         return True
     fps = [normalize_fingerprint(fp) for fp in key_fingerprints(Path(path))]
-    return any(fingerprint_matches(fp, expected_n) for fp in fps)
+    return expected_n in fps
 
 
 def extract_missing_pubkeys(log_text: str) -> List[Dict[str, str]]:
@@ -2890,9 +3357,8 @@ def default_keyring_filename(fingerprint: str, suffix: str = ".gpg") -> str:
 
 
 def import_key_from_keyserver(fingerprint: str, filename: Optional[str] = None, keyserver: str = "hkps://keyserver.ubuntu.com") -> Path:
-    fp = normalize_fingerprint(fingerprint)
-    if len(fp) < 16:
-        raise ValueError("Für Keyserver-Import ist mindestens eine 16-stellige Key-ID erforderlich. Besser ist der vollständige Fingerprint.")
+    fp = require_full_fingerprint(fingerprint, "Keyserver-Fingerprint", allow_empty=False)
+    validate_outbound_url(keyserver, allowed_schemes=("hkps", "hkp"), allow_credentials=False, allow_private=False)
     filename = secure_filename(filename or default_keyring_filename(fp))
     if not filename.endswith(".gpg"):
         filename += ".gpg"
@@ -2964,24 +3430,20 @@ def maybe_dearmor_key_file(path: Path) -> Path:
 def assign_keyring_to_mirror(mirror_id: Optional[int], keyring_path: Path, fingerprint: str = "") -> None:
     if not mirror_id:
         return
-    fp = normalize_fingerprint(fingerprint)
+    available = [normalize_fingerprint(x) for x in key_fingerprints(keyring_path) if len(normalize_fingerprint(x)) == 40]
+    hint = normalize_fingerprint(fingerprint)
+    if hint:
+        matches = [fp for fp in available if fp == hint or fp.endswith(hint)]
+        if len(matches) != 1:
+            raise ValueError("Der angegebene Key-Hinweis konnte nicht eindeutig auf einen vollständigen 40-stelligen Fingerprint aufgelöst werden.")
+        fp = matches[0]
+    else:
+        fp = available[0] if len(available) == 1 else ""
     if not fp:
-        fps = [normalize_fingerprint(x) for x in key_fingerprints(keyring_path)]
-        fp = fps[0] if len(fps) == 1 else ""
-    if fp:
-        try:
-            if not fingerprint_in_master(fp):
-                import_keyring_into_master(keyring_path)
-            assign_master_fingerprint_to_mirror(int(mirror_id), fp)
-            return
-        except Exception:
-            pass
-    # Fallback für externe/alte Pfade: direktes Feld weiterhin kompatibel setzen.
-    with db() as con:
-        con.execute(
-            "UPDATE mirrors SET keyring=?, keyring_fingerprint=?, updated_at=? WHERE id=?",
-            (str(keyring_path), fp, now_iso(), mirror_id),
-        )
+        raise ValueError("Für die sichere Profilzuordnung muss genau ein vollständiger OpenPGP-Fingerprint bestimmt werden.")
+    if not fingerprint_in_master(fp):
+        import_keyring_into_master(keyring_path)
+    assign_master_fingerprint_to_mirror(int(mirror_id), fp)
 
 
 
@@ -4414,8 +4876,10 @@ def inject_globals():
         "mirror_base": str(MIRROR_BASE),
         "app_timezone": app_timezone_name(),
         "appearance": current_appearance(),
-        "current_user": current_user() if session.get("authenticated") else {},
+        "current_user": current_user(),
         "is_admin": is_admin_user(),
+        "csrf_token": csrf_token(),
+        "min_password_length": MIN_PASSWORD_LENGTH,
         "size_status_label": size_status_label,
         "size_status_class": size_status_class,
         "size_status_title": size_status_title,
@@ -5056,7 +5520,7 @@ def profile_scan_ssh_values() -> Dict[str, Any]:
         "rsync_ssh_user": str(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_user", "") or ""),
         "rsync_ssh_key": str(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_key", "") or ""),
         "rsync_ssh_port": int(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_port", 22) or 22),
-        "rsync_ssh_accept_new_host_key": 1 if bool(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_accept_new_host_key", True)) else 0,
+        "rsync_ssh_accept_new_host_key": 1 if bool(getattr(PROFILE_SCAN_AUTH_CONTEXT, "rsync_ssh_accept_new_host_key", False)) else 0,
     }
 
 
@@ -5098,7 +5562,7 @@ def profile_scan_fetch(url: str, max_bytes: int = PROFILE_SCAN_MAX_BYTES) -> Tup
         headers["Authorization"] = f"Basic {basic}"
     request_obj = urllib.request.Request(request_url, headers=headers)
     try:
-        with urllib.request.urlopen(request_obj, timeout=PROFILE_SCAN_TIMEOUT_SECONDS) as response:
+        with safe_urlopen(request_obj, timeout=PROFILE_SCAN_TIMEOUT_SECONDS, allowed_schemes=("http", "https", "ftp"), allow_credentials=True) as response:
             status = getattr(response, "status", 200)
             content_type = response.headers.get("Content-Type", "")
             data = response.read(max_bytes + 1)
@@ -6020,7 +6484,7 @@ def profile_scan_ssh_from_form() -> Dict[str, Any]:
         "rsync_ssh_accept_new_host_key": 1 if bool_from_form("scan_rsync_ssh_accept_new_host_key") else 0,
     }
     if not enabled:
-        values.update({"rsync_ssh_user": "", "rsync_ssh_key": "", "rsync_ssh_port": 22, "rsync_ssh_accept_new_host_key": 1})
+        values.update({"rsync_ssh_user": "", "rsync_ssh_key": "", "rsync_ssh_port": 22, "rsync_ssh_accept_new_host_key": 0})
     return values
 
 
@@ -6032,7 +6496,7 @@ def profile_scan_worker(token: str, scan_url: str, scan_depth: int, scan_path_va
         str(ssh_values.get("rsync_ssh_user") or ""),
         str(ssh_values.get("rsync_ssh_key") or ""),
         int(ssh_values.get("rsync_ssh_port") or 22),
-        bool(int(ssh_values.get("rsync_ssh_accept_new_host_key") if ssh_values.get("rsync_ssh_accept_new_host_key") is not None else 1)),
+        bool(int(ssh_values.get("rsync_ssh_accept_new_host_key") if ssh_values.get("rsync_ssh_accept_new_host_key") is not None else 0)),
     )
     try:
         result = scan_apt_repository_url(scan_url, scan_depth, live_token=token, scan_path_variables=scan_path_variables)
@@ -6142,7 +6606,7 @@ def profile_generator():
     scan_auth_password_set = False
     scan_ssh_values: Dict[str, Any] = {
         "rsync_ssh_enabled": 0, "rsync_ssh_user": "", "rsync_ssh_key": "",
-        "rsync_ssh_port": 22, "rsync_ssh_accept_new_host_key": 1,
+        "rsync_ssh_port": 22, "rsync_ssh_accept_new_host_key": 0,
     }
     if request.method == "GET" and scan_token:
         with PROFILE_SCAN_JOBS_LOCK:
@@ -6214,7 +6678,7 @@ def profile_generator():
                     "rsync_ssh_user": (request.form.get("prepared_rsync_ssh_user") or "").strip(),
                     "rsync_ssh_key": (request.form.get("prepared_rsync_ssh_key") or "").strip(),
                     "rsync_ssh_port": int(request.form.get("prepared_rsync_ssh_port") or 22),
-                    "rsync_ssh_accept_new_host_key": int(request.form.get("prepared_rsync_ssh_accept_new_host_key") or 1),
+                    "rsync_ssh_accept_new_host_key": int(request.form.get("prepared_rsync_ssh_accept_new_host_key") or 0),
                 }
                 if posted_scan_token:
                     ssh_profile_values = {key: auth_job.get(key, value) for key, value in ssh_profile_values.items()}
@@ -7658,7 +8122,8 @@ def script_import():
                     if not key_url.startswith(("https://", "http://")):
                         raise ValueError("Für Key-URLs sind nur http/https erlaubt.")
                     filename = secure_filename(request.form.get("key_filename", "") or Path(key_url).name or default_keyring_filename(expected_fp or "imported"))
-                    data = urllib.request.urlopen(key_url, timeout=30).read(16 * 1024 * 1024)
+                    with safe_urlopen(key_url, timeout=30, allowed_schemes=("http", "https")) as response:
+                        data = read_response_limited(response, 16 * 1024 * 1024)
                     dest = APP_KEYRING_DIR / filename
                     dest.write_bytes(data)
                     dest = maybe_dearmor_key_file(dest)
@@ -9654,7 +10119,8 @@ def keyrings():
                 url = request.form.get("url", "").strip()
                 if not url.startswith(("https://", "http://")):
                     raise ValueError("Nur http/https URLs sind erlaubt.")
-                data = urllib.request.urlopen(url, timeout=30).read(16 * 1024 * 1024)
+                with safe_urlopen(url, timeout=30, allowed_schemes=("http", "https")) as response:
+                    data = read_response_limited(response, 16 * 1024 * 1024)
                 source_name = request.form.get("filename", "").strip() or Path(urllib.parse.urlparse(url).path).name or "url-key.gpg"
                 import_preview = keyring_preview_from_bytes(data, source_name, expected, url)
                 return render_keyrings_page(prefill_fp=expected, assign_mirror_id=assign_to_int, import_preview=import_preview)
@@ -9866,7 +10332,8 @@ def keyrings():
                 filename = secure_filename(request.form.get("filename", "") or Path(urllib.parse.urlparse(url).path).name or default_keyring_filename(expected or "imported"))
                 if not url.startswith(("https://", "http://")):
                     raise ValueError("Nur http/https URLs sind erlaubt.")
-                data = urllib.request.urlopen(url, timeout=30).read(16 * 1024 * 1024)
+                with safe_urlopen(url, timeout=30, allowed_schemes=("http", "https")) as response:
+                    data = read_response_limited(response, 16 * 1024 * 1024)
                 dest = save_imported_key_bytes(data, filename, expected, allow_duplicate=allow_duplicate)
                 details = parse_keyring_details(dest)
                 save_keyring_metadata(dest.name, {
@@ -10098,8 +10565,8 @@ def users_page():
                     raise ValueError("Aktuelles Passwort ist falsch.")
                 if not username:
                     raise ValueError("Benutzername darf nicht leer sein.")
-                if len(password) < 8:
-                    raise ValueError("Das neue Passwort muss mindestens 8 Zeichen lang sein.")
+                if len(password) < MIN_PASSWORD_LENGTH:
+                    raise ValueError(f"Das neue Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen lang sein.")
                 if password != password2:
                     raise ValueError("Die Passwort-Wiederholung passt nicht.")
                 if not user.get("id"):
@@ -10122,6 +10589,7 @@ def users_page():
                 enabled = bool_from_form("enabled")
                 if uid is None and not password:
                     raise ValueError("Für neue Benutzer muss ein Passwort gesetzt werden.")
+                validate_admin_continuity(uid, role, int(enabled), deleting=False)
                 create_or_update_user(username, password, role=role, enabled=enabled, user_id=uid)
                 flash("Benutzer gespeichert.", "success")
                 add_event("info", f"Benutzer gespeichert: {username}")
@@ -10131,6 +10599,7 @@ def users_page():
                 user = current_user()
                 if int(user.get("id") or 0) == uid:
                     raise ValueError("Der aktuell angemeldete Benutzer kann nicht gelöscht werden.")
+                validate_admin_continuity(uid, "user", 0, deleting=True)
                 with db() as con:
                     con.execute("DELETE FROM users WHERE id=?", (uid,))
                 flash("Benutzer gelöscht.", "success")
@@ -10152,29 +10621,59 @@ def users_page():
 # API tokens and JSON API
 # ---------------------------------------------------------------------------
 
+API_SCOPE_LABELS = {
+    "read": "Lesen",
+    "run_mirrors": "Mirror-Jobs starten",
+    "run_scripts": "Benutzerskripte starten",
+    "stop_jobs": "Jobs stoppen",
+    "healthchecks": "Healthchecks ausführen",
+}
+
+
 def token_hash(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
-def create_api_token(name: str, created_by: str = "") -> str:
+def normalize_api_scopes(values: Iterable[str] | str) -> List[str]:
+    raw_values = values.split(",") if isinstance(values, str) else list(values)
+    result: List[str] = []
+    for value in raw_values:
+        clean = str(value or "").strip()
+        if clean in API_SCOPE_LABELS and clean not in result:
+            result.append(clean)
+    return result or ["read"]
+
+
+def create_api_token(name: str, created_by: str = "", scopes: Iterable[str] | str = ("read",), expires_days: int = 90) -> str:
     name = (name or "").strip()
     if not name:
         raise ValueError("Token-Name darf nicht leer sein.")
+    scope_values = normalize_api_scopes(scopes)
+    expires_days = max(1, min(3650, int(expires_days or 90)))
+    expires_at = (local_now() + dt.timedelta(days=expires_days)).replace(microsecond=0).isoformat(sep=" ")
     token = "dmm_" + secrets.token_urlsafe(36)
     with db() as con:
         con.execute(
-            "INSERT INTO api_tokens(name, token_hash, enabled, created_at, created_by) VALUES (?, ?, 1, ?, ?)",
-            (name, token_hash(token), now_iso(), created_by),
+            "INSERT INTO api_tokens(name, token_hash, enabled, created_at, created_by, scopes, expires_at) VALUES (?, ?, 1, ?, ?, ?, ?)",
+            (name, token_hash(token), now_iso(), created_by, ",".join(scope_values), expires_at),
         )
     return token
 
 
 def list_api_tokens() -> List[Dict[str, Any]]:
     with db() as con:
-        return [row_to_dict(r) for r in con.execute("SELECT id, name, enabled, created_at, last_used_at, created_by FROM api_tokens ORDER BY id DESC").fetchall()]
+        rows = [row_to_dict(r) for r in con.execute("SELECT id, name, enabled, created_at, last_used_at, created_by, scopes, expires_at, last_used_ip FROM api_tokens ORDER BY id DESC").fetchall()]
+    now = local_now()
+    for row in rows:
+        row["scopes_list"] = normalize_api_scopes(str(row.get("scopes") or "read"))
+        row["scopes_h"] = ", ".join(API_SCOPE_LABELS.get(item, item) for item in row["scopes_list"])
+        expires = parse_datetime_flexible(str(row.get("expires_at") or ""))
+        row["expired"] = bool(expires and expires <= now)
+        row["legacy"] = not bool(str(row.get("expires_at") or "").strip())
+    return rows
 
 
-def verify_api_request() -> Optional[Dict[str, Any]]:
+def verify_api_request(required_scope: str = "read") -> Optional[Dict[str, Any]]:
     header = request.headers.get("Authorization", "")
     token = ""
     if header.lower().startswith("bearer "):
@@ -10185,19 +10684,33 @@ def verify_api_request() -> Optional[Dict[str, Any]]:
     h = token_hash(token)
     with db() as con:
         row = con.execute("SELECT * FROM api_tokens WHERE token_hash=? AND enabled=1", (h,)).fetchone()
-        if row:
-            con.execute("UPDATE api_tokens SET last_used_at=? WHERE id=?", (now_iso(), row["id"]))
-            return row_to_dict(row)
-    return None
+        if not row:
+            return None
+        item = row_to_dict(row)
+        expires = parse_datetime_flexible(str(item.get("expires_at") or ""))
+        if expires and expires <= local_now():
+            return None
+        scopes = normalize_api_scopes(str(item.get("scopes") or "read"))
+        if required_scope not in scopes:
+            g.api_scope_missing = required_scope
+            return None
+        con.execute("UPDATE api_tokens SET last_used_at=?, last_used_ip=? WHERE id=?", (now_iso(), client_ip(), item["id"]))
+        item["scopes_list"] = scopes
+        g.api_token = item
+        return item
 
 
-def require_api_auth(view):
-    @functools.wraps(view)
-    def wrapped(*args, **kwargs):
-        if not verify_api_request():
-            return jsonify({"ok": False, "error": "Unauthorized"}), 401
-        return view(*args, **kwargs)
-    return wrapped
+def require_api_scope(scope: str = "read"):
+    def decorator(view):
+        @functools.wraps(view)
+        def wrapped(*args, **kwargs):
+            if not verify_api_request(scope):
+                if getattr(g, "api_scope_missing", ""):
+                    return jsonify({"ok": False, "error": "Forbidden", "required_scope": scope}), 403
+                return jsonify({"ok": False, "error": "Unauthorized"}), 401
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
 
 
 @app.route("/api-tokens", methods=["GET", "POST"])
@@ -10208,7 +10721,12 @@ def api_tokens_page():
         action = request.form.get("action")
         try:
             if action == "create":
-                new_token = create_api_token(request.form.get("name", ""), created_by=current_user().get("username", ""))
+                new_token = create_api_token(
+                    request.form.get("name", ""),
+                    created_by=current_user().get("username", ""),
+                    scopes=request.form.getlist("scopes"),
+                    expires_days=int(request.form.get("expires_days") or 90),
+                )
                 flash("API-Token wurde erstellt. Kopiere ihn jetzt; er wird später nicht erneut angezeigt.", "success")
             elif action == "delete":
                 token_id = int(request.form.get("token_id", "0"))
@@ -10226,11 +10744,11 @@ def api_tokens_page():
                 raise ValueError("Unbekannte Aktion.")
         except Exception as exc:
             flash(str(exc), "danger")
-    return render_template("api_tokens.html", tokens=list_api_tokens(), new_token=new_token)
+    return render_template("api_tokens.html", tokens=list_api_tokens(), new_token=new_token, api_scope_labels=API_SCOPE_LABELS)
 
 
 @app.route("/api/v1/status")
-@require_api_auth
+@require_api_scope("read")
 def api_status():
     with db() as con:
         mirrors_n = con.execute("SELECT COUNT(*) AS n FROM mirrors").fetchone()["n"]
@@ -10254,7 +10772,7 @@ def api_safe_mirror(mirror: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.route("/api/v1/mirrors")
-@require_api_auth
+@require_api_scope("read")
 def api_mirrors():
     rows = [api_safe_mirror(row) for row in list_mirrors()]
     for row in rows:
@@ -10264,7 +10782,7 @@ def api_mirrors():
 
 
 @app.route("/api/v1/mirrors/<int:mirror_id>")
-@require_api_auth
+@require_api_scope("read")
 def api_mirror(mirror_id: int):
     mirror = get_mirror(mirror_id)
     if not mirror:
@@ -10283,7 +10801,7 @@ def api_mirror(mirror_id: int):
 
 
 @app.route("/api/v1/mirrors/<int:mirror_id>/run", methods=["POST"])
-@require_api_auth
+@require_api_scope("run_mirrors")
 def api_mirror_run(mirror_id: int):
     payload = request.get_json(silent=True) or {}
     try:
@@ -10294,7 +10812,7 @@ def api_mirror_run(mirror_id: int):
 
 
 @app.route("/api/v1/jobs")
-@require_api_auth
+@require_api_scope("read")
 def api_jobs():
     limit = min(500, max(1, int(request.args.get("limit", "100"))))
     with db() as con:
@@ -10303,7 +10821,7 @@ def api_jobs():
 
 
 @app.route("/api/v1/jobs/<int:job_id>")
-@require_api_auth
+@require_api_scope("read")
 def api_job(job_id: int):
     with db() as con:
         row = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -10316,7 +10834,7 @@ def api_job(job_id: int):
 
 
 @app.route("/api/v1/jobs/<int:job_id>/stop", methods=["POST"])
-@require_api_auth
+@require_api_scope("stop_jobs")
 def api_job_stop(job_id: int):
     try:
         stop_job(job_id)
@@ -10326,13 +10844,13 @@ def api_job_stop(job_id: int):
 
 
 @app.route("/api/v1/user-scripts")
-@require_api_auth
+@require_api_scope("read")
 def api_user_scripts():
     return jsonify({"ok": True, "scripts": list_user_scripts()})
 
 
 @app.route("/api/v1/user-scripts/<script_name>/run", methods=["POST"])
-@require_api_auth
+@require_api_scope("run_scripts")
 def api_user_script_run(script_name: str):
     try:
         job_id = start_script_job(script_name, source="api-script")
@@ -10349,10 +10867,11 @@ def api_user_script_run(script_name: str):
 BACKUP_FORMAT = "debmirror-manager-full-backup"
 
 
-def safe_backup_name(label: str = "") -> str:
+def safe_backup_name(label: str = "", *, encrypted: bool = True) -> str:
     stamp = local_now().strftime("%Y%m%d-%H%M%S")
     suffix = secure_filename(label.strip()) if label and label.strip() else "full"
-    return f"debmirror-manager-backup-v{APP_VERSION}-{stamp}-{suffix}.zip"
+    extension = ".dmmbackup" if encrypted else ".zip"
+    return f"debmirror-manager-backup-v{APP_VERSION}-{stamp}-{suffix}{extension}"
 
 
 def sqlite_snapshot(dest: Path) -> None:
@@ -10366,27 +10885,22 @@ def sqlite_snapshot(dest: Path) -> None:
             dst.close()
     finally:
         src.close()
+    secure_chmod(dest, 0o600)
 
 
 def add_dir_to_zip(zf: zipfile.ZipFile, source_dir: Path, arc_prefix: str) -> int:
-    """Add a directory tree while keeping Unix mode bits in the ZIP entries.
-
-    Python's ZipFile.write already stores the source mode in external_attr.  The
-    restore path additionally applies those bits explicitly because extractall()
-    intentionally does not restore executable permissions on Unix.
-    """
+    """Add regular files from a directory tree to a backup ZIP."""
     count = 0
     if not source_dir.exists():
         return count
     for path in source_dir.rglob("*"):
-        if path.is_file():
+        if path.is_file() and not path.is_symlink():
             zf.write(path, f"{arc_prefix}/{path.relative_to(source_dir).as_posix()}")
             count += 1
     return count
 
 
 def backup_permission_map(paths: Iterable[Tuple[Path, str]]) -> Dict[str, int]:
-    """Return portable file-mode metadata for files included in a backup."""
     result: Dict[str, int] = {}
     for source_dir, arc_prefix in paths:
         if not source_dir.exists():
@@ -10394,11 +10908,102 @@ def backup_permission_map(paths: Iterable[Tuple[Path, str]]) -> Dict[str, int]:
         for path in source_dir.rglob("*"):
             if path.is_file() and not path.is_symlink():
                 arcname = f"{arc_prefix}/{path.relative_to(source_dir).as_posix()}"
-                result[arcname] = stat.S_IMODE(path.stat().st_mode) & 0o777
+                result[arcname] = stat.S_IMODE(path.stat().st_mode) & 0o700
     return result
 
 
-def create_full_backup(label: str = "manual") -> Path:
+def _backup_password_key(password: str, salt: bytes) -> bytes:
+    if AESGCM is None or Scrypt is None:
+        raise RuntimeError("Verschlüsselungsbibliothek für Vollbackups ist nicht verfügbar.")
+    if len(password or "") < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Das Backup-Passwort muss mindestens {MIN_PASSWORD_LENGTH} Zeichen lang sein.")
+    kdf = Scrypt(salt=salt, length=32, n=BACKUP_KDF_N, r=BACKUP_KDF_R, p=BACKUP_KDF_P)
+    return kdf.derive(password.encode("utf-8"))
+
+
+def encrypted_backup_header(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with path.open("rb") as fh:
+            if fh.read(len(BACKUP_ENCRYPTED_MAGIC)) != BACKUP_ENCRYPTED_MAGIC:
+                return None
+            line = fh.readline(65537)
+            if not line.endswith(b"\n") or len(line) > 65536:
+                raise ValueError("Ungültiger Header des verschlüsselten Backups.")
+            header = json.loads(line.decode("utf-8"))
+            if header.get("format") != "debmirror-manager-encrypted-backup" or int(header.get("format_version") or 0) != 1:
+                raise ValueError("Unbekanntes verschlüsseltes Backupformat.")
+            return header
+    except OSError:
+        return None
+
+
+def encrypt_backup_zip(zip_path: Path, output_path: Path, password: str, metadata: Dict[str, Any]) -> None:
+    plaintext_size = zip_path.stat().st_size
+    if plaintext_size > RESTORE_MAX_UNCOMPRESSED_BYTES:
+        raise ValueError(f"Backup ist für die Verschlüsselung zu groß ({format_bytes(plaintext_size)}).")
+    salt = secrets.token_bytes(16)
+    nonce = secrets.token_bytes(12)
+    header = {
+        "format": "debmirror-manager-encrypted-backup",
+        "format_version": 1,
+        "app_version": APP_VERSION,
+        "created_at": metadata.get("created_at") or now_iso(),
+        "label": metadata.get("label") or "manual",
+        "kdf": "scrypt",
+        "kdf_n": BACKUP_KDF_N,
+        "kdf_r": BACKUP_KDF_R,
+        "kdf_p": BACKUP_KDF_P,
+        "salt": base64.urlsafe_b64encode(salt).decode("ascii"),
+        "nonce": base64.urlsafe_b64encode(nonce).decode("ascii"),
+    }
+    header_bytes = json.dumps(header, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    key = _backup_password_key(password, salt)
+    ciphertext = AESGCM(key).encrypt(nonce, zip_path.read_bytes(), header_bytes)
+    tmp = output_path.with_suffix(output_path.suffix + ".tmp")
+    with tmp.open("wb") as fh:
+        fh.write(BACKUP_ENCRYPTED_MAGIC)
+        fh.write(header_bytes + b"\n")
+        fh.write(ciphertext)
+        fh.flush()
+        os.fsync(fh.fileno())
+    secure_chmod(tmp, 0o600)
+    tmp.replace(output_path)
+    secure_chmod(output_path, 0o600)
+
+
+def decrypt_backup_to_zip(path: Path, password: str) -> Path:
+    header = encrypted_backup_header(path)
+    if not header:
+        return path
+    if not password:
+        raise ValueError("Für dieses verschlüsselte Backup ist das Backup-Passwort erforderlich.")
+    try:
+        salt = base64.urlsafe_b64decode(str(header["salt"]).encode("ascii"))
+        nonce = base64.urlsafe_b64decode(str(header["nonce"]).encode("ascii"))
+    except Exception as exc:
+        raise ValueError("Der Verschlüsselungsheader des Backups ist ungültig.") from exc
+    with path.open("rb") as fh:
+        fh.seek(len(BACKUP_ENCRYPTED_MAGIC))
+        header_line = fh.readline(65537)
+        ciphertext = fh.read(RESTORE_MAX_UNCOMPRESSED_BYTES + 32 * 1024 * 1024)
+        if len(ciphertext) > RESTORE_MAX_UNCOMPRESSED_BYTES + 16 * 1024 * 1024:
+            raise ValueError("Verschlüsseltes Backup überschreitet das zulässige Größenlimit.")
+    header_bytes = header_line.rstrip(b"\n")
+    key = _backup_password_key(password, salt)
+    try:
+        plaintext = AESGCM(key).decrypt(nonce, ciphertext, header_bytes)
+    except Exception as exc:
+        raise ValueError("Backup-Passwort ist falsch oder die Backup-Datei wurde verändert.") from exc
+    tmp_zip = APP_DATA_DIR / f"restore-decrypted-{secrets.token_hex(8)}.zip"
+    tmp_zip.write_bytes(plaintext)
+    secure_chmod(tmp_zip, 0o600)
+    if not zipfile.is_zipfile(tmp_zip):
+        tmp_zip.unlink(missing_ok=True)
+        raise ValueError("Entschlüsselter Inhalt ist kein gültiges Vollbackup.")
+    return tmp_zip
+
+
+def create_full_backup(label: str = "manual", backup_password: str = "") -> Path:
     migrate_notification_secret_storage()
     secret_status = notification_secret_storage_status()
     if secret_status["unreadable_fields"]:
@@ -10407,8 +11012,12 @@ def create_full_backup(label: str = "manual") -> Path:
     if secret_status.get("unreadable_mirror_passwords"):
         profiles = ", ".join(secret_status["unreadable_mirror_passwords"])
         raise ValueError(f"Backup abgebrochen: Remote-Passwörter von Mirror-Profilen können nicht entschlüsselt werden ({profiles}). Passwörter neu setzen und erneut sichern.")
+    if len(backup_password or "") < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"Für neue Vollbackups ist ein Passwort mit mindestens {MIN_PASSWORD_LENGTH} Zeichen erforderlich.")
     APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    backup_path = APP_BACKUP_DIR / safe_backup_name(label)
+    secure_chmod(APP_BACKUP_DIR, 0o700)
+    backup_path = APP_BACKUP_DIR / safe_backup_name(label, encrypted=True)
+    tmp_zip = APP_DATA_DIR / f"backup-plain-{secrets.token_hex(6)}.zip"
     tmp_db = APP_DATA_DIR / f"backup-db-{secrets.token_hex(6)}.sqlite3"
     sqlite_snapshot(tmp_db)
     permission_sources = [
@@ -10423,10 +11032,11 @@ def create_full_backup(label: str = "manual") -> Path:
         "app_version": APP_VERSION,
         "created_at": now_iso(),
         "label": label,
-        "includes": ["database", "settings", "application_secret_key", "config_export", "keyrings", "import_scripts", "user_scripts", "ssh_keys", "ssh_known_hosts", "file_permissions"],
+        "encrypted": True,
+        "includes": ["database", "settings", "config_export", "keyrings", "import_scripts", "user_scripts", "ssh_keys", "ssh_known_hosts", "file_permissions"],
     }
     try:
-        with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
             zf.writestr("permissions.json", json.dumps(permissions, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
             zf.writestr("config_export.json", json.dumps(build_config_export(), indent=2, ensure_ascii=False) + "\n")
@@ -10439,58 +11049,93 @@ def create_full_backup(label: str = "manual") -> Path:
             add_dir_to_zip(zf, IMPORT_SCRIPT_DIR, "import-scripts")
             add_dir_to_zip(zf, USER_SCRIPT_DIR, "user-scripts")
             add_dir_to_zip(zf, SSH_DIR, "ssh")
-        add_event("info", f"Backup erstellt: {backup_path.name}")
+        secure_chmod(tmp_zip, 0o600)
+        encrypt_backup_zip(tmp_zip, backup_path, backup_password, manifest)
+        add_event("info", f"Verschlüsseltes Backup erstellt: {backup_path.name}")
         return backup_path
     finally:
-        try:
-            tmp_db.unlink()
-        except FileNotFoundError:
-            pass
+        tmp_db.unlink(missing_ok=True)
+        tmp_zip.unlink(missing_ok=True)
 
 
 def list_full_backups() -> List[Dict[str, Any]]:
     APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    secure_chmod(APP_BACKUP_DIR, 0o700)
     items = []
-    for path in sorted(APP_BACKUP_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
+    paths = list(APP_BACKUP_DIR.glob("*.zip")) + list(APP_BACKUP_DIR.glob("*.dmmbackup"))
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
+        secure_chmod(path, 0o600)
         st = path.stat()
-        manifest = {}
+        manifest: Dict[str, Any] = {}
+        encrypted = path.suffix == ".dmmbackup"
         try:
-            with zipfile.ZipFile(path) as zf:
-                if "manifest.json" in zf.namelist():
-                    manifest = json.loads(zf.read("manifest.json").decode("utf-8", "replace"))
+            if encrypted:
+                manifest = encrypted_backup_header(path) or {}
+            else:
+                with zipfile.ZipFile(path) as zf:
+                    if "manifest.json" in zf.namelist():
+                        manifest = json.loads(zf.read("manifest.json").decode("utf-8", "replace"))
         except Exception:
             manifest = {}
-        items.append({"name": path.name, "size_h": format_bytes(st.st_size), "mtime": dt.datetime.fromtimestamp(st.st_mtime).replace(microsecond=0).isoformat(sep=" "), "manifest": manifest})
+        items.append({
+            "name": path.name,
+            "size_h": format_bytes(st.st_size),
+            "mtime": dt.datetime.fromtimestamp(st.st_mtime).replace(microsecond=0).isoformat(sep=" "),
+            "manifest": manifest,
+            "encrypted": encrypted,
+        })
     return items
 
 
 def safe_extract_zip_to_tmp(uploaded_path: Path) -> Path:
+    if not zipfile.is_zipfile(uploaded_path):
+        raise ValueError("Die Datei ist kein gültiges ZIP-Vollbackup.")
     tmp = APP_DATA_DIR / "restore-tmp" / secrets.token_hex(8)
     tmp.mkdir(parents=True, exist_ok=True)
+    secure_chmod(tmp.parent, 0o700)
+    secure_chmod(tmp, 0o700)
+    total_size = 0
     with zipfile.ZipFile(uploaded_path) as zf:
         infos = zf.infolist()
+        if len(infos) > RESTORE_MAX_ENTRIES:
+            raise ValueError(f"Backup enthält zu viele Einträge ({len(infos)} > {RESTORE_MAX_ENTRIES}).")
         for info in infos:
             name = info.filename
-            if not name or name.startswith("/") or ".." in Path(name).parts:
+            parts = Path(name).parts
+            if not name or name.startswith(("/", "\\")) or ".." in parts:
                 raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
-        zf.extractall(tmp)
-        # ZipFile.extractall() restores file contents but not Unix permission bits.
-        # Apply the safe rwx subset recorded by ZipFile.write so executable user
-        # scripts also work after restoring backups created by older versions.
+            mode = (info.external_attr >> 16) & 0xFFFF
+            file_type = mode & 0o170000
+            if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                raise ValueError(f"Sonderdateien oder Links sind im Backup nicht erlaubt: {name}")
+            if info.file_size > RESTORE_MAX_FILE_BYTES:
+                raise ValueError(f"Backup-Datei ist zu groß: {name} ({format_bytes(info.file_size)})")
+            total_size += int(info.file_size)
+            if total_size > RESTORE_MAX_UNCOMPRESSED_BYTES:
+                raise ValueError(f"Entpackte Backup-Größe überschreitet {format_bytes(RESTORE_MAX_UNCOMPRESSED_BYTES)}.")
+            if info.file_size and info.file_size / max(1, info.compress_size) > RESTORE_MAX_COMPRESSION_RATIO:
+                raise ValueError(f"Verdächtig hohes Kompressionsverhältnis im Backup: {name}")
         for info in infos:
-            mode = (info.external_attr >> 16) & 0o777
-            if not mode:
+            destination = (tmp / info.filename).resolve(strict=False)
+            if tmp.resolve(strict=False) != destination and tmp.resolve(strict=False) not in destination.parents:
+                raise ValueError(f"Unsicheres Extraktionsziel: {info.filename}")
+            if info.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+                secure_chmod(destination, 0o700)
                 continue
-            extracted = tmp / info.filename
-            if extracted.exists() and not extracted.is_symlink():
-                try:
-                    extracted.chmod(mode)
-                except OSError:
-                    pass
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            secure_chmod(destination.parent, 0o700)
+            with zf.open(info, "r") as src, destination.open("xb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+            stored_mode = (info.external_attr >> 16) & 0o777
+            secure_chmod(destination, (stored_mode & 0o700) or 0o600)
     return tmp
 
 
 def copy_table_rows(src_db: Path, table: str, replace: bool = False) -> int:
+    allowed_tables = {"mirrors", "healthchecks", "job_schedules", "users", "api_tokens"}
+    if table not in allowed_tables:
+        raise ValueError("Nicht erlaubte Backup-Tabelle.")
     src = sqlite3.connect(src_db)
     src.row_factory = sqlite3.Row
     try:
@@ -10520,15 +11165,18 @@ def copy_table_rows(src_db: Path, table: str, replace: bool = False) -> int:
         return count
 
 
-def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include_users: bool = True) -> Dict[str, int]:
-    tmp = safe_extract_zip_to_tmp(zip_path)
+def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include_users: bool = True, include_api_tokens: bool = False, backup_password: str = "") -> Dict[str, int]:
+    source_path = zip_path
+    working_path = decrypt_backup_to_zip(source_path, backup_password)
+    tmp = safe_extract_zip_to_tmp(working_path)
     result = {"mirrors": 0, "healthchecks": 0, "schedules": 0, "users": 0, "api_tokens": 0, "keyrings": 0, "import_scripts": 0, "user_scripts": 0, "ssh_files": 0, "settings": 0, "secret_key": 0, "permissions": 0}
     try:
         manifest_path = tmp / "manifest.json"
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if manifest.get("format") != BACKUP_FORMAT:
-                raise ValueError("Das ZIP ist kein DebMirror-Manager-Vollbackup.")
+        if not manifest_path.exists():
+            raise ValueError("Das Backup enthält kein gültiges Manifest.")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("format") != BACKUP_FORMAT:
+            raise ValueError("Die Datei ist kein DebMirror-Manager-Vollbackup.")
         # Restore the persistent encryption key before database/settings so
         # encrypted notification and mirror credentials are readable as soon as
         # their records are copied back into the application.
@@ -10558,7 +11206,8 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
         if db_snapshot.exists():
             if replace:
                 with db() as con:
-                    con.execute("DELETE FROM api_tokens")
+                    if include_api_tokens:
+                        con.execute("DELETE FROM api_tokens")
                     if include_users:
                         con.execute("DELETE FROM users")
                     con.execute("DELETE FROM job_schedules")
@@ -10569,6 +11218,7 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
             result["schedules"] = copy_table_rows(db_snapshot, "job_schedules", replace=False)
             if include_users:
                 result["users"] = copy_table_rows(db_snapshot, "users", replace=False)
+            if include_api_tokens:
                 result["api_tokens"] = copy_table_rows(db_snapshot, "api_tokens", replace=False)
         else:
             config_path = tmp / "config_export.json"
@@ -10579,6 +11229,7 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                 result["settings"] = imported.get("settings", 0)
         if (tmp / "settings.json").exists():
             shutil.copy2(tmp / "settings.json", SETTINGS_PATH)
+            secure_chmod(SETTINGS_PATH, 0o600)
             result["settings"] += 1
         permission_map: Dict[str, int] = {}
         permissions_path = tmp / "permissions.json"
@@ -10588,7 +11239,7 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                 if isinstance(raw_permissions, dict):
                     for arcname, mode in raw_permissions.items():
                         if isinstance(arcname, str):
-                            permission_map[arcname] = int(mode) & 0o777
+                            permission_map[arcname] = int(mode) & 0o700
             except Exception as exc:
                 add_event("warning", f"Dateirechte-Metadaten im Backup konnten nicht gelesen werden: {exc}")
         for folder, dest, key, arc_prefix in [
@@ -10616,7 +11267,7 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                         if mode is None:
                             # Backups before v0.1.68 have no permissions.json, but
                             # their ZIP entries usually still contain Unix modes.
-                            mode = stat.S_IMODE(src.stat().st_mode) & 0o777
+                            mode = stat.S_IMODE(src.stat().st_mode) & 0o700
                         if key == "user_scripts" and not (mode & 0o111):
                             # Compatibility fallback for backups produced or
                             # repacked on systems that stripped Unix ZIP attrs.
@@ -10625,10 +11276,10 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                             except OSError:
                                 first_line = b""
                             if first_line.startswith(b"#!"):
-                                mode |= 0o755
+                                mode |= 0o700
                         if mode:
                             try:
-                                out.chmod(mode & 0o777)
+                                out.chmod((mode & 0o700) or 0o600)
                                 result["permissions"] += 1
                             except OSError:
                                 pass
@@ -10649,10 +11300,13 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
         secret_status = notification_secret_storage_status()
         if secret_status["unreadable_fields"]:
             add_event("warning", "Backup wiederhergestellt, aber Benachrichtigungs-Geheimwerte konnten nicht vollständig entschlüsselt werden.")
-        add_event("warning", f"Backup wiederhergestellt: {zip_path.name}")
+        ensure_secure_runtime_permissions()
+        add_event("warning", f"Backup wiederhergestellt: {source_path.name}")
         return result
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        if working_path != source_path:
+            working_path.unlink(missing_ok=True)
 
 
 @app.route("/backups", methods=["GET", "POST"])
@@ -10660,18 +11314,34 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
 def backups_page():
     if request.method == "POST":
         action = request.form.get("action")
+        session_must_end = False
         try:
             if action == "create":
-                path = create_full_backup(request.form.get("label", "manual"))
-                flash(f"Backup erstellt: {path.name}", "success")
+                password = request.form.get("backup_password", "")
+                password2 = request.form.get("backup_password2", "")
+                if password != password2:
+                    raise ValueError("Die Wiederholung des Backup-Passworts stimmt nicht überein.")
+                path = create_full_backup(request.form.get("label", "manual"), password)
+                flash(f"Verschlüsseltes Backup erstellt: {path.name}", "success")
             elif action == "restore_upload":
                 uploaded = request.files.get("backup_file")
                 if not uploaded or not uploaded.filename:
                     raise ValueError("Keine Backup-Datei ausgewählt.")
-                tmp_upload = APP_DATA_DIR / f"restore-upload-{secrets.token_hex(6)}.zip"
-                uploaded.save(tmp_upload)
-                result = restore_full_backup_from_path(tmp_upload, replace=bool_from_form("replace"), include_users=bool_from_form("include_users"))
-                tmp_upload.unlink(missing_ok=True)
+                suffix = ".dmmbackup" if uploaded.filename.lower().endswith(".dmmbackup") else ".zip"
+                tmp_upload = APP_DATA_DIR / f"restore-upload-{secrets.token_hex(6)}{suffix}"
+                try:
+                    uploaded.save(tmp_upload)
+                    secure_chmod(tmp_upload, 0o600)
+                    result = restore_full_backup_from_path(
+                        tmp_upload,
+                        replace=bool_from_form("replace"),
+                        include_users=bool_from_form("include_users"),
+                        include_api_tokens=bool_from_form("include_api_tokens"),
+                        backup_password=request.form.get("backup_password", ""),
+                    )
+                finally:
+                    tmp_upload.unlink(missing_ok=True)
+                session_must_end = bool_from_form("include_users") or bool_from_form("include_api_tokens")
                 flash(f"Restore abgeschlossen: {result}", "success")
             elif action == "restore_existing":
                 name = secure_filename(request.form.get("backup_name", ""))
@@ -10680,7 +11350,14 @@ def backups_page():
                 path = (APP_BACKUP_DIR / name).resolve(strict=False)
                 if APP_BACKUP_DIR.resolve(strict=False) not in path.parents or not path.exists():
                     raise ValueError("Backup-Datei nicht gefunden.")
-                result = restore_full_backup_from_path(path, replace=bool_from_form("replace"), include_users=bool_from_form("include_users"))
+                result = restore_full_backup_from_path(
+                    path,
+                    replace=bool_from_form("replace"),
+                    include_users=bool_from_form("include_users"),
+                    include_api_tokens=bool_from_form("include_api_tokens"),
+                    backup_password=request.form.get("backup_password", ""),
+                )
+                session_must_end = bool_from_form("include_users") or bool_from_form("include_api_tokens")
                 flash(f"Restore abgeschlossen: {result}", "success")
             elif action == "delete":
                 name = secure_filename(request.form.get("backup_name", ""))
@@ -10693,6 +11370,9 @@ def backups_page():
                 raise ValueError("Unbekannte Backup-Aktion.")
         except Exception as exc:
             flash(str(exc), "danger")
+        if session_must_end:
+            session.clear()
+            return redirect(url_for("login"))
         return redirect(url_for("backups_page"))
     return render_template("backups.html", backups=list_full_backups(), backup_dir=str(APP_BACKUP_DIR))
 
@@ -10704,7 +11384,8 @@ def backup_download(name: str):
     path = (APP_BACKUP_DIR / safe).resolve(strict=False)
     if APP_BACKUP_DIR.resolve(strict=False) not in path.parents or not path.exists():
         return "Backup nicht gefunden", 404
-    return send_file(path, mimetype="application/zip", as_attachment=True, download_name=path.name)
+    secure_chmod(path, 0o600)
+    return send_file(path, mimetype="application/octet-stream", as_attachment=True, download_name=path.name, max_age=0)
 
 
 # ---------------------------------------------------------------------------
@@ -10731,7 +11412,7 @@ def build_config_export() -> Dict[str, Any]:
             notify_export.pop(field, None)
         safe_settings["notify"] = notify_export
     with db() as con:
-        healthchecks = [row_to_dict(r) for r in con.execute("SELECT name, url, expected_status, method, timeout_seconds, interval_minutes, enabled FROM healthchecks ORDER BY name").fetchall()]
+        healthchecks = [row_to_dict(r) for r in con.execute("SELECT name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, allow_private FROM healthchecks ORDER BY name").fetchall()]
         schedules = [row_to_dict(r) for r in con.execute("SELECT name, job_kind, mirror_id, script_name, script_selection, script_names, enabled, schedule_type, times, weekdays, interval_hours, dry_run, origin FROM job_schedules ORDER BY name").fetchall()]
     return {"format": "debmirror-manager-config", "format_version": 2, "app_version": APP_VERSION, "exported_at": now_iso(), "mirrors": mirrors, "healthchecks": healthchecks, "schedules": schedules, "settings": safe_settings}
 
@@ -10773,15 +11454,18 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
                 "name": str(h.get("name") or "").strip(), "url": str(h.get("url") or "").strip(),
                 "expected_status": int(h.get("expected_status") or 200), "method": str(h.get("method") or "GET").upper(),
                 "timeout_seconds": int(h.get("timeout_seconds") or 10), "interval_minutes": int(h.get("interval_minutes") or 60),
-                "enabled": 1 if h.get("enabled", 1) else 0, "updated_at": now_iso(), "created_at": now_iso(),
+                "enabled": 1 if h.get("enabled", 1) else 0, "allow_private": 1 if h.get("allow_private") else 0, "updated_at": now_iso(), "created_at": now_iso(),
             }
             if not vals["name"] or not vals["url"]:
                 continue
+            if vals["method"] not in {"GET", "HEAD"}:
+                raise ValueError(f"Healthcheck {vals['name']}: nur GET oder HEAD ist zulässig.")
+            validate_outbound_url(vals["url"], allowed_schemes=("http", "https"), allow_private=bool(vals["allow_private"]))
             if row and replace_existing:
-                con.execute("UPDATE healthchecks SET url=:url, expected_status=:expected_status, method=:method, timeout_seconds=:timeout_seconds, interval_minutes=:interval_minutes, enabled=:enabled, updated_at=:updated_at WHERE id=:id", {**vals, "id": row["id"]})
+                con.execute("UPDATE healthchecks SET url=:url, expected_status=:expected_status, method=:method, timeout_seconds=:timeout_seconds, interval_minutes=:interval_minutes, enabled=:enabled, allow_private=:allow_private, updated_at=:updated_at WHERE id=:id", {**vals, "id": row["id"]})
                 imported["healthchecks"] += 1
             elif not row:
-                con.execute("INSERT INTO healthchecks(name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, created_at, updated_at) VALUES (:name, :url, :expected_status, :method, :timeout_seconds, :interval_minutes, :enabled, :created_at, :updated_at)", vals)
+                con.execute("INSERT INTO healthchecks(name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, allow_private, created_at, updated_at) VALUES (:name, :url, :expected_status, :method, :timeout_seconds, :interval_minutes, :enabled, :allow_private, :created_at, :updated_at)", vals)
                 imported["healthchecks"] += 1
         for sched in data.get("schedules", []):
             name = str(sched.get("name") or "").strip()
@@ -10921,7 +11605,7 @@ def save_notification_settings(form) -> None:
 def post_json(url: str, payload: Dict[str, Any], timeout: int = 20) -> None:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with safe_urlopen(req, timeout=timeout, allowed_schemes=("https",)) as resp:
         if resp.status >= 400:
             raise RuntimeError(f"Webhook HTTP {resp.status}")
 
@@ -11032,7 +11716,7 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
     err = ""
     try:
         req = urllib.request.Request(check["url"], method=method, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-        with urllib.request.urlopen(req, timeout=int(check.get("timeout_seconds") or 10)) as resp:
+        with safe_urlopen(req, timeout=int(check.get("timeout_seconds") or 10), allowed_schemes=("http", "https"), allow_private=bool(check.get("allow_private"))) as resp:
             status_code = int(resp.status)
             ok = status_code == int(check.get("expected_status") or 200)
     except urllib.error.HTTPError as exc:
@@ -11091,19 +11775,18 @@ def healthchecks_page():
                     "name": request.form.get("name", "").strip(), "url": request.form.get("url", "").strip(),
                     "expected_status": int(request.form.get("expected_status") or 200), "method": request.form.get("method", "GET").upper(),
                     "timeout_seconds": int(request.form.get("timeout_seconds") or 10), "interval_minutes": int(request.form.get("interval_minutes") or 60),
-                    "enabled": bool_from_form("enabled"), "updated_at": now_iso(),
+                    "enabled": bool_from_form("enabled"), "allow_private": bool_from_form("allow_private"), "updated_at": now_iso(),
                 }
                 if not values["name"] or not values["url"]:
                     raise ValueError("Name und URL sind Pflichtfelder.")
-                if not values["url"].startswith(("http://", "https://")):
-                    raise ValueError("Healthcheck-URL muss mit http:// oder https:// beginnen.")
+                validate_outbound_url(values["url"], allowed_schemes=("http", "https"), allow_private=bool(values["allow_private"]))
                 with db() as con:
                     if check_id_raw:
                         values["id"] = int(check_id_raw)
-                        con.execute("UPDATE healthchecks SET name=:name, url=:url, expected_status=:expected_status, method=:method, timeout_seconds=:timeout_seconds, interval_minutes=:interval_minutes, enabled=:enabled, updated_at=:updated_at WHERE id=:id", values)
+                        con.execute("UPDATE healthchecks SET name=:name, url=:url, expected_status=:expected_status, method=:method, timeout_seconds=:timeout_seconds, interval_minutes=:interval_minutes, enabled=:enabled, allow_private=:allow_private, updated_at=:updated_at WHERE id=:id", values)
                     else:
                         values["created_at"] = now_iso()
-                        con.execute("INSERT INTO healthchecks(name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, created_at, updated_at) VALUES (:name, :url, :expected_status, :method, :timeout_seconds, :interval_minutes, :enabled, :created_at, :updated_at)", values)
+                        con.execute("INSERT INTO healthchecks(name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, allow_private, created_at, updated_at) VALUES (:name, :url, :expected_status, :method, :timeout_seconds, :interval_minutes, :enabled, :allow_private, :created_at, :updated_at)", values)
                 flash("Healthcheck gespeichert.", "success")
                 return redirect(url_for("healthchecks_page"))
             if action == "delete":
@@ -11125,19 +11808,19 @@ def healthchecks_page():
 
 
 @app.route("/api/v1/schedules")
-@require_api_auth
+@require_api_scope("read")
 def api_schedules():
     return jsonify({"ok": True, "schedules": list_job_schedules()})
 
 
 @app.route("/api/v1/healthchecks")
-@require_api_auth
+@require_api_scope("read")
 def api_healthchecks():
     return jsonify({"ok": True, "healthchecks": list_healthchecks()})
 
 
 @app.route("/api/v1/healthchecks/<int:check_id>/run", methods=["POST"])
-@require_api_auth
+@require_api_scope("healthchecks")
 def api_healthcheck_run(check_id: int):
     check = get_healthcheck(check_id)
     if not check:
@@ -11241,11 +11924,42 @@ def help_page():
 
 
 BUILTIN_HELP = "# DebMirror Manager\n\nDie ausführliche Anleitung README.md wurde nicht gefunden. Bitte prüfe die Projektinstallation.\n"
-BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.77\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
+BUILTIN_RELEASE_NOTES = "# Release Notes\n\n## v0.1.78\n\n- Fallback-Release-Notes. Normalerweise wird RELEASE_NOTES.md aus dem Projektordner gelesen.\n"
 
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+
+def migrate_short_trust_fingerprints() -> None:
+    """Resolve legacy short trust IDs to a unique full fingerprint.
+
+    Short IDs remain useful for diagnostics, but are no longer accepted as a
+    trust anchor. Existing profiles are upgraded when their assigned keyring
+    contains exactly one matching full fingerprint.
+    """
+    try:
+        with db() as con:
+            rows = con.execute("SELECT id, name, keyring, keyring_fingerprint FROM mirrors WHERE COALESCE(keyring_fingerprint, '') <> ''").fetchall()
+        for row in rows:
+            short = normalize_fingerprint(row["keyring_fingerprint"] or "")
+            if len(short) == 40:
+                continue
+            matches: List[str] = []
+            try:
+                path = Path(allowed_keyring_path(str(row["keyring"] or "")))
+                matches = [fp for fp in (normalize_fingerprint(v) for v in key_fingerprints(path)) if len(fp) == 40 and fp.endswith(short)]
+            except Exception:
+                matches = []
+            with db() as con:
+                if len(matches) == 1:
+                    con.execute("UPDATE mirrors SET keyring_fingerprint=?, updated_at=? WHERE id=?", (matches[0], now_iso(), int(row["id"])))
+                    con.execute("INSERT INTO app_events(level, message, created_at) VALUES ('info', ?, ?)", (f"Kurze Key-ID des Profils {row['name']} wurde auf den vollständigen Fingerprint migriert.", now_iso()))
+                else:
+                    con.execute("UPDATE mirrors SET keyring_fingerprint='', updated_at=? WHERE id=?", (now_iso(), int(row["id"])))
+                    con.execute("INSERT INTO app_events(level, message, created_at) VALUES ('warning', ?, ?)", (f"Unsichere kurze Key-ID des Profils {row['name']} wurde entfernt; bitte vollständigen 40-stelligen Fingerprint prüfen und neu setzen.", now_iso()))
+    except Exception as exc:
+        log_webui_exception("migrate_short_trust_fingerprints", exc)
+
 
 def cleanup_stale_job_auth_configs(max_age_seconds: int = 86400) -> None:
     try:
@@ -11265,13 +11979,16 @@ def cleanup_stale_job_auth_configs(max_age_seconds: int = 86400) -> None:
 
 
 def create_app() -> Flask:
+    ensure_secure_runtime_permissions()
     init_db()
+    migrate_short_trust_fingerprints()
     cleanup_stale_job_auth_configs()
     ensure_initial_user_from_legacy_config()
     migrate_notification_secret_storage()
     recover_stale_jobs()
     ensure_job_worker_thread()
     start_scheduler_thread()
+    ensure_secure_runtime_permissions()
     return app
 
 
@@ -11279,4 +11996,4 @@ create_app()
 
 if __name__ == "__main__":
     port = int(os.environ.get("APP_PORT", "8080"))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host=os.getenv("APP_BIND_HOST", "127.0.0.1"), port=port, threaded=True)

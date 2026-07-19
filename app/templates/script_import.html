@@ -11,7 +11,7 @@
 <div class="grid two">
   <section class="card">
     <h2>Skript einfügen oder hochladen</h2>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="preview">
       <label>Skriptinhalt</label>
       <textarea name="script_text" rows="14" placeholder="debmirror \
@@ -44,7 +44,7 @@
             <td>{{ f.name }}</td>
             <td>{{ f.size }} B</td>
             <td>
-              <form method="post" class="inline">
+              <form method="post" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
                 <input type="hidden" name="action" value="load_file">
                 <input type="hidden" name="import_file" value="{{ f.name }}">
                 <button type="submit">Analysieren</button>
@@ -77,7 +77,7 @@
 
 <section class="card">
   <h2>Import-Vorschau</h2>
-  <form method="post" class="form-grid" enctype="multipart/form-data">
+  <form method="post" class="form-grid" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="action" value="create">
     <input type="hidden" name="values_json" value='{{ preview | tojson }}'>
     <fieldset>

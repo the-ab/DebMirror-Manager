@@ -54,11 +54,11 @@
         <td><small>{{ s.last_run_key or '-' }}</small></td>
         <td>{% if is_admin %}
           <div class="actions compact-actions">
-            <form method="post" action="{{ url_for('schedule_toggle', schedule_id=s.id) }}">
+            <form method="post" action="{{ url_for('schedule_toggle', schedule_id=s.id) }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <button type="submit">{% if s.enabled %}Deaktivieren{% else %}Aktivieren{% endif %}</button>
             </form>
             <a class="button" href="{{ url_for('schedule_edit', schedule_id=s.id) }}">Bearbeiten</a>
-            <form method="post" action="{{ url_for('schedule_delete', schedule_id=s.id) }}" onsubmit="return confirm('{% if s.origin == 'profile' %}Profil-Zeitplan wirklich löschen? Das zugehörige Profil wird auf manuell gestellt.{% else %}Zeitplan wirklich löschen?{% endif %}');">
+            <form method="post" action="{{ url_for('schedule_delete', schedule_id=s.id) }}" onsubmit="return confirm('{% if s.origin == 'profile' %}Profil-Zeitplan wirklich löschen? Das zugehörige Profil wird auf manuell gestellt.{% else %}Zeitplan wirklich löschen?{% endif %}');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <button class="danger" type="submit">Löschen</button>
             </form>
           </div>
@@ -80,7 +80,7 @@
     <h2>{% if editing %}Zeitplan bearbeiten{% else %}Neuen Zeitplan anlegen{% endif %}</h2>
     {% if editing %}<a class="button" href="{{ url_for('schedules_page') }}">Bearbeitung abbrechen</a>{% endif %}
   </div>
-  <form method="post" class="grid-form schedule-form" id="schedule-form" action="{% if editing %}{{ url_for('schedule_edit', schedule_id=form.id) }}{% else %}{{ url_for('schedules_page') }}{% endif %}">
+  <form method="post" class="grid-form schedule-form" id="schedule-form" action="{% if editing %}{{ url_for('schedule_edit', schedule_id=form.id) }}{% else %}{{ url_for('schedules_page') }}{% endif %}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="action" value="{% if editing %}update{% else %}create{% endif %}">
     <label>Name
       <input name="name" value="{{ form.name or '' }}" placeholder="z. B. Debian morgens und abends" required>
@@ -159,7 +159,7 @@
 {% if is_admin %}<section class="card compact-card">
   <h2>Bereinigung</h2>
   <p>Die automatische Bereinigung löscht abgeschlossene Jobs und deren Logdateien nach der eingestellten Aufbewahrungszeit.</p>
-  <form method="post" action="{{ url_for('schedules_page') }}">
+  <form method="post" action="{{ url_for('schedules_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="action" value="cleanup_now">
     <button type="submit">Jetzt bereinigen</button>
   </form>

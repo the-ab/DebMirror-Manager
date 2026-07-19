@@ -13,7 +13,7 @@
     {% if job.job_type == 'script' %}<a class="button" href="{{ url_for('user_scripts_page') }}">Zu Benutzerskripten</a>{% endif %}
     <a class="button" href="{{ url_for('job_log', job_id=job.id) }}" target="_blank">Log als Text</a>
     {% if is_admin and job.status in ['queued','running','stopping'] %}
-    <form method="post" action="{{ url_for('job_stop', job_id=job.id) }}" class="inline"><button class="danger" type="submit">Stoppen</button></form>
+    <form method="post" action="{{ url_for('job_stop', job_id=job.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Stoppen</button></form>
     {% endif %}
   </div>
 </div>

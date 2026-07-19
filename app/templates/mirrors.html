@@ -60,7 +60,7 @@
           <div class="size-value-actions">
             <strong>{{ m.size_info.size_h }}</strong>
             {% if is_admin %}
-            <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=m.id) }}" class="inline size-refresh-form">
+            <form method="post" action="{{ url_for('mirror_size_recalculate', mirror_id=m.id) }}" class="inline size-refresh-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="icon-button size-refresh-button" title="Mirror-Größe jetzt neu berechnen" aria-label="Mirror-Größe für {{ m.name }} neu berechnen">↻</button>
             </form>
             {% endif %}
@@ -81,9 +81,9 @@
             {% if m.start_block_reason %}
               <button type="button" class="locked-button" disabled title="{{ m.start_block_reason }}"><span>Start</span></button>
             {% else %}
-              <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><button type="submit">Start</button></form>
+              <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button type="submit">Start</button></form>
             {% endif %}
-            {% if not m.start_block_reason or m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
+            {% if not m.start_block_reason or m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
           {% else %}<small>Nur Ansicht</small>{% endif %}
         </td>
       </tr>

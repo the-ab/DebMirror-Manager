@@ -1,5 +1,27 @@
 # Release Notes
 
+## v0.1.78
+
+- Kritischen Ersteinrichtungsfehler geschlossen: `/setup` kann nach der ersten Einrichtung weder über `force` noch über andere URL-Parameter erneut geöffnet werden.
+- Kritischen Sitzungsfehler geschlossen: Sitzungen werden an die exakte Benutzer-ID, den Aktivstatus und eine serverseitige Sitzungsversion gebunden; gelöschte oder deaktivierte Benutzer fallen niemals auf einen Administrator zurück.
+- Sitzungen werden bei Passwort-, Rollen-, Status- und Benutzernamensänderungen sofort widerrufen; letzter aktiver Administrator vor Löschung, Deaktivierung und Herabstufung geschützt.
+- CSRF-Schutz für alle schreibenden WebUI-Formulare und internen JavaScript-POSTs ergänzt.
+- Login-Schutz mit kombinierter Benutzer-/IP-Begrenzung, temporärer Sperre und Sicherheitsprotokollierung ergänzt; Mindestpasswortlänge auf zwölf Zeichen erhöht.
+- Offene Weiterleitungen nach Login und Setup blockiert.
+- API-Tokens um Scopes, Ablaufdatum und letzte Quell-IP erweitert; neue Tokens starten minimal berechtigt, bestehende Tokens bleiben als gekennzeichnete Legacy-Tokens kompatibel.
+- Neue Vollbackups als passwortgeschützte AES-256-GCM-Dateien `.dmmbackup`; Passwort wird nicht gespeichert. Alte ZIP-Backups bleiben wiederherstellbar und werden als unverschlüsselt markiert.
+- Restore gegen ZIP-Bombs, Pfadtraversal, symbolische Links, Sonderdateien sowie übergroße Einzel- und Gesamtinhalte gehärtet; Restore von API-Tokens separat opt-in.
+- SSRF-Schutz für Profilgenerator, Key-URL-Importe, Discord-Webhooks und Healthchecks ergänzt; private Ziele standardmäßig gesperrt, Healthchecks nur mit ausdrücklicher Freigabe.
+- HTTP-Sicherheitsheader, sichere Cookieoptionen, Sitzungsablauf, optionale Proxy-/Host-Vertrauenskonfiguration und HTTPS-Modus ergänzt.
+- `.env`, SQLite-Datenbank, Einstellungen, Schlüssel, Logs, Backups und Skriptverzeichnisse auf restriktive Besitzerrechte umgestellt.
+- Updateprüfung um verpflichtenden SHA-256-Abgleich sowie sichere Extraktionsgrenzen ergänzt.
+- OpenPGP-Vertrauensanker auf vollständige 40-stellige Fingerprints umgestellt; sichere Migration älterer Kurz-IDs ergänzt.
+- Automatische Annahme neuer SSH-Hostschlüssel für neue Profile standardmäßig deaktiviert.
+- Container mit `no-new-privileges`, reduzierten Linux-Capabilities, Init-Prozess und PID-Limit gehärtet; Gunicorn-Headergrenzen ergänzt.
+- Abhängigkeiten auf Flask 3.1.3, Werkzeug 3.1.8 und cryptography 49.0.0 aktualisiert.
+- Anleitung und `.env.example` vollständig an die neuen Sicherheitsfunktionen angepasst.
+- VERSION auf 0.1.78 gesetzt.
+
 ## v0.1.77
 
 - Update-Kompatibilitätsfehler aus v0.1.76 behoben: `gunicorn.conf.py` liegt jetzt innerhalb von `app/` und wird dadurch auch vom älteren v0.1.75-Updater sicher übernommen.

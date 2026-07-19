@@ -1,14 +1,8 @@
 {% extends "base.html" %}
-{% block title %}{{ title }} - {{ app_name }}{% endblock %}
 {% block content %}
-<section class="card">
+<div class="card narrow-card">
   <h1>{{ title }}</h1>
   <p>{{ message }}</p>
-  <p><strong>Logdatei:</strong> <code>{{ log_path }}</code></p>
-  <p>Im Container kannst du die letzten Zeilen so prüfen:</p>
-  <pre class="code"><code>docker compose logs --tail=100 debmirror-manager
-tail -n 100 /docker_data/debmirror-manager/logs/webui-error.log</code></pre>
-  <p><a class="button" href="{{ url_for('dashboard') }}">Zurück zum Dashboard</a> <a class="button" href="{{ url_for('logout') }}" onclick="event.preventDefault(); document.getElementById('logout-form-error').submit();">Logout</a></p>
-  <form id="logout-form-error" method="post" action="{{ url_for('logout') }}" class="hidden"></form>
-</section>
+  <p><a class="button secondary" href="{{ back_url }}">Zurück</a></p>
+</div>
 {% endblock %}

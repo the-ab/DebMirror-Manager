@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 PROJECT_NAME="debmirror-manager"
 PROJECT_VERSION="$(cat VERSION 2>/dev/null || echo unknown)"
@@ -141,14 +142,18 @@ with sqlite3.connect(db_path) as con:
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        last_login_at TEXT DEFAULT ''
+        last_login_at TEXT DEFAULT '',
+        session_version INTEGER NOT NULL DEFAULT 1
     )""")
     now = datetime.now().replace(microsecond=0).isoformat(sep=' ')
+    columns = {row[1] for row in con.execute('PRAGMA table_info(users)').fetchall()}
+    if 'session_version' not in columns:
+        con.execute('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1')
     row = con.execute('SELECT id FROM users WHERE username=?', (username,)).fetchone()
     if row:
-        con.execute("UPDATE users SET password_hash=?, role='admin', enabled=1, updated_at=? WHERE username=?", (password_hash, now, username))
+        con.execute("UPDATE users SET password_hash=?, role='admin', enabled=1, updated_at=?, session_version=session_version+1 WHERE username=?", (password_hash, now, username))
     else:
-        con.execute("INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at) VALUES (?, ?, 'admin', 1, ?, ?)", (username, password_hash, now, now))
+        con.execute("INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version) VALUES (?, ?, 'admin', 1, ?, ?, 1)", (username, password_hash, now, now))
 INNER_PY
 }
 compose_has_containers() { local dc="$1"; $dc ps -q 2>/dev/null | grep -q .; }
@@ -197,8 +202,10 @@ printf 'Version: %s\n\n' "$PROJECT_VERSION"
 if [ ! -f "$ENV_FILE" ]; then
   [ -f "$ENV_EXAMPLE" ] || error_exit "$ENV_EXAMPLE fehlt."
   cp "$ENV_EXAMPLE" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
   log ".env wurde aus .env.example erstellt."
 else
+  chmod 600 "$ENV_FILE" || true
   log ".env existiert bereits und wird nicht komplett überschrieben."
 fi
 
@@ -294,6 +301,8 @@ set_env_value APP_BACKUP_DIR "$(get_env_value APP_BACKUP_DIR /app/backups)"
 set_env_value USER_SCRIPT_DIR "$(get_env_value USER_SCRIPT_DIR /user-scripts)"
 
 mkdir -p "$data_path/data" "$data_path/logs" "$data_path/keyrings" "$data_path/import-scripts" "$data_path/user-scripts" "$data_path/backup" "$mirror_path" "$update_dir" "$update_backup_dir"
+chmod 700 "$data_path" "$data_path/data" "$data_path/logs" "$data_path/keyrings" "$data_path/import-scripts" "$data_path/user-scripts" "$data_path/backup" "$update_dir" "$update_backup_dir" 2>/dev/null || true
+chmod 600 "$ENV_FILE" 2>/dev/null || true
 
 secret="$(get_env_value APP_SECRET_KEY '')"
 if [ -z "$secret" ] || [ "$secret" = "please-change-this-secret" ]; then
@@ -312,7 +321,7 @@ if [[ "$set_admin" =~ ^[JjYy] ]]; then
     read -rsp "Admin-Passwort: " admin_pass; printf '\n'
     read -rsp "Admin-Passwort wiederholen: " admin_pass2; printf '\n'
     if [ "$admin_pass" != "$admin_pass2" ]; then printf 'Passwörter stimmen nicht überein.\n'; continue; fi
-    if [ "${#admin_pass}" -lt 8 ]; then printf 'Passwort muss mindestens 8 Zeichen lang sein.\n'; continue; fi
+    if [ "${#admin_pass}" -lt 12 ]; then printf 'Passwort muss mindestens 12 Zeichen lang sein.\n'; continue; fi
     break
   done
   write_admin_settings "$data_path" "$admin_user" "$admin_pass"

@@ -42,3 +42,8 @@ errorlog = "-"
 loglevel = os.environ.get("WSGI_LOG_LEVEL", "info").strip().lower() or "info"
 capture_output = True
 preload_app = False
+
+# Begrenzungen gegen übergroße oder missbräuchliche HTTP-Header.
+limit_request_line = _int_env("WSGI_LIMIT_REQUEST_LINE", 4094, 256)
+limit_request_fields = _int_env("WSGI_LIMIT_REQUEST_FIELDS", 100, 10)
+limit_request_field_size = _int_env("WSGI_LIMIT_REQUEST_FIELD_SIZE", 8190, 1024)

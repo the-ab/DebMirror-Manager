@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 ENV_FILE=".env"
 get_env_value() {
@@ -31,8 +32,8 @@ while true; do
     echo "Passwörter stimmen nicht überein."
     continue
   fi
-  if [ "${#admin_pass}" -lt 8 ]; then
-    echo "Passwort muss mindestens 8 Zeichen lang sein."
+  if [ "${#admin_pass}" -lt 12 ]; then
+    echo "Passwort muss mindestens 12 Zeichen lang sein."
     continue
   fi
   break
@@ -72,15 +73,21 @@ with sqlite3.connect(db_path) as con:
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        last_login_at TEXT DEFAULT ''
+        last_login_at TEXT DEFAULT '',
+        session_version INTEGER NOT NULL DEFAULT 1
     )""")
     now = datetime.now().replace(microsecond=0).isoformat(sep=' ')
+    columns = {row[1] for row in con.execute('PRAGMA table_info(users)').fetchall()}
+    if 'session_version' not in columns:
+        con.execute('ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 1')
     row = con.execute('SELECT id FROM users WHERE username=?', (username,)).fetchone()
     if row:
-        con.execute("UPDATE users SET password_hash=?, role='admin', enabled=1, updated_at=? WHERE username=?", (password_hash, now, username))
+        con.execute("UPDATE users SET password_hash=?, role='admin', enabled=1, updated_at=?, session_version=session_version+1 WHERE username=?", (password_hash, now, username))
     else:
-        con.execute("INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at) VALUES (?, ?, 'admin', 1, ?, ?)", (username, password_hash, now, now))
+        con.execute("INSERT INTO users(username, password_hash, role, enabled, created_at, updated_at, session_version) VALUES (?, ?, 'admin', 1, ?, ?, 1)", (username, password_hash, now, now))
 PY
+chmod 700 "$BASE_DATA" "$BASE_DATA/data" 2>/dev/null || true
+chmod 600 "$SETTINGS_FILE" "$DB_FILE" 2>/dev/null || true
 
 echo "Admin-Zugang wurde in der SQLite-Benutzerverwaltung gesetzt."
 echo "settings.json enthält keine Legacy-Admin-Zugangswerte mehr."

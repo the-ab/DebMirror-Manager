@@ -8,7 +8,7 @@
 <div class="grid two">
   <section class="card">
     <h2>Import</h2>
-    <form method="post" enctype="multipart/form-data">
+    <form method="post" enctype="multipart/form-data"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <label>JSON-Datei</label><input type="file" name="config_file" accept="application/json,.json">
       <label>Oder JSON einfügen</label><textarea name="config_json" rows="10"></textarea>
       <label class="check"><input type="checkbox" name="replace_existing"> Bestehende Einträge mit gleichem Namen ersetzen</label>
