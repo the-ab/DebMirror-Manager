@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            requirements-dev.txt
+      - name: Install locked runtime dependencies
+        run: python -m pip install --require-hashes -r requirements.lock
+      - name: Install test and audit tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile Python
+        run: python -m compileall -q app tests scripts
+      - name: Check release tree for secrets and runtime artifacts
+        run: python scripts/repository_audit.py
+      - name: Run automated tests
+        run: pytest -q
+      - name: Static security scan
+        run: bandit -q -r app -x tests -lll
+      - name: Dependency vulnerability scan
+        run: pip-audit -r requirements.lock --require-hashes
+
+  shell-and-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: bash -n install.sh update.sh set-admin-password.sh
+      - name: Validate Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build pinned application image
+        run: docker build --pull=false -t debmirror-manager:ci .

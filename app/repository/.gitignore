@@ -1,0 +1,59 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+install-config.env
+docker-compose.override.yml
+
+# Persistent and generated data
+data/
+logs/
+log/
+backup/
+backups/
+keyrings/
+import-scripts/
+user-scripts/
+mirror/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+*.pid
+*.dmmbackup
+
+# Update packages and generated release artifacts
+updates/*
+!updates/.gitkeep
+*.zip
+*.sha256
+*.sig
+*.asc
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+venv/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

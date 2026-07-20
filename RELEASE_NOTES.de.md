@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.1.80
+
+- Projektlizenz GNU AGPL-3.0-or-later und SPDX-Kennzeichnungen für selbst entwickelte Quelldateien ergänzt.
+- `.gitignore` und `.dockerignore` für Geheimnisse, lokale Konfigurationen, Datenbanken, Logs, Backups, Updatepakete, virtuelle Umgebungen, Caches und erzeugte Daten ergänzt.
+- `SECURITY.md`, `CONTRIBUTING.md` und `THIRD-PARTY-NOTICES.md` ergänzt.
+- Unabhängigkeitshinweis und transparente Offenlegung der KI-Unterstützung in die deutsche und englische Anleitung aufgenommen.
+- Automatisierte pytest-Testreihe für Templates, kritische Authentifizierungs- und Sitzungslogik, CSRF, Benutzerpräferenzen, Weiterleitungsschutz, SSRF-Schutz, API-Berechtigungen und Sicherheitsheader ergänzt.
+- GitHub-Actions-CI für Secret-Scanning, Kompilierung, Tests, Bandit, pip-audit, Shell-Syntax, Compose-Validierung und Docker-Build ergänzt.
+- Lokales Repository-Prüfskript für private Schlüssel, typische Tokens und unerwünschte Laufzeitdateien ergänzt.
+- Dependabot für Python-, Docker- und GitHub-Actions-Abhängigkeiten eingerichtet.
+- `requirements.lock` mit vollständig aufgelösten Versionen und Paket-Hashes ergänzt; der Docker-Build installiert mit `--require-hashes`.
+- Python- und nginx-Basisimages auf konkrete Versionen und Multi-Plattform-Digests festgelegt.
+- Updateprozess um Lizenz-, Richtlinien-, Repository- und Testdateien erweitert.
+- VERSION auf 0.1.80 gesetzt.
 ## v0.1.79
 
 - Benutzerbezogene Sprachauswahl für Deutsch und Englisch ergänzt.

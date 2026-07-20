@@ -30,6 +30,7 @@
       <input type="password" name="password" required>
       <button type="submit" class="primary full">Einloggen</button>
     </form>
+    <p class="hint source-code-link"><a href="{{ url_for('source_code_download') }}">{% if language == 'en' %}Source code (AGPL-3.0-or-later){% else %}Quellcode (AGPL-3.0-or-later){% endif %}</a></p>
   </div>
 </body>
 </html>

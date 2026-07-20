@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 set -Eeuo pipefail
 umask 077
 
@@ -214,6 +215,12 @@ create_backups() {
   fi
   [ -f "docker-compose.yml" ] && cp docker-compose.yml "$backup_base/docker-compose.yml"
   [ -f "VERSION" ] && cp VERSION "$backup_base/VERSION"
+  for name in LICENSE SECURITY.md CONTRIBUTING.md THIRD-PARTY-NOTICES.md .gitignore .dockerignore requirements.lock requirements-dev.txt pytest.ini; do
+    [ -f "$name" ] && cp "$name" "$backup_base/$name"
+  done
+  [ -d tests ] && cp -a tests "$backup_base/tests"
+  [ -d scripts ] && cp -a scripts "$backup_base/scripts"
+  [ -d .github ] && cp -a .github "$backup_base/.github"
   [ -d "app" ] && tar -czf "$backup_base/app-project-files.tar.gz" app
   [ -d "nginx" ] && tar -czf "$backup_base/nginx-config.tar.gz" nginx
   [ -f "README.md" ] && cp README.md "$backup_base/README.md"
@@ -390,9 +397,9 @@ if len(candidates) != 1:
 source_root = candidates[0]
 
 items_to_copy = [
-    '.env.example', 'Dockerfile', 'docker-compose.yml', 'requirements.txt',
+    '.env.example', '.gitignore', '.dockerignore', 'Dockerfile', 'docker-compose.yml', 'requirements.txt', 'requirements.lock', 'requirements-dev.txt', 'pytest.ini',
     'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md', 'README.de.md',
-    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'VERSION', 'app', 'nginx'
+    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.md', 'VERSION', 'app', 'nginx', 'tests', 'scripts', '.github'
 ]
 for name in items_to_copy:
     src = source_root / name
@@ -543,6 +550,26 @@ sync_localized_document_files() {
       log "Lokalisierte Dokumentdatei ergänzt: $name"
     fi
   done
+  if [ -d app/repository ]; then
+    for name in LICENSE SECURITY.md CONTRIBUTING.md THIRD-PARTY-NOTICES.md requirements.lock requirements-dev.txt pytest.ini .gitignore .dockerignore; do
+      if [ ! -f "$name" ] && [ -f "app/repository/$name" ]; then
+        cp "app/repository/$name" "$name"
+        log "Repository-Datei ergänzt: $name"
+      fi
+    done
+    if [ ! -d tests ] && [ -d app/repository/tests ]; then
+      cp -a app/repository/tests tests
+      log "Automatisierte Tests ergänzt."
+    fi
+    if [ ! -d scripts ] && [ -d app/repository/scripts ]; then
+      cp -a app/repository/scripts scripts
+      log "Repository-Prüfskripte ergänzt."
+    fi
+    if [ ! -d .github ] && [ -d app/repository/.github ]; then
+      cp -a app/repository/.github .github
+      log "GitHub-Konfiguration ergänzt."
+    fi
+  fi
 }
 
 print_update_notes() {

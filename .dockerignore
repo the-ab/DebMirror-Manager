@@ -1,0 +1,51 @@
+# Version-control and CI metadata
+.git
+.github
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+install-config.env
+docker-compose.override.yml
+
+# Runtime and generated data
+data
+logs
+log
+backup
+backups
+keyrings
+import-scripts
+user-scripts
+mirror
+updates
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.dmmbackup
+*.zip
+*.sha256
+*.sig
+*.asc
+
+# Development-only files
+tests
+.pytest_cache
+.coverage
+htmlcov
+.venv
+venv
+__pycache__
+*.py[cod]
+
+# Editor and temporary files
+.vscode
+.idea
+*.swp
+*.swo
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

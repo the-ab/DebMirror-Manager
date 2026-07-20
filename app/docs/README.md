@@ -2,7 +2,17 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.79**
+Current version: **0.1.80**
+
+## Project status, affiliation, and licensing
+
+DebMirror Manager is an **independent third-party community project**. It is not affiliated with, endorsed by, or maintained by the Debian Project or the maintainers of `debmirror`. Debian and other product names are trademarks of their respective owners.
+
+The project source is licensed under **GNU AGPL-3.0-or-later**. See `LICENSE`. Third-party components retain their own licenses; see `THIRD-PARTY-NOTICES.md`.
+
+Portions of this project were developed with assistance from OpenAI ChatGPT. All generated code was reviewed, adapted, and tested by the project maintainer, who assumes responsibility for the published software.
+
+Repository policies and development information are available in `SECURITY.md` and `CONTRIBUTING.md`. The running WebUI exposes the corresponding source archive through `/source`, satisfying the network-source offer expected for AGPL deployments.
 
 ## Core concept
 
@@ -33,7 +43,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.79.zip
+unzip debmirror-manager-v0.1.80.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -404,3 +414,11 @@ The script updates the administrator account directly in the SQLite user databas
 ## Documentation files
 
 The WebUI opens `README.md` and `RELEASE_NOTES.md` for English users and `README.de.md` and `RELEASE_NOTES.de.md` for German users. If a localized file is missing, the English default file is used.
+
+## Public repository and pinned dependencies
+
+The repository contains `.gitignore` and `.dockerignore` rules that exclude local configuration, databases, logs, backups, update archives, virtual environments, and other generated data. Do not initialize or publish a repository from a production installation directory.
+
+Production Python dependencies are resolved in `requirements.lock` with exact versions and package hashes. The Docker build installs this lock file with `--require-hashes`. Base images are pinned by version and digest. Debian packages inside the image continue to come from the signed distribution repositories and are therefore not claimed to be bit-for-bit reproducible. Dependabot is configured for Python, Docker, and GitHub Actions updates.
+
+Automated checks are defined in `.github/workflows/ci.yml` and cover secret scanning, Python compilation, application/security tests, Bandit, `pip-audit`, shell syntax, Compose validation, and a Docker image build. Local commands are documented in `CONTRIBUTING.md`.

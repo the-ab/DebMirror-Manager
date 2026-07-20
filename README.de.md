@@ -2,7 +2,17 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.79**
+Aktuelle Version: **0.1.80**
+
+## Projektstatus, Unabhängigkeit und Lizenz
+
+DebMirror Manager ist ein **unabhängiges Community- und Drittanbieterprojekt**. Es ist weder mit dem Debian-Projekt noch mit den Betreuern von `debmirror` verbunden, von ihnen unterstützt oder von ihnen gepflegt. Debian und weitere Produktnamen sind Marken ihrer jeweiligen Inhaber.
+
+Der eigene Projektcode steht unter **GNU AGPL-3.0-or-later**. Maßgeblich ist die Datei `LICENSE`. Drittkomponenten behalten ihre jeweiligen Lizenzen; siehe `THIRD-PARTY-NOTICES.md`.
+
+Teile dieses Projekts wurden mit Unterstützung von OpenAI ChatGPT entwickelt. Der Projektbetreuer hat den erzeugten Code geprüft, angepasst und getestet und übernimmt die Verantwortung für die veröffentlichte Software.
+
+Sicherheits- und Beitragsrichtlinien stehen in `SECURITY.md` und `CONTRIBUTING.md`. Die laufende WebUI stellt das zugehörige Quellarchiv über `/source` bereit, damit der Quellcode bei einem AGPL-Netzbetrieb direkt angeboten wird.
 
 ## Grundprinzip
 
@@ -32,7 +42,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.79.zip
+unzip debmirror-manager-v0.1.80.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -516,3 +526,11 @@ Das Skript schreibt den Admin-Zugang direkt in die SQLite-Benutzerverwaltung.
 ## Hilfe
 
 Die WebUI enthält eine Anleitung und separate Release Notes. Die Anleitung beschreibt die Funktionen des Projekts; die Versionshistorie steht ausschließlich in den Release Notes.
+
+## Öffentliches Repository und festgelegte Abhängigkeiten
+
+`.gitignore` und `.dockerignore` schließen lokale Konfigurationen, Datenbanken, Logs, Backups, Updatearchive, virtuelle Python-Umgebungen und weitere erzeugte Daten aus. Ein öffentliches Repository sollte nicht direkt aus einem produktiven Installationsverzeichnis initialisiert werden.
+
+Die produktiven Python-Abhängigkeiten sind in `requirements.lock` mit festen Versionen und Paket-Hashes aufgelöst. Der Docker-Build installiert diese Lockdatei mit `--require-hashes`. Docker-Basisimages sind auf Version und Digest festgelegt. Debian-Pakete im Image werden weiterhin aus den signierten Distributionsquellen bezogen; eine vollständige Bit-für-Bit-Reproduzierbarkeit wird daher nicht behauptet. Dependabot überwacht Python-, Docker- und GitHub-Actions-Abhängigkeiten.
+
+`.github/workflows/ci.yml` führt Secret-Scanning, Python-Kompilierung, Funktions- und Sicherheitstests, Bandit, `pip-audit`, Shell-Syntaxprüfung, Compose-Validierung und einen Docker-Build aus. Lokale Prüfbefehle stehen in `CONTRIBUTING.md`.

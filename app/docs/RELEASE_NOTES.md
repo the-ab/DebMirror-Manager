@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.1.80
+
+- Added the GNU AGPL-3.0-or-later project license and SPDX identifiers for project-owned source files.
+- Added `.gitignore` and `.dockerignore` rules covering secrets, local configuration, databases, logs, backups, update packages, virtual environments, caches, and generated data.
+- Added `SECURITY.md`, `CONTRIBUTING.md`, and `THIRD-PARTY-NOTICES.md`.
+- Added a clear independent-project notice and an AI-assistance disclosure to the English and German documentation.
+- Added an automated pytest suite for templates, critical authentication/session behavior, CSRF, user preferences, redirect protection, SSRF protection, API scopes, and security headers.
+- Added GitHub Actions CI for secret scanning, compilation, tests, Bandit, pip-audit, shell syntax, Compose validation, and Docker image builds.
+- Added a local repository audit for private keys, common token formats, and forbidden runtime artifacts.
+- Added Dependabot monitoring for pip, Docker, and GitHub Actions.
+- Added `requirements.lock` with exact transitive versions and package hashes; Docker now installs with `--require-hashes`.
+- Pinned the Python and nginx base images to explicit versions and multi-platform digests.
+- Extended the update process to preserve and deploy repository, test, license, and policy files.
+- Set VERSION to 0.1.80.
 ## v0.1.79
 
 - Added per-user language selection for German and English.
