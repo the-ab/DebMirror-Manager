@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 set -Eeuo pipefail
 umask 077
 
@@ -220,7 +220,6 @@ create_backups() {
   done
   [ -d tests ] && cp -a tests "$backup_base/tests"
   [ -d scripts ] && cp -a scripts "$backup_base/scripts"
-  [ -d .github ] && cp -a .github "$backup_base/.github"
   [ -d "app" ] && tar -czf "$backup_base/app-project-files.tar.gz" app
   [ -d "nginx" ] && tar -czf "$backup_base/nginx-config.tar.gz" nginx
   [ -f "README.md" ] && cp README.md "$backup_base/README.md"
@@ -399,7 +398,7 @@ source_root = candidates[0]
 items_to_copy = [
     '.env.example', '.gitignore', '.dockerignore', 'Dockerfile', 'docker-compose.yml', 'requirements.txt', 'requirements.lock', 'requirements-dev.txt', 'pytest.ini',
     'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md', 'README.de.md',
-    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.md', 'VERSION', 'app', 'nginx', 'tests', 'scripts', '.github'
+    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.md', 'VERSION', 'app', 'nginx', 'tests', 'scripts'
 ]
 for name in items_to_copy:
     src = source_root / name
@@ -415,6 +414,18 @@ for name in items_to_copy:
         shutil.copytree(src, dst)
     else:
         shutil.copy2(src, dst)
+
+# GitHub automation is intentionally not part of this project.
+github_dir = target_root / '.github'
+if github_dir.exists():
+    for obsolete in (github_dir / 'dependabot.yml', github_dir / 'workflows' / 'ci.yml'):
+        if obsolete.exists() or obsolete.is_symlink():
+            obsolete.unlink()
+    workflows = github_dir / 'workflows'
+    if workflows.is_dir() and not any(workflows.iterdir()):
+        workflows.rmdir()
+    if github_dir.is_dir() and not any(github_dir.iterdir()):
+        github_dir.rmdir()
 
 for script in ['install.sh', 'set-admin-password.sh', 'update.sh']:
     path = target_root / script
@@ -529,6 +540,7 @@ perform_package_update() {
   PROJECT_VERSION="$(cat VERSION 2>/dev/null || echo "$target_version")"
   log "Projektdateien wurden auf v${PROJECT_VERSION} aktualisiert."
   merge_env_example
+  cleanup_obsolete_github_automation
 
   mkdir -p "${UPDATE_DIR}/installed"
   local installed_zip="${UPDATE_DIR}/installed/$(basename "$zip_file" .zip)-installed-${TS}.zip"
@@ -565,11 +577,12 @@ sync_localized_document_files() {
       cp -a app/repository/scripts scripts
       log "Repository-Prüfskripte ergänzt."
     fi
-    if [ ! -d .github ] && [ -d app/repository/.github ]; then
-      cp -a app/repository/.github .github
-      log "GitHub-Konfiguration ergänzt."
-    fi
   fi
+}
+
+cleanup_obsolete_github_automation() {
+  rm -f .github/dependabot.yml .github/workflows/ci.yml 2>/dev/null || true
+  rmdir .github/workflows .github 2>/dev/null || true
 }
 
 print_update_notes() {
@@ -592,6 +605,7 @@ UPDATE_TEXT
 }
 
 main() {
+  cleanup_obsolete_github_automation
   sync_localized_document_files
   print_update_notes
   need_cmd python3

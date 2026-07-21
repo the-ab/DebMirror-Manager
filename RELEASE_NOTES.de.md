@@ -1,15 +1,23 @@
 # Release Notes
 
+## v0.1.81
+
+- Projektlizenz auf die Apache License 2.0 (`Apache-2.0`) umgestellt und SPDX-Kennzeichnungen der eigenen Quelldateien angepasst.
+- Öffentliche Route `/source`, Quellcode-Downloadlinks und die lokale Erstellung eines Quellcodearchivs im Docker-Image vollständig entfernt.
+- Veraltete Quellcode-Downloadkonfiguration aus der Standardumgebung entfernt.
+- Automatisierungsdateien für die Repository-Plattform entfernt; Wartung und Prüfungen bleiben manuelle lokale Aufgaben.
+- Lokale pytest-Tests, Repository-Audit, Bandit, `pip-audit`, Shell-, Compose- und Docker-Prüfungen zur manuellen Ausführung beibehalten.
+- Deutsche und englische Dokumentation, Beitragsrichtlinie, Third-Party-Hinweise, Tests und Update-Kompatibilitätsdateien aktualisiert.
+- VERSION auf 0.1.81 gesetzt.
+
 ## v0.1.80
 
-- Projektlizenz GNU AGPL-3.0-or-later und SPDX-Kennzeichnungen für selbst entwickelte Quelldateien ergänzt.
+- Erste Projektlizenz, Richtliniendateien und SPDX-Kennzeichnungen für selbst entwickelte Quelldateien ergänzt.
 - `.gitignore` und `.dockerignore` für Geheimnisse, lokale Konfigurationen, Datenbanken, Logs, Backups, Updatepakete, virtuelle Umgebungen, Caches und erzeugte Daten ergänzt.
 - `SECURITY.md`, `CONTRIBUTING.md` und `THIRD-PARTY-NOTICES.md` ergänzt.
 - Unabhängigkeitshinweis und transparente Offenlegung der KI-Unterstützung in die deutsche und englische Anleitung aufgenommen.
 - Automatisierte pytest-Testreihe für Templates, kritische Authentifizierungs- und Sitzungslogik, CSRF, Benutzerpräferenzen, Weiterleitungsschutz, SSRF-Schutz, API-Berechtigungen und Sicherheitsheader ergänzt.
-- GitHub-Actions-CI für Secret-Scanning, Kompilierung, Tests, Bandit, pip-audit, Shell-Syntax, Compose-Validierung und Docker-Build ergänzt.
 - Lokales Repository-Prüfskript für private Schlüssel, typische Tokens und unerwünschte Laufzeitdateien ergänzt.
-- Dependabot für Python-, Docker- und GitHub-Actions-Abhängigkeiten eingerichtet.
 - `requirements.lock` mit vollständig aufgelösten Versionen und Paket-Hashes ergänzt; der Docker-Build installiert mit `--require-hashes`.
 - Python- und nginx-Basisimages auf konkrete Versionen und Multi-Plattform-Digests festgelegt.
 - Updateprozess um Lizenz-, Richtlinien-, Repository- und Testdateien erweitert.

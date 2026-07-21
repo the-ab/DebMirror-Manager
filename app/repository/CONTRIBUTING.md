@@ -23,7 +23,7 @@ python -m pip install --require-hashes -r requirements.lock
 python -m pip install -r requirements-dev.txt
 ```
 
-Run the same primary checks as CI:
+Run the primary checks locally:
 
 ```bash
 python -m compileall -q app tests scripts
@@ -53,6 +53,6 @@ docker compose config --quiet
 
 ## Licensing
 
-Contributions are accepted under `AGPL-3.0-or-later`, the license of this project. By submitting a contribution, you confirm that you have the right to provide it under that license.
+Contributions are accepted under the Apache License 2.0 (`Apache-2.0`), the license of this project. By submitting a contribution, you confirm that you have the right to provide it under that license.
 
 Portions of the project were developed with assistance from OpenAI ChatGPT. All contributions, including AI-assisted contributions, must be reviewed, understood, adapted where necessary, and tested by the submitting human.

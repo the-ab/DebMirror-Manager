@@ -23,15 +23,13 @@ def test_repository_publication_files_exist():
         "CONTRIBUTING.md",
         "THIRD-PARTY-NOTICES.md",
         "requirements.lock",
-        ".github/dependabot.yml",
-        ".github/workflows/ci.yml",
         "README.md",
         "README.de.md",
         "RELEASE_NOTES.md",
         "RELEASE_NOTES.de.md",
     }
     assert all((project_root / name).is_file() for name in required)
-    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.80"
+    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.81"
 
 
 def test_setup_cannot_be_forced_after_initial_user(client, database_cleanup):
@@ -104,10 +102,22 @@ def test_security_headers_are_present(client, database_cleanup):
     assert "default-src 'self'" in response.headers["Content-Security-Policy"]
 
 
-def test_source_offer_route_exists(client):
+def test_source_download_route_is_removed(client):
     response = client.get("/source", follow_redirects=False)
-    assert response.status_code in {200, 302, 404}
-    assert response.status_code != 401
+    assert response.status_code == 404
+
+
+def test_no_github_automation_or_source_archive_build():
+    project_root = Path(__file__).resolve().parents[1]
+    assert not (project_root / ".github" / "dependabot.yml").exists()
+    assert not (project_root / ".github" / "workflows" / "ci.yml").exists()
+    dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY ." not in dockerfile
+    assert "debmirror-manager-source" not in dockerfile
+    assert "source_code_download" not in (project_root / "app" / "main.py").read_text(encoding="utf-8")
+    license_text = (project_root / "LICENSE").read_text(encoding="utf-8")
+    assert "Apache License" in license_text
+    assert "Version 2.0" in license_text
 
 
 def test_compatibility_repository_copies_match():

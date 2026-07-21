@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import base64
@@ -125,8 +125,6 @@ BACKUP_KDF_N = 2 ** 15
 BACKUP_KDF_R = 8
 BACKUP_KDF_P = 1
 OUTBOUND_PRIVATE_HOST_ALLOWLIST = [item.strip().lower() for item in os.environ.get("OUTBOUND_PRIVATE_HOST_ALLOWLIST", "").split(",") if item.strip()]
-SOURCE_ARCHIVE_PATH = Path(os.environ.get("SOURCE_ARCHIVE_PATH", "/app/debmirror-manager-source.tar.gz"))
-SOURCE_CODE_URL = os.environ.get("SOURCE_CODE_URL", "").strip()
 
 # Lokale Zeit für Logeinträge und WebUI-Ausgaben. Falls die Zone ungültig ist,
 # bleibt die Python-Standardzeit aktiv, aber die Anwendung bricht nicht ab.
@@ -4967,20 +4965,6 @@ def inject_globals():
 
 
 
-@app.route("/source")
-def source_code_download():
-    """Provide the corresponding source archive required by AGPL deployments."""
-    if SOURCE_ARCHIVE_PATH.is_file():
-        return send_file(
-            SOURCE_ARCHIVE_PATH,
-            as_attachment=True,
-            download_name=f"debmirror-manager-source-v{APP_VERSION}.tar.gz",
-            mimetype="application/gzip",
-            conditional=True,
-        )
-    if SOURCE_CODE_URL:
-        return redirect(SOURCE_CODE_URL)
-    abort(404, description="Source archive is not available in this installation.")
 
 @app.route("/")
 @require_auth

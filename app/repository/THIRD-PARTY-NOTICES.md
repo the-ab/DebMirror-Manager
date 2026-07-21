@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-DebMirror Manager's own source code is licensed under `AGPL-3.0-or-later`; see `LICENSE`.
+DebMirror Manager's own source code is licensed under the Apache License 2.0 (`Apache-2.0`); see `LICENSE`.
 
 This file summarizes the principal third-party software used directly by the project. It is not a replacement for the copyright and license files distributed by each dependency or operating-system package.
 

@@ -41,12 +41,7 @@ COPY README.md RELEASE_NOTES.md VERSION /app/
 COPY app/repository/LICENSE app/repository/THIRD-PARTY-NOTICES.md /app/
 COPY app/docs/README.de.md app/docs/RELEASE_NOTES.de.md /app/
 
-# Include the corresponding source in the runtime image so every network user
-# can obtain the exact source for this build through /source (AGPL section 13).
-COPY . /usr/share/debmirror-manager-source
-RUN tar -C /usr/share -czf /app/debmirror-manager-source.tar.gz debmirror-manager-source \
-    && chmod 0444 /app/debmirror-manager-source.tar.gz \
-    && mkdir -p /app/data /app/logs /app/keyrings /import-scripts /mirror
+RUN mkdir -p /app/data /app/logs /app/keyrings /import-scripts /mirror
 
 EXPOSE 8080
 CMD ["gunicorn", "--config", "/app/app/gunicorn.conf.py", "app.main:app"]

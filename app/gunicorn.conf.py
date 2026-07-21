@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 """Gunicorn-Konfiguration für DebMirror Manager.
 
 Die Anwendung besitzt einen internen Scheduler und In-Process-Jobstatus. Deshalb
