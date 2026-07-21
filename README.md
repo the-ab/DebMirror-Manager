@@ -2,7 +2,7 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.82**
+Current version: **0.1.83**
 
 ## Project status, affiliation, and licensing
 
@@ -43,7 +43,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.82.zip
+unzip debmirror-manager-v0.1.83.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -198,6 +198,16 @@ The form prevents contradictory or unsafe combinations. Examples include:
 - host, port, module path, and schedule fields validated independently
 
 Passwords are encrypted in SQLite, never returned to forms or APIs, and are not written to job command displays or logs.
+
+### HTTP/HTTPS timestamps and mirror timestamp sync
+
+After a successful non-dry-run HTTP or HTTPS mirror job, DebMirror Manager attempts to apply the upstream `Last-Modified` timestamp to files created or changed during that specific run. The automatic pass only scans files whose local modification time changed since the job started, so it does not perform a complete additional traversal of an existing mirror.
+
+Each file is checked with HTTP `HEAD` first. If the upstream server does not support or blocks `HEAD`, or if the header is absent, one minimal `GET` request with `Range: bytes=0-0` is attempted. A valid `Last-Modified` value changes only the local modification time. File contents, signatures, ownership, and permissions are not changed. Missing or invalid headers, HTTP errors, and individual network failures are logged and skipped and never turn an otherwise successful mirror job into an error.
+
+Directories are included as well. If the directory URL ending in `/` exposes a valid `Last-Modified` header, that timestamp is used directly. Otherwise the directory may inherit the newest timestamp of a directly contained file or directory that was successfully synchronized. If neither source is available, the existing directory timestamp remains unchanged.
+
+A full one-time pass for existing content is available under **Profiles → Actions → Mirror timestamp sync** and on the profile detail page. It runs as a separate queued job with a live log and stop support and is available only for HTTP and HTTPS profiles. A full pass over a large mirror can generate many HTTP requests; concurrency and request timeout can be limited with `MIRROR_TIME_SYNC_WORKERS` and `MIRROR_TIME_SYNC_TIMEOUT_SECONDS`.
 
 ## Profile generator
 

@@ -1,5 +1,16 @@
 # Release Notes
 
+## v0.1.83
+
+- Added automatic preservation of HTTP/HTTPS `Last-Modified` timestamps for files created or changed during a successful non-dry-run mirror job.
+- Added `HEAD` checks with a safe fallback to a minimal `GET` request using `Range: bytes=0-0`. Missing or invalid headers, HTTP errors, and individual network failures are logged and skipped and do not fail the timestamp pass or the original mirror job.
+- Directory timestamps are taken from the directory URL when available. Otherwise a directory may inherit the newest timestamp of a successfully synchronized direct child; with no usable value its existing timestamp is retained.
+- Added the **Mirror timestamp sync** profile action for a complete one-time pass over existing HTTP/HTTPS mirrors. It runs as a separate global-queue job with live log and stop support.
+- Timestamp synchronization changes only local modification times and leaves content, signatures, ownership, and permissions unchanged.
+- Concurrency and request timeout can be configured through `MIRROR_TIME_SYNC_WORKERS` and `MIRROR_TIME_SYNC_TIMEOUT_SECONDS`.
+- Updated English and German documentation and added regression tests.
+- Set VERSION to 0.1.83.
+
 ## v0.1.82
 
 - Fixed repository files being created with permissions such as `0600` and directories with `0700` after the security hardening introduced a global `umask 077`.

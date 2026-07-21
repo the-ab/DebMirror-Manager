@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import csv
 import datetime as dt
 import functools
 from email.message import EmailMessage
+from email.utils import parsedate_to_datetime
 import hashlib
 import hmac
 import html
@@ -21,6 +23,7 @@ import socket
 import stat
 import smtplib
 import sqlite3
+import ssl
 import tempfile
 import subprocess
 import threading
@@ -133,6 +136,10 @@ JOB_OUTPUT_UMASK = 0o022
 MIRROR_PERMISSION_MIGRATION_MARKER = APP_DATA_DIR / ".mirror-permissions-v0.1.82"
 MIRROR_PERMISSION_MIGRATION_LOCK = threading.Lock()
 MIRROR_PERMISSION_MIGRATION_STARTED = False
+MIRROR_TIME_SYNC_WORKERS = max(1, min(16, int(os.environ.get("MIRROR_TIME_SYNC_WORKERS", "4"))))
+MIRROR_TIME_SYNC_TIMEOUT_SECONDS = max(3, min(120, int(os.environ.get("MIRROR_TIME_SYNC_TIMEOUT_SECONDS", "15"))))
+MIRROR_TIME_SYNC_RECENT_TOLERANCE_SECONDS = max(1, min(60, int(os.environ.get("MIRROR_TIME_SYNC_RECENT_TOLERANCE_SECONDS", "5"))))
+INTERNAL_MIRROR_TIME_SYNC_COMMAND = "__debmirror_manager_mirror_time_sync__"
 
 # Lokale Zeit für Logeinträge und WebUI-Ausgaben. Falls die Zone ungültig ist,
 # bleibt die Python-Standardzeit aktiv, aber die Anwendung bricht nicht ab.
@@ -216,6 +223,8 @@ if env_bool("TRUST_PROXY_HEADERS", False):
 
 RUNNING_PROCESSES: Dict[int, subprocess.Popen] = {}
 RUNNING_PROCESSES_LOCK = threading.Lock()
+INTERNAL_JOB_CANCEL_EVENTS: Dict[int, threading.Event] = {}
+INTERNAL_JOB_CANCEL_EVENTS_LOCK = threading.Lock()
 SCHEDULER_LOCK = threading.Lock()
 JOB_WORKER_STARTED = False
 JOB_WORKER_LOCK = threading.Lock()
@@ -3840,6 +3849,377 @@ def shell_join(args: Iterable[str]) -> str:
     return " ".join(shlex.quote(a) for a in args)
 
 
+class MirrorTimeSyncCancelled(RuntimeError):
+    pass
+
+
+def mirror_time_sync_supported(mirror: Dict[str, Any]) -> bool:
+    return str(mirror.get("method") or "").strip().lower() in {"http", "https"}
+
+
+def mirror_upstream_base_url(mirror: Dict[str, Any]) -> str:
+    method = str(mirror.get("method") or "").strip().lower()
+    if method not in {"http", "https"}:
+        raise ValueError("Der Mirror-Zeitabgleich ist nur für HTTP- und HTTPS-Profile verfügbar.")
+    host = str(mirror.get("host") or "").strip()
+    if not host:
+        raise ValueError("Im Mirror-Profil fehlt der Quellhost.")
+    root = normalize_root_path(str(mirror.get("root_path") or "")).strip("/")
+    if root == ".":
+        root = ""
+    quoted_root = urllib.parse.quote(root, safe="/-._~") if root else ""
+    path = f"/{quoted_root}/" if quoted_root else "/"
+    return urllib.parse.urlunsplit((method, host, path, "", ""))
+
+
+def mirror_upstream_url(mirror: Dict[str, Any], relative_path: str, *, directory: bool = False) -> str:
+    clean = str(relative_path or "").replace("\\", "/").lstrip("/")
+    parts = [part for part in clean.split("/") if part not in {"", "."}]
+    if any(part == ".." for part in parts):
+        raise ValueError("Ungültiger relativer Mirror-Pfad.")
+    encoded = "/".join(urllib.parse.quote(part, safe="-._~") for part in parts)
+    base = mirror_upstream_base_url(mirror)
+    url = urllib.parse.urljoin(base, encoded)
+    if directory and not url.endswith("/"):
+        url += "/"
+    return url
+
+
+def mirror_timestamp_ssl_context(mirror: Dict[str, Any]) -> ssl.SSLContext:
+    flags = {item.split("=", 1)[0] for item in parse_extra_options(str(mirror.get("extra_options") or ""))}
+    if "--disable-ssl-verification" in flags:
+        return ssl._create_unverified_context()  # noqa: SLF001 - explicit profile option
+    return ssl.create_default_context()
+
+
+class MirrorTimestampRedirectHandler(SafeRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is None:
+            return None
+        old_url = urllib.parse.urlsplit(req.full_url)
+        new_url = urllib.parse.urlsplit(redirected.full_url)
+        host_changed = bool(old_url.hostname and new_url.hostname and old_url.hostname.lower() != new_url.hostname.lower())
+        insecure_downgrade = old_url.scheme.lower() == "https" and new_url.scheme.lower() == "http"
+        if host_changed or insecure_downgrade:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def mirror_timestamp_opener(mirror: Dict[str, Any]):
+    handlers: List[Any] = [
+        MirrorTimestampRedirectHandler(
+            allowed_schemes=("http", "https"),
+            allow_private=True,
+            allow_credentials=False,
+        ),
+        urllib.request.HTTPSHandler(context=mirror_timestamp_ssl_context(mirror)),
+    ]
+    return urllib.request.build_opener(*handlers)
+
+
+def parse_http_last_modified(value: str) -> Optional[float]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = parsedate_to_datetime(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        timestamp = parsed.timestamp()
+        if timestamp <= 0 or timestamp > time.time() + 86400:
+            return None
+        return timestamp
+    except Exception:
+        return None
+
+
+def mirror_timestamp_request_headers(mirror: Dict[str, Any]) -> Dict[str, str]:
+    headers = {"User-Agent": f"{APP_NAME}/{APP_VERSION} mirror-time-sync"}
+    username = str(mirror.get("remote_user") or "").strip()
+    password = mirror_remote_password_plain(mirror)
+    if username:
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
+    return headers
+
+
+def fetch_remote_last_modified(
+    opener: Any,
+    mirror: Dict[str, Any],
+    url: str,
+    request_headers_base: Optional[Dict[str, str]] = None,
+) -> Tuple[Optional[float], str]:
+    headers = dict(request_headers_base or mirror_timestamp_request_headers(mirror))
+    for method in ("HEAD", "GET"):
+        request_headers = dict(headers)
+        if method == "GET":
+            request_headers["Range"] = "bytes=0-0"
+        request_obj = urllib.request.Request(url, headers=request_headers, method=method)
+        try:
+            validate_outbound_url(
+                url,
+                allowed_schemes=("http", "https"),
+                allow_private=True,
+                allow_credentials=False,
+            )
+            with opener.open(request_obj, timeout=MIRROR_TIME_SYNC_TIMEOUT_SECONDS) as response:
+                timestamp = parse_http_last_modified(response.headers.get("Last-Modified", ""))
+                if timestamp is not None:
+                    return timestamp, "ok"
+                if method == "HEAD":
+                    continue
+                return None, "missing"
+        except urllib.error.HTTPError as exc:
+            if method == "HEAD" and exc.code in {400, 403, 405, 501}:
+                continue
+            return None, f"http-{exc.code}"
+        except Exception as exc:
+            return None, f"error:{type(exc).__name__}"
+    return None, "unsupported"
+
+
+def mirror_time_sync_candidates(target: Path, *, since_epoch: Optional[float] = None) -> Tuple[List[Path], List[Path]]:
+    files: List[Path] = []
+    directories: List[Path] = []
+    threshold = None if since_epoch is None else float(since_epoch) - MIRROR_TIME_SYNC_RECENT_TOLERANCE_SECONDS
+    for root, dirnames, filenames in os.walk(target, topdown=True, followlinks=False):
+        root_path = Path(root)
+        dirnames[:] = [
+            name for name in dirnames
+            if not name.startswith(".") and not (root_path / name).is_symlink()
+        ]
+        directories.append(root_path)
+        for filename in filenames:
+            if filename.startswith("."):
+                continue
+            path = root_path / filename
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if threshold is not None and path.stat().st_mtime < threshold:
+                    continue
+            except OSError:
+                continue
+            files.append(path)
+    return files, directories
+
+
+def synchronize_mirror_timestamps(
+    mirror: Dict[str, Any],
+    *,
+    since_epoch: Optional[float] = None,
+    log: Optional[Any] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> Dict[str, Any]:
+    """Synchronize local mtimes from HTTP Last-Modified without affecting job success.
+
+    Files are queried individually. Directories are queried with a trailing slash;
+    when a server does not provide a directory Last-Modified value, a directory may
+    inherit the newest successfully synchronized child timestamp. Missing headers,
+    unsupported HEAD requests, HTTP errors and network failures are counted and
+    skipped. They are never treated as a mirror download failure.
+    """
+    if not mirror_time_sync_supported(mirror):
+        raise ValueError("Der Mirror-Zeitabgleich ist nur für HTTP- und HTTPS-Profile verfügbar.")
+    target = Path(normalize_target_path(str(mirror.get("target_path") or "")))
+    if not target.exists() or not target.is_dir():
+        raise ValueError("Das lokale Mirror-Zielverzeichnis ist nicht vorhanden.")
+    request_headers_base = mirror_timestamp_request_headers(mirror)
+    thread_local = threading.local()
+
+    def worker_opener():
+        opener = getattr(thread_local, "opener", None)
+        if opener is None:
+            opener = mirror_timestamp_opener(mirror)
+            thread_local.opener = opener
+        return opener
+
+    files, all_directories = mirror_time_sync_candidates(target, since_epoch=since_epoch)
+    if since_epoch is None:
+        directories = all_directories
+    else:
+        directory_set = {target}
+        for path in files:
+            parent = path.parent
+            while parent == target or target in parent.parents:
+                directory_set.add(parent)
+                if parent == target:
+                    break
+                parent = parent.parent
+        directories = sorted(directory_set, key=lambda item: (len(item.parts), str(item)))
+
+    summary: Dict[str, Any] = {
+        "files_checked": len(files),
+        "files_updated": 0,
+        "files_missing_header": 0,
+        "files_failed": 0,
+        "directories_checked": len(directories),
+        "directories_updated": 0,
+        "directories_derived": 0,
+        "directories_missing_header": 0,
+        "directories_failed": 0,
+        "examples": [],
+    }
+    synchronized_paths: set[Path] = set()
+    result_lock = threading.Lock()
+
+    def check_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise MirrorTimeSyncCancelled("Mirror-Zeitabgleich wurde gestoppt.")
+
+    def sync_file(path: Path) -> Tuple[Path, Optional[float], str]:
+        check_cancelled()
+        relative = path.relative_to(target).as_posix()
+        timestamp, state = fetch_remote_last_modified(
+            worker_opener(), mirror, mirror_upstream_url(mirror, relative), request_headers_base
+        )
+        if timestamp is not None:
+            try:
+                current = path.stat()
+                os.utime(path, (current.st_atime, timestamp), follow_symlinks=False)
+                return path, timestamp, "updated"
+            except OSError as exc:
+                return path, None, f"error:{type(exc).__name__}"
+        return path, None, state
+
+    if log:
+        mode_label = "vollständig" if since_epoch is None else "nur neue/geänderte Dateien"
+        log.write(f"[{now_iso()}] Mirror-Zeitabgleich gestartet ({mode_label}).\n")
+        log.write(f"[{now_iso()}] Fehlende Last-Modified-Header oder einzelne HTTP-Fehler werden übersprungen und brechen den Job nicht ab.\n")
+        log.flush()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MIRROR_TIME_SYNC_WORKERS, thread_name_prefix="mirror-time-sync") as executor:
+        futures = [executor.submit(sync_file, path) for path in files]
+        for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            check_cancelled()
+            path, timestamp, state = future.result()
+            with result_lock:
+                if state == "updated" and timestamp is not None:
+                    summary["files_updated"] += 1
+                    synchronized_paths.add(path)
+                elif state == "missing":
+                    summary["files_missing_header"] += 1
+                else:
+                    summary["files_failed"] += 1
+                    if len(summary["examples"]) < 10:
+                        summary["examples"].append(f"{path.relative_to(target)}: {state}")
+            if log and (index % 250 == 0 or index == len(files)):
+                log.write(f"[{now_iso()}] Dateien geprüft: {index}/{len(files)} · Zeitstempel übernommen: {summary['files_updated']}\n")
+                log.flush()
+
+    # Directory requests are fetched in parallel after file updates. Applying
+    # timestamps remains bottom-up so a directory without its own server header
+    # can inherit a source-derived timestamp from a synchronized direct child.
+    def fetch_directory(directory: Path) -> Tuple[Path, Optional[float], str]:
+        check_cancelled()
+        relative = "" if directory == target else directory.relative_to(target).as_posix()
+        timestamp, state = fetch_remote_last_modified(
+            worker_opener(), mirror, mirror_upstream_url(mirror, relative, directory=True), request_headers_base
+        )
+        return directory, timestamp, state
+
+    directory_results: Dict[Path, Tuple[Optional[float], str]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MIRROR_TIME_SYNC_WORKERS, thread_name_prefix="mirror-dir-time-sync") as executor:
+        futures = [executor.submit(fetch_directory, directory) for directory in directories]
+        for index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            check_cancelled()
+            directory, timestamp, state = future.result()
+            directory_results[directory] = (timestamp, state)
+            if log and (index % 250 == 0 or index == len(directories)):
+                log.write(f"[{now_iso()}] Verzeichnisse geprüft: {index}/{len(directories)}\n")
+                log.flush()
+
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        check_cancelled()
+        relative = "" if directory == target else directory.relative_to(target).as_posix()
+        timestamp, state = directory_results.get(directory, (None, "missing"))
+        applied = False
+        if timestamp is not None:
+            try:
+                current = directory.stat()
+                os.utime(directory, (current.st_atime, timestamp), follow_symlinks=False)
+                synchronized_paths.add(directory)
+                summary["directories_updated"] += 1
+                applied = True
+            except OSError as exc:
+                state = f"error:{type(exc).__name__}"
+        if not applied:
+            child_times: List[float] = []
+            try:
+                for child in directory.iterdir():
+                    if child in synchronized_paths and not child.is_symlink():
+                        child_times.append(child.stat().st_mtime)
+            except OSError:
+                child_times = []
+            if child_times:
+                try:
+                    current = directory.stat()
+                    os.utime(directory, (current.st_atime, max(child_times)), follow_symlinks=False)
+                    synchronized_paths.add(directory)
+                    summary["directories_derived"] += 1
+                    applied = True
+                except OSError as exc:
+                    state = f"error:{type(exc).__name__}"
+        if not applied:
+            if state == "missing":
+                summary["directories_missing_header"] += 1
+            else:
+                summary["directories_failed"] += 1
+                if len(summary["examples"]) < 10:
+                    label = relative or "."
+                    summary["examples"].append(f"{label}/: {state}")
+
+    if log:
+        log.write(
+            f"[{now_iso()}] Mirror-Zeitabgleich abgeschlossen: "
+            f"Dateien {summary['files_updated']}/{summary['files_checked']} übernommen, "
+            f"ohne Header {summary['files_missing_header']}, übersprungen/fehlerhaft {summary['files_failed']}; "
+            f"Verzeichnisse direkt {summary['directories_updated']}, aus Kindzeitstempeln {summary['directories_derived']}, "
+            f"ohne verwertbaren Zeitstempel {summary['directories_missing_header'] + summary['directories_failed']}.\n"
+        )
+        for example in summary["examples"]:
+            log.write(f"[{now_iso()}] Hinweis: {example}\n")
+        log.flush()
+    return summary
+
+
+def start_mirror_time_sync_job(mirror_id: int, source: str = "manual-time-sync") -> int:
+    mirror = get_mirror(mirror_id)
+    if not mirror:
+        raise ValueError("Mirror nicht gefunden.")
+    if not mirror_time_sync_supported(mirror):
+        raise ValueError("Der Mirror-Zeitabgleich ist nur für HTTP- und HTTPS-Profile verfügbar.")
+    target = Path(normalize_target_path(str(mirror.get("target_path") or "")))
+    if not target.exists() or not target.is_dir():
+        raise ValueError("Das lokale Mirror-Zielverzeichnis ist nicht vorhanden.")
+    active_for_mirror = get_running_job_for_mirror(mirror_id)
+    if active_for_mirror:
+        raise RuntimeError(f"Für diesen Mirror ist bereits Job #{active_for_mirror['id']} im Zustand {active_for_mirror['status']} vorhanden.")
+    queued_at = now_iso()
+    safe_name = secure_filename(str(mirror.get("name") or "")) or f"mirror-{mirror_id}"
+    log_path = APP_LOG_DIR / f"{local_now().strftime('%Y%m%d-%H%M%S')}-{safe_name}-time-sync.log"
+    cmd = [INTERNAL_MIRROR_TIME_SYNC_COMMAND, str(mirror_id)]
+    with db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, job_type, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (?, ?, 'time_sync', 'queued', 0, ?, ?, ?, ?, ?)
+            """,
+            (mirror_id, mirror["name"], "Mirror-Zeitabgleich", json.dumps(cmd, ensure_ascii=False), str(log_path), queued_at, source),
+        )
+        job_id = int(cur.lastrowid)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8", errors="replace") as log:
+        log.write(f"[{queued_at}] DebMirror Manager {APP_VERSION}\n")
+        log.write(f"[{queued_at}] Quelle: {source}\n")
+        log.write(f"[{queued_at}] Job-Typ: mirror-time-sync\n")
+        log.write(f"[{queued_at}] Profil: {mirror['name']}\n")
+        log.write(f"[{queued_at}] Status: queued\n")
+        log.write(f"[{queued_at}] Hinweis: Der Zeitabgleich verändert nur lokale Änderungszeiten, keine Inhalte, Signaturen oder Dateirechte.\n\n")
+    ensure_job_worker_thread()
+    return job_id
+
 # ---------------------------------------------------------------------------
 # Job execution
 # ---------------------------------------------------------------------------
@@ -3972,85 +4352,114 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
     status = "error"
     error_message = ""
     with db() as con:
-        job_meta_row = con.execute("SELECT job_type, script_name, mirror_id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        job_meta_row = con.execute("SELECT job_type, script_name, mirror_id, dry_run FROM jobs WHERE id=?", (job_id,)).fetchone()
     job_type = (job_meta_row["job_type"] if job_meta_row else "mirror") or "mirror"
     script_name = (job_meta_row["script_name"] if job_meta_row else "") or ""
     mirror_id_for_job = int(job_meta_row["mirror_id"]) if job_meta_row and job_meta_row["mirror_id"] is not None else None
+    job_dry_run = bool(int(job_meta_row["dry_run"] or 0)) if job_meta_row else False
     auth_config_path: Optional[Path] = None
     process_env = os.environ.copy()
+    cancel_event: Optional[threading.Event] = None
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8", errors="replace") as log:
         started_time = now_iso()
+        started_epoch = time.time()
         log.write(f"[{started_time}] Status: running\n")
         log.flush()
         try:
-            if job_type == "mirror":
+            if job_type == "time_sync":
                 mirror_for_job = get_mirror(mirror_id_for_job) if mirror_id_for_job is not None else None
-                if mirror_for_job:
-                    auth_config_path = create_job_auth_config(mirror_for_job, job_id)
-                    if auth_config_path:
-                        cmd = list(cmd)
-                        target_arg = cmd.pop() if cmd else ""
-                        cmd.append(f"--config-file={auth_config_path}")
-                        if target_arg:
-                            cmd.append(target_arg)
-                    if bool(int(mirror_for_job.get("rsync_ssh_enabled") or 0)):
-                        log.write(f"[{now_iso()}] Rsync verwendet eine explizite SSH-Remote-Shell mit Schlüssel, BatchMode, IdentitiesOnly und persistenter known_hosts-Datei.\n")
-                    if auth_config_path:
-                        log.write(f"[{now_iso()}] Remote-Zugangsdaten werden über eine temporäre, geschützte debmirror-Konfigurationsdatei mit Dateimodus 0600 bereitgestellt.\n")
-                        log.flush()
-                dep_checks = runtime_dependency_checks()
-                missing_required = [item for item in dep_checks if item["required"] and not item["found"]]
-                missing_optional = [item for item in dep_checks if not item["required"] and not item["found"]]
-                if missing_optional:
-                    log.write(f"[{now_iso()}] WARNUNG: Optionale Programme fehlen im Container: {', '.join(item['name'] for item in missing_optional)}\n")
-                    log.write(f"[{now_iso()}] Hinweis: Bei fehlendem patch/ed fällt debmirror bei --diff=use auf --diff=none zurück.\n")
-                    log.flush()
-                if missing_required:
-                    exit_code = 127
-                    status = "error"
-                    error_message = "Pflichtprogramme fehlen im Container: " + ", ".join(item["name"] for item in missing_required)
-                    log.write(f"[{now_iso()}] FEHLER: {error_message}\n")
-                    log.write(f"[{now_iso()}] Aktion: Container mit der aktuellen Version neu bauen/starten, damit die fehlenden Pakete installiert werden.\n")
-                    log.flush()
-                    return
-            else:
-                log.write(f"[{now_iso()}] Benutzerskript wird ausgeführt: {script_name}\n")
-                log.flush()
-            process_umask = job_process_umask(job_type, script_name)
-            if process_umask == JOB_OUTPUT_UMASK:
-                log.write(f"[{now_iso()}] Prozess-umask: 022 (Mirror-Ausgaben standardmäßig Dateien 0644, Verzeichnisse 0755).\n")
-            else:
-                log.write(f"[{now_iso()}] Prozess-umask: 077 (Skriptausgaben bleiben standardmäßig nur für den Eigentümer zugänglich).\n")
-            log.flush()
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
-                start_new_session=True,
-                env=process_env,
-                umask=process_umask,
-            )
-            with RUNNING_PROCESSES_LOCK:
-                RUNNING_PROCESSES[job_id] = proc
-            with db() as con:
-                con.execute("UPDATE jobs SET status='running', pid=?, started_at=? WHERE id=?", (proc.pid, started_time, job_id))
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                log.write(line)
-                log.flush()
-            exit_code = proc.wait()
-            if exit_code == 0:
+                if not mirror_for_job:
+                    raise ValueError("Mirror-Profil für den Zeitabgleich wurde nicht gefunden.")
+                cancel_event = threading.Event()
+                with INTERNAL_JOB_CANCEL_EVENTS_LOCK:
+                    INTERNAL_JOB_CANCEL_EVENTS[job_id] = cancel_event
+                with db() as con:
+                    con.execute("UPDATE jobs SET status='running', pid=NULL, started_at=? WHERE id=?", (started_time, job_id))
+                synchronize_mirror_timestamps(mirror_for_job, log=log, cancel_event=cancel_event)
+                exit_code = 0
                 status = "success"
-            elif exit_code < 0:
-                status = "stopped"
-                error_message = f"Prozess wurde durch Signal {-exit_code} beendet."
             else:
-                status = "error"
-                error_message = f"{'Benutzerskript' if job_type == 'script' else 'debmirror'} wurde mit Exit-Code {exit_code} beendet."
+                mirror_for_job = None
+                if job_type == "mirror":
+                    mirror_for_job = get_mirror(mirror_id_for_job) if mirror_id_for_job is not None else None
+                    if mirror_for_job:
+                        auth_config_path = create_job_auth_config(mirror_for_job, job_id)
+                        if auth_config_path:
+                            cmd = list(cmd)
+                            target_arg = cmd.pop() if cmd else ""
+                            cmd.append(f"--config-file={auth_config_path}")
+                            if target_arg:
+                                cmd.append(target_arg)
+                        if bool(int(mirror_for_job.get("rsync_ssh_enabled") or 0)):
+                            log.write(f"[{now_iso()}] Rsync verwendet eine explizite SSH-Remote-Shell mit Schlüssel, BatchMode, IdentitiesOnly und persistenter known_hosts-Datei.\n")
+                        if auth_config_path:
+                            log.write(f"[{now_iso()}] Remote-Zugangsdaten werden über eine temporäre, geschützte debmirror-Konfigurationsdatei mit Dateimodus 0600 bereitgestellt.\n")
+                            log.flush()
+                    dep_checks = runtime_dependency_checks()
+                    missing_required = [item for item in dep_checks if item["required"] and not item["found"]]
+                    missing_optional = [item for item in dep_checks if not item["required"] and not item["found"]]
+                    if missing_optional:
+                        log.write(f"[{now_iso()}] WARNUNG: Optionale Programme fehlen im Container: {', '.join(item['name'] for item in missing_optional)}\n")
+                        log.write(f"[{now_iso()}] Hinweis: Bei fehlendem patch/ed fällt debmirror bei --diff=use auf --diff=none zurück.\n")
+                        log.flush()
+                    if missing_required:
+                        exit_code = 127
+                        status = "error"
+                        error_message = "Pflichtprogramme fehlen im Container: " + ", ".join(item["name"] for item in missing_required)
+                        log.write(f"[{now_iso()}] FEHLER: {error_message}\n")
+                        log.write(f"[{now_iso()}] Aktion: Container mit der aktuellen Version neu bauen/starten, damit die fehlenden Pakete installiert werden.\n")
+                        log.flush()
+                        return
+                else:
+                    log.write(f"[{now_iso()}] Benutzerskript wird ausgeführt: {script_name}\n")
+                    log.flush()
+                process_umask = job_process_umask(job_type, script_name)
+                if process_umask == JOB_OUTPUT_UMASK:
+                    log.write(f"[{now_iso()}] Prozess-umask: 022 (Mirror-Ausgaben standardmäßig Dateien 0644, Verzeichnisse 0755).\n")
+                else:
+                    log.write(f"[{now_iso()}] Prozess-umask: 077 (Skriptausgaben bleiben standardmäßig nur für den Eigentümer zugänglich).\n")
+                log.flush()
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True,
+                    start_new_session=True,
+                    env=process_env,
+                    umask=process_umask,
+                )
+                with RUNNING_PROCESSES_LOCK:
+                    RUNNING_PROCESSES[job_id] = proc
+                with db() as con:
+                    con.execute("UPDATE jobs SET status='running', pid=?, started_at=? WHERE id=?", (proc.pid, started_time, job_id))
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    log.write(line)
+                    log.flush()
+                exit_code = proc.wait()
+                if exit_code == 0:
+                    status = "success"
+                    if job_type == "mirror" and not job_dry_run and mirror_for_job and mirror_time_sync_supported(mirror_for_job):
+                        try:
+                            synchronize_mirror_timestamps(mirror_for_job, since_epoch=started_epoch, log=log)
+                        except Exception as exc:  # timestamp preservation is best-effort
+                            log.write(f"[{now_iso()}] WARNUNG: Automatischer Mirror-Zeitabgleich konnte nicht vollständig ausgeführt werden: {exc}\n")
+                            log.write(f"[{now_iso()}] Der Mirror-Job bleibt erfolgreich; Inhalte und Signaturprüfung sind davon nicht betroffen.\n")
+                            log.flush()
+                elif exit_code < 0:
+                    status = "stopped"
+                    error_message = f"Prozess wurde durch Signal {-exit_code} beendet."
+                else:
+                    status = "error"
+                    error_message = f"{'Benutzerskript' if job_type == 'script' else 'debmirror'} wurde mit Exit-Code {exit_code} beendet."
+        except MirrorTimeSyncCancelled as exc:
+            exit_code = -15
+            status = "stopped"
+            error_message = str(exc)
+            log.write(f"[{now_iso()}] {error_message}\n")
         except FileNotFoundError:
             exit_code = 127
             status = "error"
@@ -4064,6 +4473,8 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
         finally:
             with RUNNING_PROCESSES_LOCK:
                 RUNNING_PROCESSES.pop(job_id, None)
+            with INTERNAL_JOB_CANCEL_EVENTS_LOCK:
+                INTERNAL_JOB_CANCEL_EVENTS.pop(job_id, None)
             for auth_path, label in ((auth_config_path, "Auth-Konfiguration"),):
                 if auth_path is None:
                     continue
@@ -4093,7 +4504,6 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
             except Exception as exc:
                 add_event("warning", f"Benachrichtigung für Job #{job_id} fehlgeschlagen: {exc}")
 
-
 def stop_job(job_id: int) -> None:
     with db() as con:
         row = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -4108,6 +4518,13 @@ def stop_job(job_id: int) -> None:
                 pass
             return
         con.execute("UPDATE jobs SET status='stopping' WHERE id=?", (job_id,))
+
+    if (row["job_type"] or "") == "time_sync":
+        with INTERNAL_JOB_CANCEL_EVENTS_LOCK:
+            cancel_event = INTERNAL_JOB_CANCEL_EVENTS.get(job_id)
+        if cancel_event is not None:
+            cancel_event.set()
+        return
 
     proc: Optional[subprocess.Popen]
     with RUNNING_PROCESSES_LOCK:
@@ -4332,6 +4749,8 @@ def job_source_label(source: str) -> str:
         return "Legacy-Zeitplan"
     if source in {"manual", "manual-script"}:
         return "manuell"
+    if source == "manual-time-sync":
+        return "Mirror-Zeitabgleich"
     if source.startswith("api"):
         return "API"
     return source
@@ -5101,6 +5520,7 @@ def dashboard():
                 enrich_job_duration(m["running_job"])
             m["dashboard_status"] = dashboard_entity_status("mirror", m)
             m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
+            m["time_sync_supported"] = mirror_time_sync_supported(m)
         except Exception as exc:
             log_webui_exception(f"dashboard mirror job state {m.get('name')}", exc)
             m["last_job"] = None
@@ -5108,6 +5528,7 @@ def dashboard():
             m["schedule_display"] = schedule_display_for_mirror(m) if m.get("id") else "-"
             m["dashboard_status"] = {"label": "error", "class": "error", "title": "Status konnte nicht ermittelt werden"}
             m["start_block_reason"] = "Status konnte nicht ermittelt werden"
+            m["time_sync_supported"] = mirror_time_sync_supported(m)
         if "start_block_reason" not in m:
             m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
         m["size_info"] = mirror_stats(m)
@@ -5202,6 +5623,7 @@ def mirrors_page():
         if "start_block_reason" not in m:
             m["start_block_reason"] = mirror_start_block_reason(m, dry_run=False)
         m["size_info"] = mirror_stats(m)
+        m["time_sync_supported"] = mirror_time_sync_supported(m)
     storage = disk_usage_info(MIRROR_BASE)
     try:
         queue_count_value = queued_jobs_count()
@@ -6961,6 +7383,7 @@ def mirror_detail(mirror_id: int):
     stats = mirror_stats(mirror)
     storage = disk_usage_info(MIRROR_BASE)
     start_block_reason = mirror_start_block_reason(mirror, dry_run=False)
+    running_job = get_running_job_for_mirror(mirror_id)
     return render_template(
         "mirror_detail.html",
         mirror=mirror,
@@ -6972,6 +7395,8 @@ def mirror_detail(mirror_id: int):
         stats=stats,
         storage=storage,
         start_block_reason=start_block_reason,
+        time_sync_supported=mirror_time_sync_supported(mirror),
+        running_job=running_job,
         profile_keyrings=assigned_keyring_rows_for_mirror(mirror_id),
         profile_keyring_names=mirror_keyring_assignment_names(mirror_id),
         profile_keyring_values=[assignment_value(item.get("filename", ""), item.get("fingerprint", "")) for item in mirror_keyring_assignment_items(mirror_id)],
@@ -7264,6 +7689,18 @@ def mirror_run(mirror_id: int):
         flash(str(exc), "danger")
         return redirect(url_for("mirror_detail", mirror_id=mirror_id))
 
+
+
+@app.route("/mirrors/<int:mirror_id>/time-sync", methods=["POST"])
+@require_admin
+def mirror_time_sync(mirror_id: int):
+    try:
+        job_id = start_mirror_time_sync_job(mirror_id)
+        flash(f"Mirror-Zeitabgleich wurde als Job #{job_id} eingereiht.", "success")
+        return redirect(url_for("job_detail", job_id=job_id))
+    except Exception as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("mirror_detail", mirror_id=mirror_id))
 
 
 @app.route("/user-scripts", methods=["GET", "POST"])

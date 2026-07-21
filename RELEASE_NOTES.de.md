@@ -1,5 +1,16 @@
 # Release Notes
 
+## v0.1.83
+
+- Automatische Übernahme von HTTP-/HTTPS-`Last-Modified`-Zeitstempeln für Dateien ergänzt, die während eines erfolgreichen echten Mirror-Laufs neu angelegt oder verändert wurden.
+- `HEAD`-Prüfung mit sicherem Fallback auf eine minimale `GET`-Anfrage mit `Range: bytes=0-0` ergänzt. Fehlende oder ungültige Header, HTTP-Fehler und einzelne Netzwerkprobleme werden nur protokolliert und brechen weder den Zeitabgleich noch den eigentlichen Mirror-Job ab.
+- Verzeichniszeitstempel werden direkt von der Verzeichnis-URL übernommen, sofern der Server einen gültigen Header liefert. Andernfalls kann ein Verzeichnis den neuesten Zeitstempel eines erfolgreich synchronisierten direkten Kindes übernehmen; ohne verwertbaren Wert bleibt es unverändert.
+- Neue Profilaktion **Mirror-Zeitabgleich** für einen vollständigen manuellen Abgleich bereits vorhandener HTTP-/HTTPS-Mirrors ergänzt. Der Vorgang läuft als separater Job in der globalen Warteschlange, besitzt Live-Log und Stop-Funktion.
+- Zeitabgleich verändert ausschließlich lokale Änderungszeiten und lässt Inhalte, Signaturen, Eigentümer und Dateirechte unverändert.
+- Anzahl paralleler Prüfungen und HTTP-Timeout über `MIRROR_TIME_SYNC_WORKERS` beziehungsweise `MIRROR_TIME_SYNC_TIMEOUT_SECONDS` konfigurierbar.
+- Deutsche und englische Anleitung sowie automatisierte Regressionstests erweitert.
+- VERSION auf 0.1.83 gesetzt.
+
 ## v0.1.82
 
 - Fehler behoben, durch den Repository-Dateien nach der Sicherheitshärtung mit Rechten wie `0600` und Verzeichnisse mit `0700` angelegt wurden. Ursache war die an debmirror vererbte globale `umask 077`.

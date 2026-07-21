@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import datetime as dt
+import email.utils
+import http.server
+import threading
 import stat
 import sys
 
@@ -32,7 +36,7 @@ def test_repository_publication_files_exist():
         "RELEASE_NOTES.de.md",
     }
     assert all((project_root / name).is_file() for name in required)
-    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.82"
+    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.83"
 
 
 def test_setup_cannot_be_forced_after_initial_user(client, database_cleanup):
@@ -235,3 +239,222 @@ def test_non_mirror_user_script_keeps_restrictive_umask(tmp_path, monkeypatch):
     finally:
         with dmm.db() as con:
             con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+
+
+def test_profile_actions_show_timestamp_sync_only_for_http(client, database_cleanup):
+    admin = make_user("time-sync-actions-admin")
+    authenticate(client, admin)
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        http_cur = con.execute(
+            """
+            INSERT INTO mirrors(name, method, host, root_path, target_path, dists, sections, archs, created_at, updated_at)
+            VALUES ('http-time-sync-action', 'http', 'example.invalid', 'repo', ?, 'stable', 'main', 'amd64', ?, ?)
+            """,
+            (str(dmm.MIRROR_BASE / "http-time-sync-action"), now, now),
+        )
+        http_id = int(http_cur.lastrowid)
+        rsync_cur = con.execute(
+            """
+            INSERT INTO mirrors(name, method, host, root_path, target_path, dists, sections, archs, created_at, updated_at)
+            VALUES ('rsync-no-time-sync-action', 'rsync', 'example.invalid', 'repo', ?, 'stable', 'main', 'amd64', ?, ?)
+            """,
+            (str(dmm.MIRROR_BASE / "rsync-no-time-sync-action"), now, now),
+        )
+        rsync_id = int(rsync_cur.lastrowid)
+    response = client.get("/mirrors")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert f'/mirrors/{http_id}/time-sync' in html
+    assert f'/mirrors/{rsync_id}/time-sync' not in html
+    assert 'Mirror timestamp sync' in html
+
+class _TimestampTestHandler(http.server.BaseHTTPRequestHandler):
+    server_version = "DMMTimestampTest/1.0"
+
+    def log_message(self, _format, *_args):
+        return
+
+    def _respond(self):
+        path = self.path.split("?", 1)[0]
+        self.send_response(200)
+        if path.endswith("/InRelease"):
+            self.send_header("Last-Modified", "Tue, 02 Jan 2024 03:04:05 GMT")
+            self.send_header("Content-Length", "1")
+        elif path.endswith("/Release"):
+            self.send_header("Last-Modified", "Wed, 03 Jan 2024 04:05:06 GMT")
+            self.send_header("Content-Length", "1")
+        elif path.endswith("/dists/stable/"):
+            self.send_header("Last-Modified", "Thu, 04 Jan 2024 05:06:07 GMT")
+            self.send_header("Content-Length", "0")
+        else:
+            self.send_header("Content-Length", "0")
+        self.end_headers()
+        if self.command == "GET" and path.endswith(("/InRelease", "/Release")):
+            self.wfile.write(b"x")
+
+    do_HEAD = _respond
+    do_GET = _respond
+
+
+def test_http_timestamp_sync_updates_files_and_derives_directories(tmp_path):
+    target = dmm.MIRROR_BASE / "timestamp-sync"
+    if target.exists():
+        import shutil
+        shutil.rmtree(target)
+    suite_dir = target / "dists" / "stable"
+    suite_dir.mkdir(parents=True)
+    inrelease = suite_dir / "InRelease"
+    release = suite_dir / "Release"
+    no_header = suite_dir / "Release.gpg"
+    inrelease.write_text("inrelease", encoding="utf-8")
+    release.write_text("release", encoding="utf-8")
+    no_header.write_text("signature", encoding="utf-8")
+    initial_no_header_mtime = 1_700_000_000
+    os.utime(no_header, (initial_no_header_mtime, initial_no_header_mtime))
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _TimestampTestHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        mirror = {
+            "method": "http",
+            "host": f"127.0.0.1:{server.server_port}",
+            "root_path": "repo",
+            "target_path": str(target),
+            "remote_user": "",
+            "remote_password_enc": "",
+            "extra_options": "",
+        }
+        result = dmm.synchronize_mirror_timestamps(mirror)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    expected_inrelease = dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc).timestamp()
+    expected_release = dt.datetime(2024, 1, 3, 4, 5, 6, tzinfo=dt.timezone.utc).timestamp()
+    expected_directory = dt.datetime(2024, 1, 4, 5, 6, 7, tzinfo=dt.timezone.utc).timestamp()
+    assert abs(inrelease.stat().st_mtime - expected_inrelease) < 1
+    assert abs(release.stat().st_mtime - expected_release) < 1
+    assert abs(no_header.stat().st_mtime - initial_no_header_mtime) < 1
+    assert abs(suite_dir.stat().st_mtime - expected_directory) < 1
+    assert abs((target / "dists").stat().st_mtime - expected_directory) < 1
+    assert result["files_updated"] == 2
+    assert result["files_missing_header"] == 1
+    assert result["directories_updated"] >= 1
+    assert result["directories_derived"] >= 1
+
+
+
+def test_timestamp_sync_normalizes_dot_repository_root():
+    mirror = {"method": "http", "host": "example.invalid", "root_path": "."}
+    assert dmm.mirror_upstream_base_url(mirror) == "http://example.invalid/"
+    assert dmm.mirror_upstream_url(mirror, "dists/stable/InRelease") == "http://example.invalid/dists/stable/InRelease"
+
+def test_http_timestamp_sync_remote_failures_are_nonfatal(monkeypatch):
+    target = dmm.MIRROR_BASE / "timestamp-sync-failure"
+    target.mkdir(parents=True, exist_ok=True)
+    local_file = target / "InRelease"
+    local_file.write_text("data", encoding="utf-8")
+    original_mtime = local_file.stat().st_mtime
+
+    monkeypatch.setattr(dmm, "fetch_remote_last_modified", lambda *_args, **_kwargs: (None, "http-403"))
+    mirror = {
+        "method": "https",
+        "host": "example.invalid",
+        "root_path": "debian",
+        "target_path": str(target),
+        "remote_user": "",
+        "remote_password_enc": "",
+        "extra_options": "",
+    }
+    result = dmm.synchronize_mirror_timestamps(mirror)
+    assert result["files_failed"] == 1
+    assert local_file.stat().st_mtime == original_mtime
+
+
+def test_time_sync_is_only_available_for_http_and_https():
+    assert dmm.mirror_time_sync_supported({"method": "http"})
+    assert dmm.mirror_time_sync_supported({"method": "https"})
+    assert not dmm.mirror_time_sync_supported({"method": "rsync"})
+    assert not dmm.mirror_time_sync_supported({"method": "ftp"})
+
+
+def test_internal_time_sync_job_runs_without_subprocess(tmp_path, monkeypatch):
+    target = dmm.MIRROR_BASE / "internal-time-sync-job"
+    target.mkdir(parents=True, exist_ok=True)
+    log_path = tmp_path / "time-sync-job.log"
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        mirror_cur = con.execute(
+            """
+            INSERT INTO mirrors(name, method, host, root_path, target_path, dists, sections, archs, created_at, updated_at)
+            VALUES ('time-sync-test', 'http', 'example.invalid', 'debian', ?, 'stable', 'main', 'amd64', ?, ?)
+            """,
+            (str(target), now, now),
+        )
+        mirror_id = int(mirror_cur.lastrowid)
+        job_cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, job_type, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (?, 'time-sync-test', 'time_sync', 'starting', 0, 'Mirror-Zeitabgleich', ?, ?, ?, 'test')
+            """,
+            (mirror_id, '["__debmirror_manager_mirror_time_sync__"]', str(log_path), now),
+        )
+        job_id = int(job_cur.lastrowid)
+    monkeypatch.setattr(
+        dmm,
+        "synchronize_mirror_timestamps",
+        lambda *_args, **_kwargs: {"files_checked": 0, "files_updated": 0},
+    )
+    try:
+        dmm.run_job_thread(job_id, [dmm.INTERNAL_MIRROR_TIME_SYNC_COMMAND, str(mirror_id)], log_path, "test")
+        with dmm.db() as con:
+            row = con.execute("SELECT status, exit_code, pid FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert row["status"] == "success"
+        assert row["exit_code"] == 0
+        assert row["pid"] is None
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+            con.execute("DELETE FROM mirrors WHERE id=?", (mirror_id,))
+
+
+def test_stop_internal_time_sync_job_sets_cancel_event(tmp_path):
+    target = dmm.MIRROR_BASE / "internal-time-sync-stop"
+    target.mkdir(parents=True, exist_ok=True)
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        mirror_cur = con.execute(
+            """
+            INSERT INTO mirrors(name, method, host, root_path, target_path, dists, sections, archs, created_at, updated_at)
+            VALUES ('time-sync-stop-test', 'https', 'example.invalid', 'debian', ?, 'stable', 'main', 'amd64', ?, ?)
+            """,
+            (str(target), now, now),
+        )
+        mirror_id = int(mirror_cur.lastrowid)
+        job_cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, job_type, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (?, 'time-sync-stop-test', 'time_sync', 'running', 0, 'Mirror-Zeitabgleich', ?, ?, ?, 'test')
+            """,
+            (mirror_id, '["__debmirror_manager_mirror_time_sync__"]', str(tmp_path / "stop.log"), now),
+        )
+        job_id = int(job_cur.lastrowid)
+    cancel_event = threading.Event()
+    with dmm.INTERNAL_JOB_CANCEL_EVENTS_LOCK:
+        dmm.INTERNAL_JOB_CANCEL_EVENTS[job_id] = cancel_event
+    try:
+        dmm.stop_job(job_id)
+        assert cancel_event.is_set()
+        with dmm.db() as con:
+            row = con.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert row["status"] == "stopping"
+    finally:
+        with dmm.INTERNAL_JOB_CANCEL_EVENTS_LOCK:
+            dmm.INTERNAL_JOB_CANCEL_EVENTS.pop(job_id, None)
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+            con.execute("DELETE FROM mirrors WHERE id=?", (mirror_id,))

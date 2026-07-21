@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.82**
+Aktuelle Version: **0.1.83**
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,7 +42,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.82.zip
+unzip debmirror-manager-v0.1.83.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -209,6 +209,16 @@ Die Profilprüfung verhindert oder bereinigt widersprüchliche Kombinationen: `-
 Für geschützte HTTP/HTTPS- oder FTP-Quellen besitzt das Profil optionale Felder für Remote-Benutzer und Remote-Passwort. Das Passwort wird verschlüsselt in der SQLite-Datenbank gespeichert und im Formular nie zurückgegeben. Beim Jobstart erzeugt die Anwendung dafür eine temporäre debmirror-Konfigurationsdatei mit Dateimodus `0600`; Job-Datenbank, gespeicherter Befehl und Logs enthalten kein Klartextpasswort. Bei der Methode `rsync` sind Benutzer/Passwort-Felder gesperrt.
 
 Für geschützte Rsync-Quellen steht stattdessen **Rsync-Modul über SSH-Schlüssel** bereit. debmirror verwendet Rsync-Ziele im Format `host::modul`; die Anwendung ergänzt dafür eine explizite SSH-Remote-Shell mit privatem Schlüssel, `BatchMode`, `IdentitiesOnly`, eigenem SSH-Port und persistenter `known_hosts`-Datei. Unterstützt wird damit ein Rsync-Modul über eine SSH-Remote-Shell. Ein allgemeiner Dateipfad wie `user@host:/srv/mirror` kann mit debmirror nicht als Mirror-Profil verwendet werden; dafür ist ein Benutzerskript geeigneter. Private Schlüssel müssen für unbeaufsichtigte Jobs ohne Passphrase vorliegen, werden geprüft und mit Modus `0600` gespeichert.
+
+### HTTP/HTTPS-Zeitstempel und Mirror-Zeitabgleich
+
+Bei erfolgreichen echten HTTP- und HTTPS-Mirrorläufen übernimmt DebMirror Manager für neu angelegte oder während des Laufs geänderte Dateien nach Möglichkeit den `Last-Modified`-Zeitstempel der Quelle. Die automatische Nachbearbeitung prüft nur Dateien, die seit Beginn des konkreten Jobs verändert wurden, und verursacht dadurch keinen vollständigen Zusatzdurchlauf über den gesamten Mirror. Dry-Runs werden nicht nachbearbeitet.
+
+Für jede Datei wird zuerst eine HTTP-`HEAD`-Anfrage verwendet. Unterstützt der Quellserver `HEAD` nicht, blockiert er diese Methode oder fehlt der Header, wird einmalig eine minimale `GET`-Anfrage mit `Range: bytes=0-0` versucht. Ein gültiger `Last-Modified`-Wert setzt ausschließlich den lokalen Änderungszeitpunkt. Dateiinhalt, Signatur, Eigentümer und Rechte bleiben unverändert. Fehlende oder ungültige Header, HTTP-Fehler und einzelne Netzwerkprobleme werden protokolliert und übersprungen; sie ändern den Erfolg des eigentlichen Mirror-Jobs nicht.
+
+Verzeichnisse werden ebenfalls berücksichtigt. Liefert die Verzeichnis-URL mit abschließendem `/` einen gültigen `Last-Modified`-Header, wird dieser direkt verwendet. Fehlt ein eigener Verzeichniszeitstempel, kann das Verzeichnis den neuesten Zeitstempel eines bereits erfolgreich synchronisierten direkten Kindes übernehmen. Gibt es weder einen Serverwert noch ein synchronisiertes Kind, bleibt der vorhandene Verzeichniszeitpunkt unverändert. Dadurch wird kein Zeitstempel erfunden und ein fehlender Header verursacht keinen Jobabbruch.
+
+Unter **Profile → Aktionen → Mirror-Zeitabgleich** sowie in der Profil-Detailansicht kann ein vollständiger einmaliger Abgleich für bereits vorhandene Dateien und Verzeichnisse gestartet werden. Der Abgleich läuft als eigener Job über die globale Warteschlange, besitzt ein Live-Log und kann gestoppt werden. Er ist nur für HTTP- und HTTPS-Profile verfügbar. Bei großen Mirrors kann der vollständige Abgleich viele HTTP-Anfragen auslösen; die Parallelität und das Anfrage-Timeout lassen sich über `MIRROR_TIME_SYNC_WORKERS` und `MIRROR_TIME_SYNC_TIMEOUT_SECONDS` begrenzen.
 
 ## Profilgenerator
 

@@ -84,6 +84,7 @@
               <form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button type="submit">Start</button></form>
             {% endif %}
             {% if not m.start_block_reason or m.start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run</button></form>{% endif %}
+            {% if m.time_sync_supported %}<form method="post" action="{{ url_for('mirror_time_sync', mirror_id=m.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button type="submit" title="Vorhandene lokale Änderungszeiten mit Last-Modified der Quelle abgleichen">Mirror-Zeitabgleich</button></form>{% endif %}
           {% else %}<small>Nur Ansicht</small>{% endif %}
         </td>
       </tr>

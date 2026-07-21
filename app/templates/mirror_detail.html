@@ -17,6 +17,13 @@
       <form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="primary" type="submit">Jetzt starten</button></form>
     {% endif %}
     {% if not start_block_reason or start_block_reason == 'Mirror-Profil ist deaktiviert.' %}<form method="post" action="{{ url_for('mirror_run', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="dry_run" value="on"><button type="submit">Dry-Run starten</button></form>{% endif %}
+    {% if time_sync_supported %}
+      {% if running_job %}
+        <button type="button" disabled title="Während Job #{{ running_job.id }} läuft oder wartet, kann kein zusätzlicher Zeitabgleich gestartet werden.">Mirror-Zeitabgleich</button>
+      {% else %}
+        <form method="post" action="{{ url_for('mirror_time_sync', mirror_id=mirror.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button type="submit" title="Vorhandene lokale Änderungszeiten mit Last-Modified der Quelle abgleichen">Mirror-Zeitabgleich</button></form>
+      {% endif %}
+    {% endif %}
     {% endif %}
   </div>
 </div>
