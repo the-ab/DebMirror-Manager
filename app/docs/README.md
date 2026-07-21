@@ -2,7 +2,7 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.81**
+Current version: **0.1.82**
 
 ## Project status, affiliation, and licensing
 
@@ -43,7 +43,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.81.zip
+unzip debmirror-manager-v0.1.82.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -397,6 +397,7 @@ Write operations enforce the same enabled-state, storage, conflict, and start re
 - Full OpenPGP fingerprints are required for trust assignments.
 - New SSH host keys are not accepted automatically by default.
 - Management files and directories use restrictive owner permissions and `umask 077`.
+- Mirror jobs and user scripts whose configured target is below `MIRROR_BASE` use a separate `umask 022`, so repository files are created readable by the optional nginx service (`0644` files, `0755` directories). Other user scripts retain `umask 077`. The complete existing `MIRROR_BASE` tree is repaired once after upgrading to v0.1.82; paths outside it are not changed.
 - The container uses `no-new-privileges`, reduced Linux capabilities, an init process, and a PID limit.
 - The Docker socket is not mounted and privileged mode is not used.
 

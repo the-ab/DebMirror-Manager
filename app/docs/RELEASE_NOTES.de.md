@@ -1,5 +1,16 @@
 # Release Notes
 
+## v0.1.82
+
+- Fehler behoben, durch den Repository-Dateien nach der Sicherheitshärtung mit Rechten wie `0600` und Verzeichnisse mit `0700` angelegt wurden. Ursache war die an debmirror vererbte globale `umask 077`.
+- Die restriktive `umask 077` bleibt für Anwendungsdaten, SQLite, Logs, Zugangsdaten, SSH-Schlüssel und Backups erhalten.
+- debmirror und Benutzerskripte mit konfiguriertem Ziel innerhalb von `MIRROR_BASE` laufen mit einer eigenen `umask 022`; neue Repository-Dateien erhalten üblicherweise `0644`, Verzeichnisse `0755`. Andere Benutzerskripte behalten `umask 077`.
+- Mirror-Basis und jedes debmirror-Zielverzeichnis werden ausdrücklich für den optionalen nginx-Container les- und durchsuchbar gesetzt.
+- Einmalige Hintergrundmigration für den vollständigen vorhandenen `MIRROR_BASE`-Baum ergänzt. Sie fügt nur benötigte Lese-/Durchsuchrechte hinzu, erhält Eigentümer sowie vorhandene Ausführungs-/Sonderrechte, folgt keinen symbolischen Links und verändert keine Pfade außerhalb der Mirror-Wurzel.
+- Benutzerskript-Ziele außerhalb von `MIRROR_BASE` werden bewusst nicht automatisch in ihren Rechten verändert.
+- Regressionstests für Job-umask, Mirror-Verzeichniserstellung, Rechte-Migration und weiterhin restriktive Verwaltungsdateien ergänzt.
+- VERSION auf 0.1.82 gesetzt.
+
 ## v0.1.81
 
 - Projektlizenz auf die Apache License 2.0 (`Apache-2.0`) umgestellt und SPDX-Kennzeichnungen der eigenen Quelldateien angepasst.

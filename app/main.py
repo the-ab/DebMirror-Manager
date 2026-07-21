@@ -126,6 +126,14 @@ BACKUP_KDF_R = 8
 BACKUP_KDF_P = 1
 OUTBOUND_PRIVATE_HOST_ALLOWLIST = [item.strip().lower() for item in os.environ.get("OUTBOUND_PRIVATE_HOST_ALLOWLIST", "").split(",") if item.strip()]
 
+# Verwaltungsdaten bleiben durch die globale umask 077 geschützt. Nur die
+# eigentlichen Mirror-/Benutzerskript-Prozesse erhalten eine separate umask,
+# damit über nginx bereitgestellte Repository-Dateien lesbar bleiben.
+JOB_OUTPUT_UMASK = 0o022
+MIRROR_PERMISSION_MIGRATION_MARKER = APP_DATA_DIR / ".mirror-permissions-v0.1.82"
+MIRROR_PERMISSION_MIGRATION_LOCK = threading.Lock()
+MIRROR_PERMISSION_MIGRATION_STARTED = False
+
 # Lokale Zeit für Logeinträge und WebUI-Ausgaben. Falls die Zone ungültig ist,
 # bleibt die Python-Standardzeit aktiv, aber die Anwendung bricht nicht ab.
 try:
@@ -147,6 +155,12 @@ APP_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 IMPORT_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 USER_SCRIPT_DIR.mkdir(parents=True, exist_ok=True)
 MIRROR_BASE.mkdir(parents=True, exist_ok=True)
+# Die Mirror-Wurzel ist bewusst öffentlich les- und durchsuchbar. Eigentümer
+# bleibt root; nginx benötigt nur Leserechte beziehungsweise Verzeichniszugriff.
+try:
+    MIRROR_BASE.chmod(stat.S_IMODE(MIRROR_BASE.stat().st_mode) | 0o755)
+except OSError:
+    pass
 JOB_AUTH_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 SSH_KEY_DIR.mkdir(parents=True, exist_ok=True)
 try:
@@ -221,6 +235,66 @@ def secure_chmod(path: Path, mode: int) -> None:
             path.chmod(mode)
     except OSError:
         pass
+
+
+def ensure_public_mirror_directory(path: Path) -> Path:
+    """Create a mirror directory and guarantee nginx-readable traversal.
+
+    The application itself runs with umask 077. Therefore mkdir(mode=0755) is
+    not sufficient on its own; chmod must explicitly add the public directory
+    access bits after creation. The path is always validated below MIRROR_BASE.
+    """
+    normalized = Path(normalize_target_path(str(path)))
+    normalized.mkdir(parents=True, exist_ok=True)
+    try:
+        normalized.chmod(stat.S_IMODE(normalized.stat().st_mode) | 0o755)
+    except OSError:
+        pass
+    return normalized
+
+
+def repair_public_mirror_tree_permissions(path: Path) -> Dict[str, int]:
+    """Add nginx read/traverse rights without following symbolic links.
+
+    Existing owner, group, executable and special bits are preserved. Only the
+    minimum public mirror bits are added: rw-r--r-- for files and rwxr-xr-x for
+    directories. This repairs repositories created while jobs inherited umask
+    077, while avoiding ownership changes.
+    """
+    root = Path(normalize_target_path(str(path)))
+    result = {"directories": 0, "files": 0, "errors": 0}
+    if not root.exists() or not root.is_dir() or root.is_symlink():
+        return result
+
+    def add_mode_bits(item: Path, required_bits: int, counter: str) -> None:
+        try:
+            if item.is_symlink():
+                return
+            current = stat.S_IMODE(item.stat().st_mode)
+            desired = current | required_bits
+            if desired != current:
+                item.chmod(desired)
+                result[counter] += 1
+        except OSError:
+            result["errors"] += 1
+
+    add_mode_bits(root, 0o755, "directories")
+    for current_root, dir_names, file_names in os.walk(root, topdown=True, followlinks=False):
+        current = Path(current_root)
+        safe_dirs: List[str] = []
+        for name in dir_names:
+            child = current / name
+            if child.is_symlink():
+                continue
+            add_mode_bits(child, 0o755, "directories")
+            safe_dirs.append(name)
+        dir_names[:] = safe_dirs
+        for name in file_names:
+            child = current / name
+            if child.is_symlink():
+                continue
+            add_mode_bits(child, 0o644, "files")
+    return result
 
 
 def ensure_secure_runtime_permissions() -> None:
@@ -3610,6 +3684,28 @@ def build_user_script_command(script_name: str) -> List[str]:
     return [str(path)]
 
 
+def job_process_umask(job_type: str, script_name: str = "") -> int:
+    """Return the child-process umask without weakening unrelated scripts.
+
+    debmirror always writes public repository content. User scripts only receive
+    umask 022 when their configured target is located below MIRROR_BASE. Other
+    scripts continue to inherit the restrictive application policy via an
+    explicit umask 077.
+    """
+    if (job_type or "").strip() == "mirror":
+        return JOB_OUTPUT_UMASK
+    if (job_type or "").strip() != "script" or not script_name:
+        return 0o077
+    target = get_user_script_target(script_name)
+    if not target:
+        return 0o077
+    try:
+        normalize_target_path(target)
+    except ValueError:
+        return 0o077
+    return JOB_OUTPUT_UMASK
+
+
 def start_script_job(script_name: str, source: str = "manual") -> int:
     path = safe_user_script_path(script_name)
     reason = user_script_start_block_reason(path.name)
@@ -3649,7 +3745,7 @@ def start_script_job(script_name: str, source: str = "manual") -> int:
 
 def build_debmirror_command(mirror: Dict[str, Any], dry_run: bool = False, validate_keyring: bool = True) -> List[str]:
     target = normalize_target_path(mirror["target_path"])
-    Path(target).mkdir(parents=True, exist_ok=True)
+    ensure_public_mirror_directory(Path(target))
 
     method = mirror["method"]
     validate_mirror_configuration(mirror, require_ssh_key=True)
@@ -3921,6 +4017,12 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
             else:
                 log.write(f"[{now_iso()}] Benutzerskript wird ausgeführt: {script_name}\n")
                 log.flush()
+            process_umask = job_process_umask(job_type, script_name)
+            if process_umask == JOB_OUTPUT_UMASK:
+                log.write(f"[{now_iso()}] Prozess-umask: 022 (Mirror-Ausgaben standardmäßig Dateien 0644, Verzeichnisse 0755).\n")
+            else:
+                log.write(f"[{now_iso()}] Prozess-umask: 077 (Skriptausgaben bleiben standardmäßig nur für den Eigentümer zugänglich).\n")
+            log.flush()
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -3930,6 +4032,7 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
                 universal_newlines=True,
                 start_new_session=True,
                 env=process_env,
+                umask=process_umask,
             )
             with RUNNING_PROCESSES_LOCK:
                 RUNNING_PROCESSES[job_id] = proc
@@ -12065,6 +12168,62 @@ def migrate_short_trust_fingerprints() -> None:
         log_webui_exception("migrate_short_trust_fingerprints", exc)
 
 
+def repair_existing_mirror_permissions_once() -> None:
+    """Repair mirror content created by releases that inherited umask 077."""
+    global MIRROR_PERMISSION_MIGRATION_STARTED
+    with MIRROR_PERMISSION_MIGRATION_LOCK:
+        if MIRROR_PERMISSION_MIGRATION_STARTED or MIRROR_PERMISSION_MIGRATION_MARKER.exists():
+            return
+        MIRROR_PERMISSION_MIGRATION_STARTED = True
+
+    def worker() -> None:
+        total_dirs = 0
+        total_files = 0
+        total_errors = 0
+        targets: List[Path] = [MIRROR_BASE]
+        try:
+            # MIRROR_BASE is the dedicated tree exported by the optional nginx
+            # service. Repair it once as a whole so orphaned or script-created
+            # repository paths are not missed and overlapping profiles are not
+            # scanned repeatedly. Paths outside MIRROR_BASE remain untouched.
+            ensure_public_mirror_directory(MIRROR_BASE)
+            result = repair_public_mirror_tree_permissions(MIRROR_BASE)
+            total_dirs += result["directories"]
+            total_files += result["files"]
+            total_errors += result["errors"]
+
+            if total_errors:
+                add_event(
+                    "warning",
+                    f"Mirror-Dateirechte teilweise repariert: {total_dirs} Verzeichnisse, {total_files} Dateien, {total_errors} Fehler. Die Prüfung wird beim nächsten Start wiederholt.",
+                )
+                return
+
+            MIRROR_PERMISSION_MIGRATION_MARKER.write_text(
+                json.dumps(
+                    {
+                        "version": APP_VERSION,
+                        "completed_at": now_iso(),
+                        "targets": len(targets),
+                        "directories_changed": total_dirs,
+                        "files_changed": total_files,
+                    },
+                    ensure_ascii=False,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            secure_chmod(MIRROR_PERMISSION_MIGRATION_MARKER, 0o600)
+            add_event(
+                "info",
+                f"Mirror-Dateirechte geprüft/repariert: {len(targets)} Zielverzeichnisse, {total_dirs} Verzeichnisse und {total_files} Dateien angepasst.",
+            )
+        except Exception as exc:
+            log_webui_exception("repair_existing_mirror_permissions_once", exc)
+            add_event("warning", f"Einmalige Reparatur der Mirror-Dateirechte fehlgeschlagen: {exc}")
+
+    threading.Thread(target=worker, daemon=True, name="mirror-permission-migration").start()
+
+
 def cleanup_stale_job_auth_configs(max_age_seconds: int = 86400) -> None:
     try:
         JOB_AUTH_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -12090,6 +12249,7 @@ def create_app() -> Flask:
     ensure_initial_user_from_legacy_config()
     migrate_notification_secret_storage()
     recover_stale_jobs()
+    repair_existing_mirror_permissions_once()
     ensure_job_worker_thread()
     start_scheduler_thread()
     ensure_secure_runtime_permissions()

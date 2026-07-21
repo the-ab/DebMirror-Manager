@@ -1,5 +1,16 @@
 # Release Notes
 
+## v0.1.82
+
+- Fixed repository files being created with permissions such as `0600` and directories with `0700` after the security hardening introduced a global `umask 077`.
+- Kept the restrictive `umask 077` for application data, SQLite, logs, credentials, SSH keys and backups.
+- Run debmirror and user scripts with a configured target below `MIRROR_BASE` using a dedicated `umask 022`; new repository files are normally `0644` and directories `0755`. Other user scripts retain `umask 077`.
+- Explicitly make the mirror base and each debmirror target directory traversable/readable for the optional nginx container.
+- Added a one-time background migration for the complete existing `MIRROR_BASE` tree; it adds only the required read/traverse bits, preserves ownership and existing executable/special bits, does not follow symbolic links, and leaves paths outside the mirror root untouched.
+- Targets of user scripts outside `MIRROR_BASE` are deliberately excluded from automatic permission changes.
+- Added regression tests for job-process umask, mirror directory creation, permission migration and continued restrictive management-file creation.
+- Set VERSION to 0.1.82.
+
 ## v0.1.81
 
 - Changed the project license to the Apache License 2.0 (`Apache-2.0`) and updated project-owned SPDX identifiers.

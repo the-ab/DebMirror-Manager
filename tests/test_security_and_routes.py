@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import stat
+import sys
 
 import pytest
 
@@ -29,7 +32,7 @@ def test_repository_publication_files_exist():
         "RELEASE_NOTES.de.md",
     }
     assert all((project_root / name).is_file() for name in required)
-    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.81"
+    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.82"
 
 
 def test_setup_cannot_be_forced_after_initial_user(client, database_cleanup):
@@ -135,3 +138,100 @@ def test_compatibility_repository_copies_match():
         ".dockerignore",
     ):
         assert (project_root / name).read_bytes() == (compatibility_root / name).read_bytes()
+
+
+def test_management_files_keep_restrictive_process_umask(tmp_path):
+    path = tmp_path / "management-secret"
+    path.write_text("secret", encoding="utf-8")
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_public_mirror_directory_overrides_restrictive_parent_umask(tmp_path):
+    target = dmm.MIRROR_BASE / "permission-target"
+    if target.exists():
+        import shutil
+        shutil.rmtree(target)
+    created = dmm.ensure_public_mirror_directory(target)
+    assert created == target.resolve(strict=False)
+    assert stat.S_IMODE(created.stat().st_mode) & 0o755 == 0o755
+
+
+def test_mirror_permission_repair_adds_read_bits_without_following_symlinks(tmp_path):
+    target = dmm.MIRROR_BASE / "permission-repair"
+    nested = target / "dists" / "stable"
+    nested.mkdir(parents=True, exist_ok=True)
+    release = nested / "InRelease"
+    release.write_text("signed metadata", encoding="utf-8")
+    target.chmod(0o700)
+    (target / "dists").chmod(0o700)
+    nested.chmod(0o700)
+    release.chmod(0o600)
+
+    outside = tmp_path / "outside-private"
+    outside.write_text("private", encoding="utf-8")
+    outside.chmod(0o600)
+    link = target / "outside-link"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        link = None
+
+    result = dmm.repair_public_mirror_tree_permissions(target)
+    assert result["errors"] == 0
+    assert stat.S_IMODE(target.stat().st_mode) & 0o755 == 0o755
+    assert stat.S_IMODE(nested.stat().st_mode) & 0o755 == 0o755
+    assert stat.S_IMODE(release.stat().st_mode) & 0o644 == 0o644
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o600
+
+
+def test_job_subprocess_uses_public_output_umask(tmp_path, monkeypatch):
+    output_dir = tmp_path / "job-output-dir"
+    output_file = output_dir / "Packages"
+    log_path = tmp_path / "job.log"
+    code = (
+        "from pathlib import Path; "
+        f"p=Path({str(output_dir)!r}); p.mkdir(); "
+        f"Path({str(output_file)!r}).write_text('data', encoding='utf-8')"
+    )
+    monkeypatch.setattr(dmm, "get_user_script_target", lambda _name: str(dmm.MIRROR_BASE / "script-output"))
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, job_type, script_name, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (NULL, 'umask-test', 'script', 'umask-test', 'starting', 0, ?, ?, ?, ?, 'test')
+            """,
+            (sys.executable, '[]', str(log_path), dmm.now_iso()),
+        )
+        job_id = int(cur.lastrowid)
+    try:
+        dmm.run_job_thread(job_id, [sys.executable, "-c", code], log_path, "test")
+        assert stat.S_IMODE(output_dir.stat().st_mode) == 0o755
+        assert stat.S_IMODE(output_file.stat().st_mode) == 0o644
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+
+
+def test_non_mirror_user_script_keeps_restrictive_umask(tmp_path, monkeypatch):
+    output_file = tmp_path / "private-script-output"
+    log_path = tmp_path / "private-script.log"
+    monkeypatch.setattr(dmm, "get_user_script_target", lambda _name: "")
+    code = f"from pathlib import Path; Path({str(output_file)!r}).write_text('private', encoding='utf-8')"
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, job_type, script_name, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (NULL, 'private-umask-test', 'script', 'private-umask-test', 'starting', 0, ?, ?, ?, ?, 'test')
+            """,
+            (sys.executable, '[]', str(log_path), dmm.now_iso()),
+        )
+        job_id = int(cur.lastrowid)
+    try:
+        dmm.run_job_thread(job_id, [sys.executable, "-c", code], log_path, "test")
+        assert stat.S_IMODE(output_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))

@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.81**
+Aktuelle Version: **0.1.82**
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,7 +42,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.81.zip
+unzip debmirror-manager-v0.1.82.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -512,6 +512,7 @@ Wichtig: Ab v0.1.67 verwendet die Anwendung für verschlüsselte Geheimwerte nic
 - OpenPGP-Vertrauensbindungen verwenden ausschließlich vollständige 40-stellige Fingerprints. Eindeutig auflösbare ältere Kurz-IDs werden automatisch migriert, unklare Kurz-IDs entfernt und als Ereignis gemeldet.
 - Die automatische Annahme neuer SSH-Hostschlüssel ist für neue Profile standardmäßig aus. Der erste Hostschlüssel sollte kontrolliert in `known_hosts` aufgenommen werden.
 - Verwaltungs-, Datenbank-, Schlüssel-, Log- und Backup-Dateien werden mit restriktiver `umask` und Besitzerrechten angelegt. Der Container startet mit `no-new-privileges`, begrenzten Linux-Capabilities und PID-Limit.
+- Mirror-Jobs und Benutzerskripte mit konfiguriertem Ziel innerhalb von `MIRROR_BASE` laufen mit `umask 022`. Dadurch sind Repository-Dateien für den optionalen nginx-Dienst lesbar (Dateien üblicherweise `0644`, Verzeichnisse `0755`). Andere Benutzerskripte behalten `umask 077`. Beim Update auf v0.1.82 wird der vollständige vorhandene `MIRROR_BASE`-Baum einmalig im Hintergrund repariert; Pfade außerhalb davon bleiben unverändert.
 - Direkter HTTP-Betrieb bleibt für abgeschottete Verwaltungsnetze technisch möglich, überträgt Zugangsdaten jedoch unverschlüsselt. Für produktive Nutzung ist ein HTTPS-Reverse-Proxy und eine Firewall-Begrenzung des WebUI-Ports erforderlich.
 
 ## Notfall: Admin-Passwort zurücksetzen
