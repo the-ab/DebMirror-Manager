@@ -13,7 +13,7 @@ Thank you for helping improve the project.
 
 ## Local checks
 
-Use Python 3.12 and install the locked production dependencies plus the development tools:
+Use Python 3.13 and install the locked production dependencies plus the development tools:
 
 ```bash
 python3.12 -m venv .venv

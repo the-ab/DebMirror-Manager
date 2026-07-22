@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.83**
+Aktuelle Version: **0.1.86**
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,13 +42,17 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.83.zip
+unzip debmirror-manager-v0.1.86.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
 ```
 
 `install.sh` fragt die relevanten Werte ab, darunter persistenter Datenpfad, lokales Mirror-Verzeichnis, WebUI-Port, optionaler nginx-Mirror-HTTP-Container, Update-/Backup-Verzeichnisse, Job-Warteschlange, Retention, Dashboard-Limits, Größenberechnung, Speicherplatz-Sperre, Zeitzone und Admin-Zugang. Bei erneutem Aufruf liest `install.sh` vorhandene `.env`-Werte und schlägt sie als Defaults vor.
+
+### Container-Betriebssystem
+
+Das Anwendungsimage verwendet das offizielle Docker-Image `python:3.13.14-slim-trixie` und damit Debian 13 (Trixie) als Betriebssystembasis. Das Image ist über einen Multi-Plattform-Digest festgelegt. Bei jedem Image-Build werden verfügbare Trixie-Paketaktualisierungen installiert, bevor `debmirror`, GnuPG, Rsync, OpenSSH, Ping und die weiteren Laufzeitpakete hinzukommen. Der optionale Mirror-Webserver bleibt ein separater nginx-Alpine-Container.
 
 ### Webserver und Container-Logs
 
@@ -428,7 +432,14 @@ Dry-Runs und Benutzerskripte bleiben erlaubt. Die Einstellungen befinden sich un
 
 ## Healthchecks
 
-Healthchecks prüfen lokale Repository-URLs wie:
+Healthchecks unterstützen zwei Prüfarten:
+
+- **HTTP/HTTPS (GET oder HEAD):** prüft eine URL, den erwarteten HTTP-Status und die Antwortzeit.
+- **Ping (ICMP):** prüft einen Hostnamen oder eine IP-Adresse mit einer einzelnen ICMP-Echo-Anfrage und erfasst die Latenz. Für Ping werden weder Protokoll, Port noch Pfad angegeben.
+
+Private und lokale Ziele müssen pro Healthcheck ausdrücklich freigegeben werden. Ping verwendet das im Container installierte `iputils-ping`; der Container erhält dafür ausschließlich die Linux-Capability `NET_RAW`. Zeitplan, manuelle Ausführung, Benachrichtigung und API funktionieren bei beiden Prüfarten identisch.
+
+HTTP-/HTTPS-Healthchecks prüfen lokale Repository-URLs wie:
 
 ```text
 http://mirror.local/debian/dists/bookworm/Release
@@ -545,3 +556,6 @@ Die WebUI enthält eine Anleitung und separate Release Notes. Die Anleitung besc
 Die produktiven Python-Abhängigkeiten sind in `requirements.lock` mit festen Versionen und Paket-Hashes aufgelöst. Der Docker-Build installiert diese Lockdatei mit `--require-hashes`. Docker-Basisimages sind auf Version und Digest festgelegt. Debian-Pakete im Image werden weiterhin aus den signierten Distributionsquellen bezogen; eine vollständige Bit-für-Bit-Reproduzierbarkeit wird daher nicht behauptet.
 
 Tests, Repository-Prüfungen, Abhängigkeitsprüfungen, Shell-Prüfungen, Compose-Validierung und Docker-Builds werden manuell mit den in `CONTRIBUTING.md` dokumentierten lokalen Befehlen ausgeführt.
+
+
+Die Fußzeile jeder WebUI-Seite zeigt die installierte Version, das Veröffentlichungsdatum und die Projektlizenz.

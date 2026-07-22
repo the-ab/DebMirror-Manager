@@ -68,7 +68,7 @@ except Exception:  # pragma: no cover - dependency should be installed in contai
     AESGCM = None
     Scrypt = None
 
-from app import APP_NAME, APP_VERSION
+from app import APP_NAME, APP_RELEASE_DATE, APP_VERSION
 from app.i18n import SUPPORTED_APPEARANCES, SUPPORTED_LANGUAGES, normalize_appearance, normalize_language, translate_html, translate_text
 
 # Alle neu erzeugten Verwaltungs-, Schlüssel-, Log- und Backup-Dateien sind
@@ -786,6 +786,16 @@ def log_webui_exception(context: str, exc: BaseException) -> None:
             fh.write("\n")
     except Exception:
         pass
+
+
+@app.errorhandler(404)
+def not_found_error(_exc):
+    return render_template(
+        "error.html",
+        title="Seite nicht gefunden",
+        message="Die angeforderte Seite wurde nicht gefunden.",
+        back_url=url_for("dashboard") if current_user() else url_for("login"),
+    ), 404
 
 
 @app.errorhandler(500)
@@ -1532,6 +1542,62 @@ def _private_target_allowlisted(hostname: str, address: ipaddress._BaseAddress) 
         except ValueError:
             pass
     return False
+
+
+def validate_ping_target(target: str, *, allow_private: bool = False) -> Tuple[str, str]:
+    """Validate a host/IP for ICMP checks and return display target plus resolved IP.
+
+    The resolved address is passed to ping so a later DNS change cannot bypass the
+    private-address validation performed here.
+    """
+    value = (target or "").strip()
+    if not value:
+        raise ValueError("Ping-Ziel darf nicht leer sein.")
+    if len(value) > 253:
+        raise ValueError("Ping-Ziel ist zu lang.")
+    if value.startswith("-") or any(ch.isspace() for ch in value):
+        raise ValueError("Ping-Ziel enthält unzulässige Zeichen.")
+    if "://" in value or any(ch in value for ch in "/?#@"):
+        raise ValueError("Für Ping nur Hostname oder IP-Adresse ohne Protokoll, Port oder Pfad angeben.")
+
+    hostname = value
+    if value.startswith("[") and value.endswith("]"):
+        hostname = value[1:-1]
+    if "%" in hostname:
+        raise ValueError("IPv6-Zonenkennungen sind als Ping-Ziel nicht unterstützt.")
+    try:
+        hostname_ascii = hostname.encode("idna").decode("ascii").rstrip(".")
+    except UnicodeError as exc:
+        raise ValueError("Ping-Ziel enthält keinen gültigen Hostnamen.") from exc
+    if not hostname_ascii:
+        raise ValueError("Ping-Ziel enthält keinen gültigen Hostnamen.")
+
+    try:
+        infos = socket.getaddrinfo(hostname_ascii, None, type=socket.SOCK_DGRAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Ping-Ziel konnte nicht aufgelöst werden: {hostname_ascii}") from exc
+
+    addresses: List[ipaddress._BaseAddress] = []
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        except ValueError:
+            continue
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        raise ValueError("Für das Ping-Ziel wurde keine gültige Zieladresse ermittelt.")
+    for address in addresses:
+        if address.is_global:
+            continue
+        if allow_private or _private_target_allowlisted(hostname_ascii, address):
+            continue
+        raise ValueError(f"Private, lokale oder reservierte Ping-Zieladresse ist nicht erlaubt: {hostname_ascii} ({address})")
+
+    # Prefer IPv4 where both families are available; it is the most broadly
+    # supported choice for containerized monitoring. IPv6-only targets remain valid.
+    selected = next((address for address in addresses if address.version == 4), addresses[0])
+    return value, str(selected)
 
 
 def validate_outbound_url(
@@ -5441,6 +5507,7 @@ def runtime_dependency_checks() -> List[Dict[str, Any]]:
         ("ssh-keygen", False, "prüft hochgeladene SSH-Privatschlüssel"),
         ("dirmngr", False, "wird für Keyserver-Importe über gpg benötigt"),
         ("curl", False, "hilfreich für Diagnose und URL-Tests"),
+        ("ping", False, "wird für ICMP-Ping-Healthchecks benötigt"),
         ("lftp", False, "wird von eigenen Benutzerskripten oder FTP/SFTP-Workflows genutzt"),
     ]
     result: List[Dict[str, Any]] = []
@@ -5468,6 +5535,7 @@ def inject_globals():
     return {
         "app_name": APP_NAME,
         "app_version": APP_VERSION,
+        "app_release_date": APP_RELEASE_DATE,
         "auth_enabled": auth_enabled(),
         "setup_required": setup_required(),
         "auth_source": (admin_config() or {}).get("source", "nicht eingerichtet"),
@@ -12081,9 +12149,17 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
             }
             if not vals["name"] or not vals["url"]:
                 continue
-            if vals["method"] not in {"GET", "HEAD"}:
-                raise ValueError(f"Healthcheck {vals['name']}: nur GET oder HEAD ist zulässig.")
-            validate_outbound_url(vals["url"], allowed_schemes=("http", "https"), allow_private=bool(vals["allow_private"]))
+            vals["timeout_seconds"] = max(1, min(120, vals["timeout_seconds"]))
+            vals["interval_minutes"] = max(1, vals["interval_minutes"])
+            if vals["method"] not in {"GET", "HEAD", "PING"}:
+                raise ValueError(f"Healthcheck {vals['name']}: nur GET, HEAD oder PING ist zulässig.")
+            if vals["method"] == "PING":
+                vals["url"], _resolved = validate_ping_target(vals["url"], allow_private=bool(vals["allow_private"]))
+                vals["expected_status"] = 200
+            else:
+                if not 100 <= vals["expected_status"] <= 599:
+                    raise ValueError(f"Healthcheck {vals['name']}: HTTP-Status muss zwischen 100 und 599 liegen.")
+                validate_outbound_url(vals["url"], allowed_schemes=("http", "https"), allow_private=bool(vals["allow_private"]))
             if row and replace_existing:
                 con.execute("UPDATE healthchecks SET url=:url, expected_status=:expected_status, method=:method, timeout_seconds=:timeout_seconds, interval_minutes=:interval_minutes, enabled=:enabled, allow_private=:allow_private, updated_at=:updated_at WHERE id=:id", {**vals, "id": row["id"]})
                 imported["healthchecks"] += 1
@@ -12329,26 +12405,95 @@ def get_healthcheck(check_id: int) -> Optional[Dict[str, Any]]:
         return row_to_dict(row) if row else None
 
 
+def _run_ping_healthcheck(target: str, timeout_seconds: int, allow_private: bool) -> Dict[str, Any]:
+    display_target, resolved_address = validate_ping_target(target, allow_private=allow_private)
+    ping_binary = shutil.which("ping")
+    if not ping_binary:
+        raise RuntimeError("Ping-Programm ist im Container nicht installiert.")
+    timeout_seconds = max(1, min(120, int(timeout_seconds or 10)))
+    command = [ping_binary, "-n", "-c", "1", "-W", str(timeout_seconds), "--", resolved_address]
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=timeout_seconds + 2,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "status_code": None,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": f"Ping-Zeitüberschreitung nach {timeout_seconds} Sekunden.",
+            "target": display_target,
+            "resolved_address": resolved_address,
+        }
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
+    latency_ms = int((time.monotonic() - started) * 1000)
+    match = re.search(r"time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", output, flags=re.IGNORECASE)
+    if match:
+        try:
+            latency_ms = max(0, int(round(float(match.group(1)))))
+        except ValueError:
+            pass
+    ok = result.returncode == 0
+    error = ""
+    if not ok:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        error = (lines[-1] if lines else f"Ping fehlgeschlagen (Exit-Code {result.returncode}).")[:500]
+    return {
+        "ok": ok,
+        "status_code": 0 if ok else int(result.returncode),
+        "latency_ms": latency_ms,
+        "error": error,
+        "target": display_target,
+        "resolved_address": resolved_address,
+    }
+
+
 def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
     method = (check.get("method") or "GET").upper()
-    if method not in {"GET", "HEAD"}:
+    if method not in {"GET", "HEAD", "PING"}:
         method = "GET"
-    start = time.monotonic()
+    timeout_seconds = max(1, min(120, int(check.get("timeout_seconds") or 10)))
     status_code = None
     ok = False
     err = ""
-    try:
-        req = urllib.request.Request(check["url"], method=method, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-        with safe_urlopen(req, timeout=int(check.get("timeout_seconds") or 10), allowed_schemes=("http", "https"), allow_private=bool(check.get("allow_private"))) as resp:
-            status_code = int(resp.status)
+    latency = 0
+    if method == "PING":
+        start = time.monotonic()
+        try:
+            ping_result = _run_ping_healthcheck(
+                str(check.get("url") or ""),
+                timeout_seconds,
+                bool(check.get("allow_private")),
+            )
+            status_code = ping_result.get("status_code")
+            ok = bool(ping_result.get("ok"))
+            err = str(ping_result.get("error") or "")
+            latency = int(ping_result.get("latency_ms") or 0)
+        except Exception as exc:
+            err = str(exc)
+            latency = int((time.monotonic() - start) * 1000)
+    else:
+        start = time.monotonic()
+        try:
+            req = urllib.request.Request(check["url"], method=method, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+            with safe_urlopen(req, timeout=timeout_seconds, allowed_schemes=("http", "https"), allow_private=bool(check.get("allow_private"))) as resp:
+                status_code = int(resp.status)
+                ok = status_code == int(check.get("expected_status") or 200)
+        except urllib.error.HTTPError as exc:
+            status_code = int(exc.code)
             ok = status_code == int(check.get("expected_status") or 200)
-    except urllib.error.HTTPError as exc:
-        status_code = int(exc.code)
-        ok = status_code == int(check.get("expected_status") or 200)
-        err = "" if ok else str(exc)
-    except Exception as exc:
-        err = str(exc)
-    latency = int((time.monotonic() - start) * 1000)
+            err = "" if ok else str(exc)
+        except Exception as exc:
+            err = str(exc)
+        latency = int((time.monotonic() - start) * 1000)
+
     state = "ok" if ok else "error"
     with db() as con:
         con.execute(
@@ -12357,8 +12502,12 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
         )
     if not ok and notification_settings().get("enabled") and notification_settings().get("on_healthcheck_error"):
         if check.get("last_notify_state") != "error":
-            send_notification(f"DebMirror Healthcheck Fehler: {check['name']}", f"URL: {check['url']}\nErwartet: {check.get('expected_status')}\nStatus: {status_code}\nFehler: {err}\nZeit: {now_iso()}", kind="healthcheck")
-    return {"ok": ok, "status_code": status_code, "latency_ms": latency, "error": err}
+            if method == "PING":
+                detail = f"Ping-Ziel: {check['url']}\nStatus: fehlgeschlagen\nFehler: {err}\nZeit: {now_iso()}"
+            else:
+                detail = f"URL: {check['url']}\nErwartet: {check.get('expected_status')}\nStatus: {status_code}\nFehler: {err}\nZeit: {now_iso()}"
+            send_notification(f"DebMirror Healthcheck Fehler: {check['name']}", detail, kind="healthcheck")
+    return {"ok": ok, "status_code": status_code, "latency_ms": latency, "error": err, "method": method}
 
 
 def healthcheck_scan() -> None:
@@ -12397,12 +12546,21 @@ def healthchecks_page():
                 values = {
                     "name": request.form.get("name", "").strip(), "url": request.form.get("url", "").strip(),
                     "expected_status": int(request.form.get("expected_status") or 200), "method": request.form.get("method", "GET").upper(),
-                    "timeout_seconds": int(request.form.get("timeout_seconds") or 10), "interval_minutes": int(request.form.get("interval_minutes") or 60),
+                    "timeout_seconds": max(1, min(120, int(request.form.get("timeout_seconds") or 10))),
+                    "interval_minutes": max(1, int(request.form.get("interval_minutes") or 60)),
                     "enabled": bool_from_form("enabled"), "allow_private": bool_from_form("allow_private"), "updated_at": now_iso(),
                 }
                 if not values["name"] or not values["url"]:
-                    raise ValueError("Name und URL sind Pflichtfelder.")
-                validate_outbound_url(values["url"], allowed_schemes=("http", "https"), allow_private=bool(values["allow_private"]))
+                    raise ValueError("Name und Zieladresse sind Pflichtfelder.")
+                if values["method"] not in {"GET", "HEAD", "PING"}:
+                    raise ValueError("Als Healthcheck-Methode sind nur GET, HEAD oder PING zulässig.")
+                if values["method"] == "PING":
+                    values["url"], _resolved = validate_ping_target(values["url"], allow_private=bool(values["allow_private"]))
+                    values["expected_status"] = 200
+                else:
+                    if not 100 <= values["expected_status"] <= 599:
+                        raise ValueError("Der erwartete HTTP-Status muss zwischen 100 und 599 liegen.")
+                    validate_outbound_url(values["url"], allowed_schemes=("http", "https"), allow_private=bool(values["allow_private"]))
                 with db() as con:
                     if check_id_raw:
                         values["id"] = int(check_id_raw)

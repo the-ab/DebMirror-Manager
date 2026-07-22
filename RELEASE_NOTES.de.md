@@ -1,5 +1,33 @@
 # Release Notes
 
+## v0.1.86
+
+- Dashboard-Healthcheck-Liste korrigiert: Alle konfigurierten Healthchecks werden jetzt geladen und im vorhandenen Scrollbereich angezeigt.
+- Festes Anzeigelimit von acht Healthchecks entfernt.
+- Dashboard-Zähler und Detailtabelle verwenden damit dieselbe vollständige Datenmenge.
+- Regressionstest mit mehr als acht Healthchecks ergänzt.
+- VERSION auf 0.1.86 gesetzt.
+
+## v0.1.85
+
+- Basis des Anwendungscontainers von Debian Bookworm auf Debian 13 (Trixie) umgestellt.
+- Offizielles Docker-Image `python:3.13.14-slim-trixie` mit dem aktuellen Multi-Plattform-Index-Digest festgelegt.
+- Python-Laufzeit von Python 3.12 auf Python 3.13 aktualisiert und die Hash-Lockdatei für Python 3.13 gekennzeichnet.
+- `apt-get upgrade` in den Image-Build aufgenommen, damit vor der Installation der benötigten Laufzeitpakete die aktuellen Trixie-Paket- und Sicherheitsaktualisierungen eingespielt werden.
+- Optionalen nginx-Mirror-Container auf seinem getrennten Alpine-Image belassen; nur der DebMirror-Manager-Anwendungscontainer verwendet Trixie.
+- Deutsche und englische Anleitung, Drittanbieterhinweise und Regressionstests aktualisiert.
+- VERSION auf 0.1.85 gesetzt.
+
+## v0.1.84
+
+- Healthchecks um die Methode **Ping (ICMP)** für Hostnamen und IP-Adressen ergänzt.
+- Ping-Checks verwenden dieselben Intervalle, manuellen Starts, Benachrichtigungen und API-Berechtigungen wie HTTP-/HTTPS-Checks.
+- Ping-Ziele werden ohne Shell-Aufruf validiert; private oder lokale Adressen bleiben zustimmungspflichtig.
+- `iputils-ping` und die dafür erforderliche, eng begrenzte Container-Capability `NET_RAW` ergänzt.
+- Healthcheck-Formular und Übersichten unterscheiden URL- und Ping-Ziele eindeutig und blenden wirkungslose HTTP-Felder bei Ping aus.
+- Fußzeile auf allen WebUI-, Login- und Einrichtungsseiten um Version und Veröffentlichungsdatum ergänzt.
+- VERSION auf 0.1.84 gesetzt.
+
 ## v0.1.83
 
 - Automatische Übernahme von HTTP-/HTTPS-`Last-Modified`-Zeitstempeln für Dateien ergänzt, die während eines erfolgreichen echten Mirror-Laufs neu angelegt oder verändert wurden.

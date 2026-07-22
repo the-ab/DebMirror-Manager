@@ -1020,3 +1020,12 @@ button.locked-button:disabled {
 .login-language-form { margin: .75rem 0 1rem; }
 .login-language-form label { margin-top: 0; }
 .preference-card { max-width: 900px; }
+
+
+/* v0.1.84: healthcheck method fields and release footer */
+#healthcheckExpectedStatusField[hidden] { display: none; }
+.login-body { display: flex; flex-direction: column; align-items: center; justify-content: initial; }
+.login-card { margin: auto 1rem; }
+.auth-footer { width: 100%; text-align: center; flex: 0 0 auto; }
+
+/* v0.1.85: Debian Trixie / Python 3.13 application container release. */

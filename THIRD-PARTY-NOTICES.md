@@ -25,14 +25,14 @@ Exact resolved versions and hashes are recorded in `requirements.lock`. Upstream
 
 ## Container base images
 
-- The application image is based on the Docker Official Image for Python 3.12 on Debian Bookworm. Python is distributed under the Python Software Foundation License; Debian packages retain their individual licenses.
+- The application image is based on the Docker Official Image for Python 3.13 on Debian 13 (Trixie). Python is distributed under the Python Software Foundation License; Debian packages retain their individual licenses.
 - The optional mirror HTTP service uses the Docker Official Image for nginx on Alpine Linux. nginx and Alpine packages retain their individual licenses.
 
 The Docker image references are pinned in `Dockerfile` and `docker-compose.yml`. Their digests identify the exact multi-platform image indexes used for this release.
 
 ## Debian packages installed in the application image
 
-The application image installs Debian packages including `debmirror`, GnuPG, `gpgv`, `rsync`, OpenSSH client, `lftp`, `curl`, compression tools, and supporting utilities.
+The application image installs Debian packages including `debmirror`, GnuPG, `gpgv`, `rsync`, OpenSSH client, `lftp`, `curl`, `iputils-ping`, compression tools, and supporting utilities.
 
 `debmirror` is distributed under **GPL-2.0-or-later**. The WebUI invokes it as a separate program and does not incorporate its source code.
 

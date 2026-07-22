@@ -3,8 +3,8 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Healthchecks für lokale Clients</h1>
-    <p>Prüft, ob lokale Mirror-URLs für Clients erreichbar sind.</p>
+    <h1>Healthchecks für lokale Clients und Server</h1>
+    <p>Prüft Mirror-URLs per HTTP/HTTPS oder die Erreichbarkeit eines Servers per ICMP-Ping.</p>
   </div>
 </div>
 
@@ -12,34 +12,36 @@
 <div class="grid two healthcheck-editor-grid">
   <section class="card">
     <h2>{% if edit_check %}Healthcheck bearbeiten{% else %}Healthcheck anlegen{% endif %}</h2>
-    <form method="post"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <form method="post" id="healthcheckEditor"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <input type="hidden" name="action" value="save">
       <input type="hidden" name="check_id" value="{{ edit_check.id if edit_check else '' }}">
       <label>Name</label>
-      <input name="name" value="{{ edit_check.name if edit_check else '' }}" placeholder="Debian Bookworm Release" required>
-      <label>URL</label>
-      <input name="url" value="{{ edit_check.url if edit_check else '' }}" placeholder="http://SERVER-IP:8110/debian/dists/bookworm/Release" required>
+      <input name="name" value="{{ edit_check.name if edit_check else '' }}" placeholder="Debian Bookworm Release oder Repository-Server" required>
+      <label id="healthcheckTargetLabel">Zieladresse</label>
+      <input id="healthcheckTarget" name="url" value="{{ edit_check.url if edit_check else '' }}" placeholder="http://SERVER-IP:8110/debian/dists/bookworm/Release" required>
       <div class="grid two compact-form-grid">
         <div>
-          <label>Erwarteter HTTP-Status</label>
-          <input type="number" name="expected_status" value="{{ edit_check.expected_status if edit_check else 200 }}">
-        </div>
-        <div>
           <label>Methode</label>
-          <select name="method">
-            <option value="GET" {% if edit_check and edit_check.method == 'GET' %}selected{% endif %}>GET</option>
-            <option value="HEAD" {% if edit_check and edit_check.method == 'HEAD' %}selected{% endif %}>HEAD</option>
+          <select id="healthcheckMethod" name="method">
+            <option value="GET" {% if not edit_check or edit_check.method == 'GET' %}selected{% endif %}>HTTP GET</option>
+            <option value="HEAD" {% if edit_check and edit_check.method == 'HEAD' %}selected{% endif %}>HTTP HEAD</option>
+            <option value="PING" {% if edit_check and edit_check.method == 'PING' %}selected{% endif %}>Ping (ICMP)</option>
           </select>
+        </div>
+        <div id="healthcheckExpectedStatusField">
+          <label>Erwarteter HTTP-Status</label>
+          <input id="healthcheckExpectedStatus" type="number" min="100" max="599" name="expected_status" value="{{ edit_check.expected_status if edit_check else 200 }}">
         </div>
         <div>
           <label>Timeout Sekunden</label>
-          <input type="number" min="1" name="timeout_seconds" value="{{ edit_check.timeout_seconds if edit_check else 10 }}">
+          <input type="number" min="1" max="120" name="timeout_seconds" value="{{ edit_check.timeout_seconds if edit_check else 10 }}">
         </div>
         <div>
           <label>Intervall Minuten</label>
           <input type="number" min="1" name="interval_minutes" value="{{ edit_check.interval_minutes if edit_check else 60 }}">
         </div>
       </div>
+      <p id="healthcheckMethodHint" class="hint"></p>
       <label class="check"><input type="checkbox" name="enabled" {% if not edit_check or edit_check.enabled %}checked{% endif %}> Aktiv</label>
       <label class="check"><input type="checkbox" name="allow_private" {% if edit_check and edit_check.allow_private %}checked{% endif %}> Private oder lokale Zieladresse ausdrücklich erlauben</label>
       <p class="hint">Lokale Ziele wie 127.0.0.1, private LAN-Adressen und Docker-Netze sind standardmäßig gesperrt. Aktiviere diese Option nur für bewusst konfigurierte interne Healthchecks.</p>
@@ -51,9 +53,14 @@
   </section>
   <section class="card">
     <h2>Beispiele</h2>
-    <pre class="code">http://SERVER-IP:8110/debian/dists/bookworm/Release
-http://SERVER-IP:8110/ubuntu/dists/noble/Release
-http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
+    <pre class="code">HTTP/HTTPS:
+http://SERVER-IP:8110/debian/dists/bookworm/Release
+https://mirror.example.org/ubuntu/dists/noble/InRelease
+
+Ping (nur Host oder IP):
+repository-server.local
+192.168.178.10
+2001:db8::10</pre>
   </section>
 </div>
 {% endif %}
@@ -63,19 +70,19 @@ http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
   {% if checks %}
   <div class="table-scroll mobile-table-wrap">
     <table class="healthchecks-table mobile-card-table">
-      <thead><tr><th>Name</th><th>URL</th><th>Status</th><th>Letzte Prüfung</th><th>Latenz</th><th>Aktion</th></tr></thead>
+      <thead><tr><th>Name</th><th>Ziel</th><th>Status</th><th>Letzte Prüfung</th><th>Latenz</th><th>Aktion</th></tr></thead>
       <tbody>
       {% for c in checks %}
         <tr>
-          <td data-label="Name"><strong translate="no">{{ c.name }}</strong><br><small>{{ c.method }} erwartet {{ c.expected_status }}, alle {{ c.interval_minutes }} min</small></td>
-          <td data-label="URL"><code class="breakable-code">{{ c.url }}</code>{% if c.allow_private %}<br><span class="badge warning">privates Ziel erlaubt</span>{% endif %}</td>
+          <td data-label="Name"><strong translate="no">{{ c.name }}</strong><br><small>{% if c.method == 'PING' %}Ping (ICMP){% else %}{{ c.method }} erwartet {{ c.expected_status }}{% endif %}, alle {{ c.interval_minutes }} min</small></td>
+          <td data-label="Ziel"><code class="breakable-code">{{ c.url }}</code>{% if c.allow_private %}<br><span class="badge warning">privates Ziel erlaubt</span>{% endif %}</td>
           <td data-label="Status">
             {% if c.last_ok is none %}
               <span class="badge muted">nie geprüft</span>
             {% elif c.last_ok %}
-              <span class="badge ok">OK {{ c.last_status_code }}</span>
+              <span class="badge ok">OK{% if c.method != 'PING' %} {{ c.last_status_code }}{% endif %}</span>
             {% else %}
-              <span class="badge error">Fehler {{ c.last_status_code or '-' }}</span>
+              <span class="badge error">Fehler{% if c.method != 'PING' %} {{ c.last_status_code or '-' }}{% endif %}</span>
               {% if c.last_error %}<small class="healthcheck-error" translate="no">{{ c.last_error }}</small>{% endif %}
             {% endif %}
           </td>
@@ -95,4 +102,30 @@ http://SERVER-IP:8110/scpcom/dists/stable/Release</pre>
   </div>
   {% else %}<p>Noch keine Healthchecks vorhanden.</p>{% endif %}
 </section>
+{% if is_admin %}
+<script>
+(function () {
+  var method = document.getElementById('healthcheckMethod');
+  var target = document.getElementById('healthcheckTarget');
+  var targetLabel = document.getElementById('healthcheckTargetLabel');
+  var expectedWrap = document.getElementById('healthcheckExpectedStatusField');
+  var expected = document.getElementById('healthcheckExpectedStatus');
+  var hint = document.getElementById('healthcheckMethodHint');
+  if (!method || !target || !targetLabel || !expectedWrap || !expected || !hint) return;
+  var english = {{ (language == 'en')|tojson }};
+  function updateFields() {
+    var ping = method.value === 'PING';
+    targetLabel.textContent = ping ? (english ? 'Ping target (host or IP)' : 'Ping-Ziel (Host oder IP)') : 'URL';
+    target.placeholder = ping ? 'repository-server.local oder 192.168.178.10' : 'http://SERVER-IP:8110/debian/dists/bookworm/Release';
+    expectedWrap.hidden = ping;
+    expected.disabled = ping;
+    hint.textContent = ping
+      ? (english ? 'Ping sends one ICMP echo request. The HTTP status field is not used.' : 'Ping sendet eine ICMP-Echo-Anfrage. Der HTTP-Status wird dabei nicht verwendet.')
+      : (english ? 'GET or HEAD checks the configured HTTP status and response time.' : 'GET oder HEAD prüft den eingestellten HTTP-Status und die Antwortzeit.');
+  }
+  method.addEventListener('change', updateFields);
+  updateFields();
+})();
+</script>
+{% endif %}
 {% endblock %}

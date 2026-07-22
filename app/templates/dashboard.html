@@ -235,15 +235,15 @@
       {% if healthchecks %}
       <div class="table-scroll dashboard-table-scroll small">
         <table class="compact-table">
-          <thead><tr><th>Name</th><th>Status</th><th>Latenz</th><th>Letzte Prüfung</th><th>URL</th></tr></thead>
+          <thead><tr><th>Name</th><th>Status</th><th>Latenz</th><th>Letzte Prüfung</th><th>Ziel</th></tr></thead>
           <tbody>
-          {% for c in healthchecks[:8] %}
+          {% for c in healthchecks %}
             <tr>
               <td><a href="{{ url_for('healthchecks_page') }}"><strong translate="no">{{ c.name }}</strong></a></td>
               <td>{% if c.last_ok is none %}<span class="badge muted">nie geprüft</span>{% elif c.last_ok %}<span class="badge ok">OK</span>{% else %}<span class="badge error">Fehler</span>{% endif %}</td>
               <td>{% if c.last_latency_ms is not none %}{{ c.last_latency_ms }} ms{% else %}-{% endif %}</td>
               <td>{{ c.last_check_at or '-' }}</td>
-              <td><small>{{ c.url }}</small></td>
+              <td><small>{% if c.method == 'PING' %}<span class="badge muted">Ping</span> {% endif %}{{ c.url }}</small></td>
             </tr>
           {% endfor %}
           </tbody>

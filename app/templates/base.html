@@ -98,7 +98,7 @@
       {% endwith %}
       {% block content %}{% endblock %}
     </main>
-    <footer class="footer">DebMirror Manager · Apache-2.0</footer>
+    <footer class="footer">DebMirror Manager · v{{ app_version }} · {% if language == 'en' %}Released {{ app_release_date }}{% else %}Veröffentlicht {{ app_release_date[8:10] }}.{{ app_release_date[5:7] }}.{{ app_release_date[0:4] }}{% endif %} · Apache-2.0</footer>
   </div>
 </div>
 <script>

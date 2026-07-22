@@ -1,5 +1,33 @@
 # Release Notes
 
+## v0.1.86
+
+- Fixed the dashboard health-check list so every configured health check is rendered inside the existing scroll area.
+- Removed the fixed display limit of eight health checks.
+- The dashboard summary count and detail table now use the same complete data set.
+- Added a regression test with more than eight health checks.
+- Set VERSION to 0.1.86.
+
+## v0.1.85
+
+- Changed the application container base from Debian Bookworm to Debian 13 (Trixie).
+- Pinned the Docker Official Image `python:3.13.14-slim-trixie` to its current multi-platform index digest.
+- Updated the runtime from Python 3.12 to Python 3.13 and marked the hash-locked dependency set for Python 3.13.
+- Added an `apt-get upgrade` step so current Trixie package and security updates are applied during image builds before the required runtime packages are installed.
+- Kept the optional nginx mirror container on its separate Alpine image; only the DebMirror Manager application container uses Trixie.
+- Updated English and German documentation, third-party notices and regression checks.
+- Set VERSION to 0.1.85.
+
+## v0.1.84
+
+- Added **Ping (ICMP)** health checks for host names and IP addresses.
+- Ping checks use the same intervals, manual execution, notifications, and API permissions as HTTP/HTTPS checks.
+- Ping targets are validated without invoking a shell; private or local addresses still require explicit permission.
+- Added `iputils-ping` and the narrowly scoped `NET_RAW` container capability required for ICMP.
+- Updated health-check forms and summaries to distinguish URL and ping targets and hide irrelevant HTTP fields for ping checks.
+- Added the installed version and release date to the footer on every Web UI, login, and setup page.
+- Set VERSION to 0.1.84.
+
 ## v0.1.83
 
 - Added automatic preservation of HTTP/HTTPS `Last-Modified` timestamps for files created or changed during a successful non-dry-run mirror job.

@@ -36,7 +36,17 @@ def test_repository_publication_files_exist():
         "RELEASE_NOTES.de.md",
     }
     assert all((project_root / name).is_file() for name in required)
-    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.83"
+    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.86"
+
+
+def test_application_container_uses_pinned_trixie_base():
+    project_root = Path(__file__).resolve().parents[1]
+    dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+    first_line = dockerfile.splitlines()[0]
+    assert first_line.startswith("FROM python:3.13.14-slim-trixie@sha256:")
+    assert "bookworm" not in first_line.lower()
+    assert "apt-get upgrade -y" in dockerfile
+
 
 
 def test_setup_cannot_be_forced_after_initial_user(client, database_cleanup):
@@ -458,3 +468,131 @@ def test_stop_internal_time_sync_job_sets_cancel_event(tmp_path):
         with dmm.db() as con:
             con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
             con.execute("DELETE FROM mirrors WHERE id=?", (mirror_id,))
+
+
+
+def test_ping_target_validation_blocks_private_by_default_and_allows_explicit():
+    with pytest.raises(ValueError):
+        dmm.validate_ping_target("127.0.0.1")
+    display, address = dmm.validate_ping_target("127.0.0.1", allow_private=True)
+    assert display == "127.0.0.1"
+    assert address == "127.0.0.1"
+    for invalid in ("http://example.org", "example.org:443", "-c", "host/path"):
+        with pytest.raises(ValueError):
+            dmm.validate_ping_target(invalid, allow_private=True)
+
+
+def test_ping_healthcheck_success_updates_database(monkeypatch):
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO healthchecks(name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, allow_private, created_at, updated_at)
+            VALUES ('ping-test-success', '127.0.0.1', 200, 'PING', 5, 60, 1, 1, ?, ?)
+            """,
+            (now, now),
+        )
+        check_id = int(cur.lastrowid)
+    monkeypatch.setattr(
+        dmm,
+        "_run_ping_healthcheck",
+        lambda *_args, **_kwargs: {"ok": True, "status_code": 0, "latency_ms": 7, "error": ""},
+    )
+    try:
+        result = dmm.run_healthcheck_once(dmm.get_healthcheck(check_id))
+        assert result["ok"] is True
+        assert result["method"] == "PING"
+        with dmm.db() as con:
+            row = con.execute("SELECT last_ok, last_status_code, last_latency_ms, last_error FROM healthchecks WHERE id=?", (check_id,)).fetchone()
+        assert row["last_ok"] == 1
+        assert row["last_status_code"] == 0
+        assert row["last_latency_ms"] == 7
+        assert row["last_error"] == ""
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM healthchecks WHERE id=?", (check_id,))
+
+
+def test_healthcheck_form_accepts_ping_and_hides_http_status(client, database_cleanup, monkeypatch):
+    admin = make_user("ping-healthcheck-admin")
+    token = authenticate(client, admin)
+    monkeypatch.setattr(dmm, "validate_ping_target", lambda target, allow_private=False: (target, "192.0.2.1"))
+    response = client.post(
+        "/healthchecks",
+        data={
+            "_csrf_token": token,
+            "action": "save",
+            "name": "external-ping",
+            "url": "example.org",
+            "method": "PING",
+            "timeout_seconds": "5",
+            "interval_minutes": "10",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code in {302, 303}
+    with dmm.db() as con:
+        row = con.execute("SELECT method, url, expected_status FROM healthchecks WHERE name='external-ping'").fetchone()
+        con.execute("DELETE FROM healthchecks WHERE name='external-ping'")
+    assert row["method"] == "PING"
+    assert row["url"] == "example.org"
+    assert row["expected_status"] == 200
+    page = client.get("/healthchecks")
+    html = page.get_data(as_text=True)
+    assert 'value="PING"' in html
+    assert 'Ping (ICMP)' in html
+
+
+def test_dashboard_renders_all_configured_healthchecks(client, database_cleanup):
+    admin = make_user("dashboard-healthchecks-admin")
+    authenticate(client, admin)
+    prefix = "zz-dashboard-healthcheck-"
+    created_at = dmm.now_iso()
+    with dmm.db() as con:
+        con.execute("DELETE FROM healthchecks WHERE name LIKE ?", (prefix + "%",))
+        for index in range(12):
+            con.execute(
+                """
+                INSERT INTO healthchecks(
+                    name, url, expected_status, method, timeout_seconds,
+                    interval_minutes, enabled, allow_private, created_at, updated_at
+                ) VALUES (?, ?, 200, 'PING', 5, 60, 1, 0, ?, ?)
+                """,
+                (f"{prefix}{index:02d}", "example.org", created_at, created_at),
+            )
+    try:
+        response = client.get("/")
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        for index in range(12):
+            assert f"{prefix}{index:02d}" in html
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM healthchecks WHERE name LIKE ?", (prefix + "%",))
+
+
+def test_release_footer_is_present_on_app_login_and_setup_templates(client, database_cleanup):
+    admin = make_user("footer-admin")
+    authenticate(client, admin)
+    page = client.get("/")
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    assert "v0.1.86" in html
+    assert "2026-07-22" in html or "22.07.2026" in html
+
+    with client.session_transaction() as session:
+        session.clear()
+    login = client.get("/login")
+    assert login.status_code == 200
+    login_html = login.get_data(as_text=True)
+    assert "v0.1.86" in login_html
+    assert "2026-07-22" in login_html or "22.07.2026" in login_html
+
+
+def test_ping_runtime_dependencies_are_declared():
+    project_root = Path(__file__).resolve().parents[1]
+    dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+    compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "iputils-ping" in dockerfile
+    assert "NET_RAW" in compose

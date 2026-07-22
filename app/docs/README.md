@@ -2,7 +2,7 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.83**
+Current version: **0.1.86**
 
 ## Project status, affiliation, and licensing
 
@@ -43,13 +43,17 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.83.zip
+unzip debmirror-manager-v0.1.86.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
 ```
 
 `install.sh` asks for the persistent data directory, local mirror directory, WebUI port, optional nginx mirror HTTP service, update and backup directories, job queue settings, retention, dashboard limits, size calculation, storage guard, time zone, and initial administrator credentials. On later runs it reads the existing `.env` file and proposes the current values as defaults.
+
+### Container operating system
+
+The application image uses the Docker Official Image `python:3.13.14-slim-trixie` and therefore Debian 13 (Trixie) as its operating-system base. The image is pinned to a multi-platform digest. During each image build, available Trixie package updates are installed before `debmirror`, GnuPG, Rsync, OpenSSH, ping and the other runtime packages are added. The optional mirror web server remains a separate nginx Alpine container.
 
 ### Web server and container logs
 
@@ -303,7 +307,7 @@ Dry runs and user scripts are not blocked. Queued mirror jobs resume only after 
 
 ## Health checks
 
-Health checks request configured repository URLs, record HTTP status and latency, and can trigger notifications. Private or local targets must be explicitly allowed per health check. Other outbound import and webhook functions block local, private, link-local, reserved, and metadata-network destinations unless narrowly allowlisted.
+Health checks support HTTP/HTTPS GET or HEAD requests as well as ICMP ping checks. HTTP checks record the expected status and latency; ping checks accept a hostname or IP address and record reachability and round-trip latency. Private or local targets must be explicitly allowed per health check. Ping uses the container-installed `iputils-ping` utility with only the `NET_RAW` Linux capability. Scheduling, manual execution, notifications, and API execution work for both check types. Other outbound import and webhook functions block local, private, link-local, reserved, and metadata-network destinations unless narrowly allowlisted.
 
 ## Notifications
 
@@ -433,3 +437,6 @@ The repository contains `.gitignore` and `.dockerignore` rules that exclude loca
 Production Python dependencies are resolved in `requirements.lock` with exact versions and package hashes. The Docker build installs this lock file with `--require-hashes`. Base images are pinned by version and digest. Debian packages inside the image continue to come from the signed distribution repositories and are therefore not claimed to be bit-for-bit reproducible.
 
 Tests, repository audits, dependency checks, shell validation, Compose validation, and Docker builds are run manually using the local commands documented in `CONTRIBUTING.md`.
+
+
+Every Web UI page footer displays the installed version, release date, and project license.
