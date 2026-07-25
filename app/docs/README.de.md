@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.86**
+Aktuelle Version: **0.1.87**
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,7 +42,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.86.zip
+unzip debmirror-manager-v0.1.87.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -445,11 +445,11 @@ HTTP-/HTTPS-Healthchecks prüfen lokale Repository-URLs wie:
 http://mirror.local/debian/dists/bookworm/Release
 ```
 
-Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Auf dem Dashboard werden Status, letzte Prüfung, URL und die zuletzt gemessene Latenz angezeigt. Die Healthcheck-Liste und das Bearbeitungsformular sind für schmale Displays kompakt angeordnet.
+Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Nach einem Fehler kann zusätzlich genau einmal eine Recovery-Benachrichtigung gesendet werden, sobald das Ziel wieder erreichbar ist; dauerhaft erfolgreiche oder weiterhin fehlerhafte Prüfungen erzeugen dadurch keine wiederholten Meldungen. Fehler- und Recovery-Benachrichtigungen sind getrennt konfigurierbar. Auf dem Dashboard werden Status, letzte Prüfung, URL und die zuletzt gemessene Latenz angezeigt. Die Healthcheck-Liste und das Bearbeitungsformular sind für schmale Displays kompakt angeordnet.
 
 ## Benachrichtigungen
 
-Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Derselbe persistente Schlüssel schützt auch gespeicherte Remote-Passwörter von Mirror-Profilen. Er liegt im Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor Datenbank und Einstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
+Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. Für Healthchecks lassen sich Fehlerbenachrichtigungen und die einmalige Meldung bei erneuter Erreichbarkeit getrennt aktivieren. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Derselbe persistente Schlüssel schützt auch gespeicherte Remote-Passwörter von Mirror-Profilen. Er liegt im Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor Datenbank und Einstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
 
 ## Systembereiche
 

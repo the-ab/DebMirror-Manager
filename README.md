@@ -2,7 +2,7 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.86**
+Current version: **0.1.87**
 
 ## Project status, affiliation, and licensing
 
@@ -43,7 +43,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.86.zip
+unzip debmirror-manager-v0.1.87.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -307,11 +307,11 @@ Dry runs and user scripts are not blocked. Queued mirror jobs resume only after 
 
 ## Health checks
 
-Health checks support HTTP/HTTPS GET or HEAD requests as well as ICMP ping checks. HTTP checks record the expected status and latency; ping checks accept a hostname or IP address and record reachability and round-trip latency. Private or local targets must be explicitly allowed per health check. Ping uses the container-installed `iputils-ping` utility with only the `NET_RAW` Linux capability. Scheduling, manual execution, notifications, and API execution work for both check types. Other outbound import and webhook functions block local, private, link-local, reserved, and metadata-network destinations unless narrowly allowlisted.
+Health checks support HTTP/HTTPS GET or HEAD requests as well as ICMP ping checks. HTTP checks record the expected status and latency; ping checks accept a hostname or IP address and record reachability and round-trip latency. A failing check can send an alert once, followed by one recovery notification when the target becomes reachable again. Repeated healthy or repeated failing checks do not create duplicate transition notifications. Private or local targets must be explicitly allowed per health check. Ping uses the container-installed `iputils-ping` utility with only the `NET_RAW` Linux capability. Scheduling, manual execution, notifications, and API execution work for both check types. Other outbound import and webhook functions block local, private, link-local, reserved, and metadata-network destinations unless narrowly allowlisted.
 
 ## Notifications
 
-SMTP email, Telegram, and Discord can be configured under **Operations → Notifications**. Secret values are never returned to the form. Empty secret fields retain the stored value; a new value replaces it.
+SMTP email, Telegram, and Discord can be configured under **Operations → Notifications**. Health-check failure alerts and one-time recovery notifications can be enabled independently. Secret values are never returned to the form. Empty secret fields retain the stored value; a new value replaces it.
 
 Secrets and mirror-profile passwords are encrypted with the persistent key `/app/data/notification-secrets.key`, which is included in encrypted full backups and restored before the database and settings.
 

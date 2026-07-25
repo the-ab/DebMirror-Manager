@@ -36,7 +36,7 @@ def test_repository_publication_files_exist():
         "RELEASE_NOTES.de.md",
     }
     assert all((project_root / name).is_file() for name in required)
-    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.86"
+    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.87"
 
 
 def test_application_container_uses_pinned_trixie_base():
@@ -513,6 +513,96 @@ def test_ping_healthcheck_success_updates_database(monkeypatch):
             con.execute("DELETE FROM healthchecks WHERE id=?", (check_id,))
 
 
+
+def test_healthcheck_recovery_notification_is_sent_once(monkeypatch):
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO healthchecks(
+                name, url, expected_status, method, timeout_seconds,
+                interval_minutes, enabled, allow_private, last_notify_state,
+                created_at, updated_at
+            ) VALUES ('ping-recovery-test', '127.0.0.1', 200, 'PING', 5, 60, 1, 1, 'error', ?, ?)
+            """,
+            (now, now),
+        )
+        check_id = int(cur.lastrowid)
+
+    notifications = []
+    monkeypatch.setattr(
+        dmm,
+        "_run_ping_healthcheck",
+        lambda *_args, **_kwargs: {"ok": True, "status_code": 0, "latency_ms": 8, "error": ""},
+    )
+    monkeypatch.setattr(
+        dmm,
+        "notification_settings",
+        lambda: {"enabled": True, "on_healthcheck_error": True, "on_healthcheck_recovery": True},
+    )
+    monkeypatch.setattr(
+        dmm,
+        "send_notification",
+        lambda subject, message, kind="info": notifications.append((subject, message, kind)) or ["ok"],
+    )
+    try:
+        first = dmm.run_healthcheck_once(dmm.get_healthcheck(check_id))
+        assert first["ok"] is True
+        assert len(notifications) == 1
+        assert "wieder erreichbar" in notifications[0][0]
+        assert "Latenz: 8 ms" in notifications[0][1]
+
+        second = dmm.run_healthcheck_once(dmm.get_healthcheck(check_id))
+        assert second["ok"] is True
+        assert len(notifications) == 1
+
+        with dmm.db() as con:
+            row = con.execute("SELECT last_notify_state FROM healthchecks WHERE id=?", (check_id,)).fetchone()
+        assert row["last_notify_state"] == "ok"
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM healthchecks WHERE id=?", (check_id,))
+
+
+def test_healthcheck_recovery_notification_can_be_disabled(monkeypatch):
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO healthchecks(
+                name, url, expected_status, method, timeout_seconds,
+                interval_minutes, enabled, allow_private, last_notify_state,
+                created_at, updated_at
+            ) VALUES ('ping-recovery-disabled-test', '127.0.0.1', 200, 'PING', 5, 60, 1, 1, 'error', ?, ?)
+            """,
+            (now, now),
+        )
+        check_id = int(cur.lastrowid)
+
+    notifications = []
+    monkeypatch.setattr(
+        dmm,
+        "_run_ping_healthcheck",
+        lambda *_args, **_kwargs: {"ok": True, "status_code": 0, "latency_ms": 4, "error": ""},
+    )
+    monkeypatch.setattr(
+        dmm,
+        "notification_settings",
+        lambda: {"enabled": True, "on_healthcheck_error": True, "on_healthcheck_recovery": False},
+    )
+    monkeypatch.setattr(
+        dmm,
+        "send_notification",
+        lambda subject, message, kind="info": notifications.append((subject, message, kind)) or ["ok"],
+    )
+    try:
+        result = dmm.run_healthcheck_once(dmm.get_healthcheck(check_id))
+        assert result["ok"] is True
+        assert notifications == []
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM healthchecks WHERE id=?", (check_id,))
+
 def test_healthcheck_form_accepts_ping_and_hides_http_status(client, database_cleanup, monkeypatch):
     admin = make_user("ping-healthcheck-admin")
     token = authenticate(client, admin)
@@ -578,16 +668,16 @@ def test_release_footer_is_present_on_app_login_and_setup_templates(client, data
     page = client.get("/")
     assert page.status_code == 200
     html = page.get_data(as_text=True)
-    assert "v0.1.86" in html
-    assert "2026-07-22" in html or "22.07.2026" in html
+    assert "v0.1.87" in html
+    assert "2026-07-25" in html or "25.07.2026" in html
 
     with client.session_transaction() as session:
         session.clear()
     login = client.get("/login")
     assert login.status_code == 200
     login_html = login.get_data(as_text=True)
-    assert "v0.1.86" in login_html
-    assert "2026-07-22" in login_html or "22.07.2026" in login_html
+    assert "v0.1.87" in login_html
+    assert "2026-07-25" in login_html or "25.07.2026" in login_html
 
 
 def test_ping_runtime_dependencies_are_declared():

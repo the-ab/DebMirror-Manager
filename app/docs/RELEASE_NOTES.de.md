@@ -1,5 +1,14 @@
 # Release Notes
 
+## v0.1.87
+
+- Healthcheck-Benachrichtigungen um eine Recovery-Meldung ergänzt: Ein zuvor fehlgeschlagenes Ziel meldet einmalig, wenn es wieder erreichbar ist.
+- Recovery-Meldungen werden nur beim Zustandswechsel `Fehler -> OK` versendet; dauerhaft erfolgreiche Checks erzeugen keine zusätzlichen Meldungen und dauerhaft fehlerhafte Checks weiterhin nur die erste Fehlerbenachrichtigung.
+- Neue getrennte Benachrichtigungsoption **„Senden, wenn ein fehlgeschlagener Healthcheck wieder erreichbar ist“** ergänzt. Sie ist für bestehende Installationen standardmäßig aktiviert und kann unabhängig von Fehlerbenachrichtigungen deaktiviert werden.
+- Recovery-Meldungen enthalten Ziel, Zeitpunkt und Latenz sowie bei HTTP/HTTPS den zurückgegebenen HTTP-Status. Ping- und HTTP/HTTPS-Healthchecks verwenden dieselbe Zustandslogik.
+- Regressionstests für einmalige Recovery-Benachrichtigungen und die deaktivierbare Recovery-Option ergänzt.
+- VERSION auf 0.1.87 gesetzt.
+
 ## v0.1.86
 
 - Dashboard-Healthcheck-Liste korrigiert: Alle konfigurierten Healthchecks werden jetzt geladen und im vorhandenen Scrollbereich angezeigt.

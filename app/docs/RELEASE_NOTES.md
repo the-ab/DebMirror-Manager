@@ -1,5 +1,14 @@
 # Release Notes
 
+## v0.1.87
+
+- Added health-check recovery notifications: a previously failing target now sends one notification when it becomes reachable again.
+- Recovery messages are sent only on the `error -> OK` state transition; continuously healthy checks remain silent and continuously failing checks still emit only the initial failure notification.
+- Added the separate **“Send when a failed health check is reachable again”** notification option. It defaults to enabled for existing installations and can be disabled independently of failure notifications.
+- Recovery messages include the target, timestamp and latency and, for HTTP/HTTPS checks, the returned HTTP status. Ping and HTTP/HTTPS health checks use the same transition logic.
+- Added regression tests for one-time recovery notifications and for disabling recovery messages.
+- Set VERSION to 0.1.87.
+
 ## v0.1.86
 
 - Fixed the dashboard health-check list so every configured health check is rendered inside the existing scroll area.

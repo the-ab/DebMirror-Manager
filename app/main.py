@@ -12238,7 +12238,7 @@ def config_export_download():
 
 def notification_defaults() -> Dict[str, Any]:
     return {
-        "enabled": False, "on_success": False, "on_error": True, "on_healthcheck_error": True,
+        "enabled": False, "on_success": False, "on_error": True, "on_healthcheck_error": True, "on_healthcheck_recovery": True,
         "smtp_enabled": False, "smtp_host": "", "smtp_port": 587, "smtp_tls": True, "smtp_username": "", "smtp_password": "", "smtp_from": "", "smtp_to": "",
         "telegram_enabled": False, "telegram_bot_token": "", "telegram_chat_id": "",
         "discord_enabled": False, "discord_webhook_url": "",
@@ -12278,7 +12278,7 @@ def save_notification_settings(form) -> None:
     raw_current = raw_notification_settings()
     notify = notification_defaults()
     notify.update({
-        "enabled": bool_from_form("enabled"), "on_success": bool_from_form("on_success"), "on_error": bool_from_form("on_error"), "on_healthcheck_error": bool_from_form("on_healthcheck_error"),
+        "enabled": bool_from_form("enabled"), "on_success": bool_from_form("on_success"), "on_error": bool_from_form("on_error"), "on_healthcheck_error": bool_from_form("on_healthcheck_error"), "on_healthcheck_recovery": bool_from_form("on_healthcheck_recovery"),
         "smtp_enabled": bool_from_form("smtp_enabled"), "smtp_host": form.get("smtp_host", "").strip(), "smtp_port": int(form.get("smtp_port") or 587), "smtp_tls": bool_from_form("smtp_tls"),
         "smtp_username": form.get("smtp_username", "").strip(), "smtp_from": form.get("smtp_from", "").strip(), "smtp_to": form.get("smtp_to", "").strip(),
         "telegram_enabled": bool_from_form("telegram_enabled"), "telegram_chat_id": form.get("telegram_chat_id", "").strip(),
@@ -12495,18 +12495,39 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
         latency = int((time.monotonic() - start) * 1000)
 
     state = "ok" if ok else "error"
+    previous_state = str(check.get("last_notify_state") or "").strip().lower()
+    checked_at = now_iso()
     with db() as con:
         con.execute(
             "UPDATE healthchecks SET last_check_at=?, last_ok=?, last_status_code=?, last_latency_ms=?, last_error=?, last_notify_state=? WHERE id=?",
-            (now_iso(), 1 if ok else 0, status_code, latency, err, state, check["id"]),
+            (checked_at, 1 if ok else 0, status_code, latency, err, state, check["id"]),
         )
-    if not ok and notification_settings().get("enabled") and notification_settings().get("on_healthcheck_error"):
-        if check.get("last_notify_state") != "error":
+
+    notify_cfg = notification_settings()
+    if notify_cfg.get("enabled"):
+        if not ok and notify_cfg.get("on_healthcheck_error") and previous_state != "error":
             if method == "PING":
-                detail = f"Ping-Ziel: {check['url']}\nStatus: fehlgeschlagen\nFehler: {err}\nZeit: {now_iso()}"
+                detail = f"Ping-Ziel: {check['url']}\nStatus: fehlgeschlagen\nFehler: {err}\nZeit: {checked_at}"
             else:
-                detail = f"URL: {check['url']}\nErwartet: {check.get('expected_status')}\nStatus: {status_code}\nFehler: {err}\nZeit: {now_iso()}"
+                detail = f"URL: {check['url']}\nErwartet: {check.get('expected_status')}\nStatus: {status_code}\nFehler: {err}\nZeit: {checked_at}"
             send_notification(f"DebMirror Healthcheck Fehler: {check['name']}", detail, kind="healthcheck")
+        elif ok and notify_cfg.get("on_healthcheck_recovery") and previous_state == "error":
+            if method == "PING":
+                detail = (
+                    f"Ping-Ziel: {check['url']}\n"
+                    f"Status: wieder erreichbar\n"
+                    f"Latenz: {latency} ms\n"
+                    f"Zeit: {checked_at}"
+                )
+            else:
+                detail = (
+                    f"URL: {check['url']}\n"
+                    f"Status: wieder erreichbar\n"
+                    f"HTTP-Status: {status_code}\n"
+                    f"Latenz: {latency} ms\n"
+                    f"Zeit: {checked_at}"
+                )
+            send_notification(f"DebMirror Healthcheck wieder erreichbar: {check['name']}", detail, kind="healthcheck")
     return {"ok": ok, "status_code": status_code, "latency_ms": latency, "error": err, "method": method}
 
 
