@@ -2,7 +2,7 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.87**
+Current version: **0.1.89**
 
 ## Project status, affiliation, and licensing
 
@@ -43,7 +43,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.87.zip
+unzip debmirror-manager-v0.1.89.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
