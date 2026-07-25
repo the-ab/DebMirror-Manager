@@ -559,3 +559,8 @@ Tests, Repository-Prüfungen, Abhängigkeitsprüfungen, Shell-Prüfungen, Compos
 
 
 Die Fußzeile jeder WebUI-Seite zeigt die installierte Version, das Veröffentlichungsdatum und die Projektlizenz.
+
+
+### GitHub-Release-Prüfung
+
+Die WebUI kann das öffentliche Repository `the-ab/DebMirror-Manager` automatisch auf ein neueres GitHub-Release prüfen. Standardmäßig erfolgt die Prüfung alle 24 Stunden. Intervall und Aktivierung werden unter **System → Einstellungen** festgelegt. **Update verfügbar** öffnet den passenden Release in einem neuen Browser-Tab; ohne neues Release wird **Version Aktuell** angezeigt. Die Funktion installiert keine Updates automatisch. Mit **Jetzt prüfen** kann jederzeit zusätzlich eine sofortige manuelle Prüfung gestartet werden, auch wenn die automatische Prüfung deaktiviert ist.

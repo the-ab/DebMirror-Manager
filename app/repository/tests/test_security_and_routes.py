@@ -668,7 +668,7 @@ def test_release_footer_is_present_on_app_login_and_setup_templates(client, data
     page = client.get("/")
     assert page.status_code == 200
     html = page.get_data(as_text=True)
-    assert "v0.1.87" in html
+    assert "v0.1.89" in html
     assert "2026-07-25" in html or "25.07.2026" in html
 
     with client.session_transaction() as session:
@@ -676,7 +676,7 @@ def test_release_footer_is_present_on_app_login_and_setup_templates(client, data
     login = client.get("/login")
     assert login.status_code == 200
     login_html = login.get_data(as_text=True)
-    assert "v0.1.87" in login_html
+    assert "v0.1.89" in login_html
     assert "2026-07-25" in login_html or "25.07.2026" in login_html
 
 
@@ -686,3 +686,17 @@ def test_ping_runtime_dependencies_are_declared():
     compose = (project_root / "docker-compose.yml").read_text(encoding="utf-8")
     assert "iputils-ping" in dockerfile
     assert "NET_RAW" in compose
+
+
+def test_manual_update_check_button_is_present():
+    project_root = Path(__file__).resolve().parents[1]
+    template = (project_root / "app" / "templates" / "settings.html").read_text(encoding="utf-8")
+    assert "url_for('update_check_now')" in template
+    assert "Jetzt prüfen" in template
+
+
+def test_manual_update_check_can_bypass_disabled_automation():
+    project_root = Path(__file__).resolve().parents[1]
+    source = (project_root / "app" / "main.py").read_text(encoding="utf-8")
+    assert "def update_check_scan(force: bool = False, allow_disabled: bool = False)" in source
+    assert "update_check_scan(force=True, allow_disabled=True)" in source

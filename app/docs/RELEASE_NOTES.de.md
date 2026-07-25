@@ -1,5 +1,24 @@
 # Release Notes
 
+## v0.1.89
+
+- Unter **System → Einstellungen → Updateprüfung** den manuellen Button **„Jetzt prüfen“** ergänzt.
+- Die manuelle Prüfung wird sofort gegen das fest hinterlegte GitHub-Repository `the-ab/DebMirror-Manager` ausgeführt und aktualisiert den gespeicherten Release-Status.
+- Der manuelle Prüflauf funktioniert auch dann, wenn die automatische Updateprüfung deaktiviert ist.
+- Andere noch nicht gespeicherte Systemeinstellungen werden beim Betätigen von **„Jetzt prüfen“** nicht gespeichert oder verändert.
+- Das Ergebnis wird als **„Update verfügbar“**, **„Version Aktuell“** oder als konkrete Fehlermeldung angezeigt.
+- VERSION auf 0.1.89 gesetzt.
+
+## v0.1.88
+
+- Neue automatische GitHub-Release-Prüfung für `the-ab/DebMirror-Manager` ergänzt. Die Prüfung ist standardmäßig aktiviert und läuft höchstens einmal innerhalb des konfigurierten Intervalls.
+- Standardintervall auf 24 Stunden gesetzt; unter **System → Einstellungen** kann die Updateprüfung deaktiviert oder das Intervall zwischen 1 und 720 Stunden angepasst werden.
+- Oben neben der installierten Versionsnummer wird bei einer neueren Veröffentlichung **„Update verfügbar“** angezeigt. Der Hinweis öffnet beim Anklicken den exakt passenden GitHub-Release in einem neuen Tab.
+- Ist kein neueres Release vorhanden, wird **„Version Aktuell“** angezeigt. Bei deaktivierter oder fehlgeschlagener Prüfung wird ein eigener neutraler Zustand dargestellt.
+- GitHub-Ausfälle blockieren die WebUI nicht; der letzte bekannte Release-Stand bleibt erhalten und Netzwerkfehler werden nur als Prüfstatus protokolliert.
+- Release-Links werden ausschließlich aus dem fest hinterlegten Repository und einem validierten Versions-Tag erzeugt. Es erfolgt kein automatischer Download und keine automatische Installation.
+- VERSION auf 0.1.88 gesetzt.
+
 ## v0.1.87
 
 - Healthcheck-Benachrichtigungen um eine Recovery-Meldung ergänzt: Ein zuvor fehlgeschlagenes Ziel meldet einmalig, wenn es wieder erreichbar ist.

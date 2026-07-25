@@ -61,6 +61,32 @@
       <input type="number" min="1" max="10080" name="auto_size_idle_minutes" value="{{ auto_size_idle_minutes }}">
       <small>Standard 120 = 2 Stunden. Die Berechnung startet nur, wenn in diesem Zeitraum kein flexibler oder alter Profil-Zeitplan fällig ist.</small>
 
+      <h3>{% if language == 'en' %}Update check{% else %}Updateprüfung{% endif %}</h3>
+      <label class="check"><input type="checkbox" name="update_check_enabled" {% if update_check_enabled %}checked{% endif %}> {% if language == 'en' %}Automatically check GitHub for a new release{% else %}Automatisch auf GitHub nach einem neuen Release prüfen{% endif %}</label>
+      <small>{% if language == 'en' %}Checks only the fixed repository <code>the-ab/DebMirror-Manager</code>. No automatic update or installation is performed.{% else %}Geprüft wird ausschließlich das fest hinterlegte Repository <code>the-ab/DebMirror-Manager</code>. Es wird kein Update automatisch heruntergeladen oder installiert.{% endif %}</small>
+
+      <label>{% if language == 'en' %}Check interval in hours{% else %}Prüfintervall in Stunden{% endif %}</label>
+      <input type="number" min="1" max="720" name="update_check_interval_hours" value="{{ update_check_interval_hours }}">
+      <small>{% if language == 'en' %}Default: 24 hours. The value is ignored while update checks are disabled.{% else %}Standard: 24 Stunden. Bei deaktivierter Updateprüfung wird der Wert nicht verwendet.{% endif %}</small>
+
+      <div class="inline-status-row">
+        <span>{% if language == 'en' %}Current check status{% else %}Aktueller Prüfstatus{% endif %}:</span>
+        {% if not update_check.enabled %}
+          <span class="badge muted">{% if language == 'en' %}disabled{% else %}deaktiviert{% endif %}</span>
+        {% elif update_check.state == 'update' %}
+          <span class="badge warning">{% if language == 'en' %}Update available{% else %}Update verfügbar{% endif %}</span>
+        {% elif update_check.state == 'current' %}
+          <span class="badge ok">{% if language == 'en' %}Version Current{% else %}Version Aktuell{% endif %}</span>
+        {% elif update_check.state == 'error' %}
+          <span class="badge warning">{% if language == 'en' %}Check failed{% else %}Prüfung fehlgeschlagen{% endif %}</span>
+        {% else %}
+          <span class="badge muted">{% if language == 'en' %}pending{% else %}ausstehend{% endif %}</span>
+        {% endif %}
+        {% if update_check.last_checked_at %}<small>{% if language == 'en' %}Last check{% else %}Letzte Prüfung{% endif %}: {{ update_check.last_checked_at }}</small>{% endif %}
+      </div>
+      <button type="submit" class="secondary" formaction="{{ url_for('update_check_now') }}" formmethod="post" formnovalidate>{% if language == 'en' %}Check now{% else %}Jetzt prüfen{% endif %}</button>
+      <small>{% if language == 'en' %}Runs one immediate check regardless of whether automatic checks are enabled. Other unsaved system settings are not applied by this button.{% else %}Führt unabhängig von der automatischen Prüfung genau eine sofortige Abfrage aus. Andere noch nicht gespeicherte Systemeinstellungen werden durch diesen Button nicht übernommen.{% endif %}</small>
+
       <h3>Zeitdarstellung</h3>
       <label>Lokale Zeitzone</label>
       <input name="app_timezone" value="{{ app_timezone }}" placeholder="Europe/Berlin">

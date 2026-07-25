@@ -1,5 +1,24 @@
 # Release Notes
 
+## v0.1.89
+
+- Added a manual **“Check now”** button under **System → Settings → Update check**.
+- The manual action immediately checks the fixed GitHub repository `the-ab/DebMirror-Manager` and refreshes the stored release status.
+- Manual checks also work while automatic update checks are disabled.
+- Clicking **“Check now”** does not save or modify other unsaved system settings.
+- The result is reported as **“Update available”**, **“Version Current”**, or a concrete check error.
+- VERSION set to 0.1.89.
+
+## v0.1.88
+
+- Added an automatic GitHub release check for `the-ab/DebMirror-Manager`. It is enabled by default and runs at most once within the configured interval.
+- The default interval is 24 hours; under **System → Settings** the check can be disabled or changed between 1 and 720 hours.
+- A newer release is shown beside the installed version as **“Update available”**. Clicking it opens the exact matching GitHub release in a new tab.
+- When no newer release exists, the header shows **“Version Current”**. Disabled, pending and failed checks use separate neutral states.
+- GitHub outages never block the WebUI; the last known release information is retained while the check error is recorded separately.
+- Release links are built only from the fixed repository and a validated version tag. No update is downloaded or installed automatically.
+- VERSION set to 0.1.88.
+
 ## v0.1.87
 
 - Added health-check recovery notifications: a previously failing target now sends one notification when it becomes reachable again.

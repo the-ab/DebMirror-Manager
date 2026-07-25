@@ -9,7 +9,7 @@
 <body class="login-body">
   <div class="login-card">
     <h1>{{ app_name }}</h1>
-    <p>Version {{ app_version }}</p>
+    <p>Version {{ app_version }} {% if update_check.enabled %}{% if update_check.state == 'update' and update_check.release_url %} <a class="update-state-link" href="{{ update_check.release_url }}" target="_blank" rel="noopener noreferrer"><span class="badge warning">{% if language == 'en' %}Update available{% else %}Update verfügbar{% endif %}</span></a>{% elif update_check.state == 'current' %} <span class="badge ok update-state">{% if language == 'en' %}Version Current{% else %}Version Aktuell{% endif %}</span>{% endif %}{% endif %}</p>
     <form method="post" action="{{ url_for('set_session_language') }}" class="login-language-form"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="next" value="{{ request.full_path }}">
       <label for="login-language">Sprache</label>
       <select id="login-language" name="language" onchange="this.form.submit()">

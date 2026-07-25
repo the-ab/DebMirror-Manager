@@ -440,3 +440,8 @@ Tests, repository audits, dependency checks, shell validation, Compose validatio
 
 
 Every Web UI page footer displays the installed version, release date, and project license.
+
+
+### GitHub release check
+
+The WebUI can automatically check the public `the-ab/DebMirror-Manager` repository for a newer GitHub release. The default interval is 24 hours and can be changed or disabled under **System → Settings**. **Update available** opens the matching release in a new browser tab; when no newer release exists the header shows **Version Current**. The feature never installs updates automatically. **Check now** can be used at any time for an immediate manual check, including while automatic checks are disabled.

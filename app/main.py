@@ -114,6 +114,13 @@ DEFAULT_AUTO_SIZE_IDLE_MINUTES = int(os.environ.get("AUTO_SIZE_IDLE_MINUTES", "1
 DEFAULT_STORAGE_GUARD_ENABLED = int(os.environ.get("STORAGE_GUARD_ENABLED", "1"))
 DEFAULT_STORAGE_GUARD_THRESHOLD_PERCENT = int(os.environ.get("STORAGE_GUARD_THRESHOLD_PERCENT", "95"))
 DEFAULT_APP_TIMEZONE = os.environ.get("APP_TIMEZONE", os.environ.get("TZ", "Europe/Berlin")).strip() or "Europe/Berlin"
+DEFAULT_UPDATE_CHECK_ENABLED = 1
+DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 24
+UPDATE_CHECK_REPOSITORY = "the-ab/DebMirror-Manager"
+UPDATE_CHECK_API_URL = f"https://api.github.com/repos/{UPDATE_CHECK_REPOSITORY}/releases/latest"
+UPDATE_CHECK_RELEASE_BASE_URL = f"https://github.com/{UPDATE_CHECK_REPOSITORY}/releases/tag/"
+UPDATE_CHECK_TIMEOUT_SECONDS = 15
+UPDATE_CHECK_LOCK = threading.Lock()
 MIN_PASSWORD_LENGTH = max(12, int(os.environ.get("MIN_PASSWORD_LENGTH", "12")))
 SESSION_LIFETIME_HOURS = max(1, int(os.environ.get("SESSION_LIFETIME_HOURS", "12")))
 LOGIN_MAX_ATTEMPTS = max(3, int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5")))
@@ -1167,6 +1174,124 @@ def auto_size_idle_minutes() -> int:
     return get_int_setting("auto_size_idle_minutes", DEFAULT_AUTO_SIZE_IDLE_MINUTES, 1, 10080)
 
 
+def update_check_enabled() -> bool:
+    return bool(get_int_setting("update_check_enabled", DEFAULT_UPDATE_CHECK_ENABLED, 0, 1))
+
+
+def update_check_interval_hours() -> int:
+    return get_int_setting("update_check_interval_hours", DEFAULT_UPDATE_CHECK_INTERVAL_HOURS, 1, 720)
+
+
+def _version_tuple(value: str) -> Optional[Tuple[int, ...]]:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"v?(\d+(?:\.\d+){1,3})", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _compare_versions(left: str, right: str) -> Optional[int]:
+    left_parts = _version_tuple(left)
+    right_parts = _version_tuple(right)
+    if left_parts is None or right_parts is None:
+        return None
+    width = max(len(left_parts), len(right_parts))
+    left_norm = left_parts + (0,) * (width - len(left_parts))
+    right_norm = right_parts + (0,) * (width - len(right_parts))
+    return (left_norm > right_norm) - (left_norm < right_norm)
+
+
+def update_check_status() -> Dict[str, Any]:
+    settings = load_settings()
+    enabled = update_check_enabled()
+    latest_version = str(settings.get("update_check_latest_version") or "").strip()
+    latest_tag = str(settings.get("update_check_latest_tag") or "").strip()
+    last_checked_at = str(settings.get("update_check_last_checked_at") or "").strip()
+    last_error = str(settings.get("update_check_last_error") or "").strip()
+    comparison = _compare_versions(latest_version, APP_VERSION) if latest_version else None
+    update_available = comparison == 1
+    release_url = ""
+    if update_available and latest_tag and _version_tuple(latest_tag) is not None:
+        release_url = UPDATE_CHECK_RELEASE_BASE_URL + urllib.parse.quote(latest_tag, safe="")
+    if not enabled:
+        state = "disabled"
+    elif last_error:
+        state = "error"
+    elif latest_version:
+        state = "update" if update_available else "current"
+    else:
+        state = "pending"
+    return {
+        "enabled": enabled,
+        "state": state,
+        "update_available": update_available,
+        "latest_version": latest_version,
+        "latest_tag": latest_tag,
+        "last_checked_at": last_checked_at,
+        "last_error": last_error,
+        "release_url": release_url,
+        "interval_hours": update_check_interval_hours(),
+        "repository": UPDATE_CHECK_REPOSITORY,
+    }
+
+
+def _update_check_due(settings: Dict[str, Any], force: bool = False) -> bool:
+    if force:
+        return True
+    last_checked = parse_datetime_flexible(str(settings.get("update_check_last_checked_at") or ""))
+    if last_checked is None:
+        return True
+    return local_now() - last_checked >= dt.timedelta(hours=update_check_interval_hours())
+
+
+def update_check_scan(force: bool = False, allow_disabled: bool = False) -> Dict[str, Any]:
+    # Scheduled checks respect the automatic-check setting. A deliberate manual
+    # check from the settings page may run even while automation is disabled.
+    if not update_check_enabled() and not allow_disabled:
+        return update_check_status()
+    if not UPDATE_CHECK_LOCK.acquire(blocking=False):
+        return update_check_status()
+    try:
+        settings = load_settings()
+        if not _update_check_due(settings, force=force):
+            return update_check_status()
+        request_obj = urllib.request.Request(
+            UPDATE_CHECK_API_URL,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"DebMirror-Manager/{APP_VERSION}",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            method="GET",
+        )
+        checked_at = now_iso()
+        try:
+            with safe_urlopen(request_obj, timeout=UPDATE_CHECK_TIMEOUT_SECONDS, allowed_schemes=("https",)) as response:
+                payload = json.loads(read_response_limited(response, 1024 * 1024).decode("utf-8"))
+            tag = str(payload.get("tag_name") or "").strip()
+            parsed = _version_tuple(tag)
+            if parsed is None:
+                raise ValueError(f"GitHub-Release enthält einen ungültigen Versions-Tag: {tag or '-'}")
+            version = ".".join(str(part) for part in parsed)
+            settings = load_settings()
+            settings.update({
+                "update_check_latest_tag": tag,
+                "update_check_latest_version": version,
+                "update_check_last_checked_at": checked_at,
+                "update_check_last_error": "",
+            })
+            save_settings(settings)
+        except Exception as exc:
+            settings = load_settings()
+            settings["update_check_last_checked_at"] = checked_at
+            settings["update_check_last_error"] = str(exc)[:500]
+            save_settings(settings)
+            log_webui_exception("GitHub update check", exc)
+        return update_check_status()
+    finally:
+        UPDATE_CHECK_LOCK.release()
+
+
 def storage_guard_enabled() -> bool:
     return bool(get_int_setting("storage_guard_enabled", DEFAULT_STORAGE_GUARD_ENABLED, 0, 1))
 
@@ -1920,6 +2045,24 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/settings/update-check", methods=["POST"])
+@require_admin
+def update_check_now():
+    if UPDATE_CHECK_LOCK.locked():
+        flash("Updateprüfung läuft bereits.", "warning")
+        return redirect(url_for("settings_page"))
+    status = update_check_scan(force=True, allow_disabled=True)
+    if status.get("last_error"):
+        flash(f"Updateprüfung fehlgeschlagen: {status['last_error']}", "danger")
+    elif status.get("update_available"):
+        label = status.get("latest_tag") or status.get("latest_version") or "-"
+        flash(f"Update verfügbar: {label}", "warning")
+    else:
+        label = status.get("latest_tag") or status.get("latest_version") or APP_VERSION
+        flash(f"Version Aktuell. Neueste veröffentlichte Version: {label}", "success")
+    return redirect(url_for("settings_page"))
+
+
 @app.route("/settings", methods=["GET", "POST"])
 @require_admin
 def settings_page():
@@ -1948,6 +2091,8 @@ def settings_page():
                 size_parallel = int(request.form.get("size_calc_max_parallel", str(DEFAULT_SIZE_CALC_MAX_PARALLEL)) or DEFAULT_SIZE_CALC_MAX_PARALLEL)
                 auto_size_enabled = 1 if request.form.get("auto_size_recalc_enabled") == "on" else 0
                 auto_size_idle = int(request.form.get("auto_size_idle_minutes", str(DEFAULT_AUTO_SIZE_IDLE_MINUTES)) or DEFAULT_AUTO_SIZE_IDLE_MINUTES)
+                update_enabled = 1 if request.form.get("update_check_enabled") == "on" else 0
+                update_interval = int(request.form.get("update_check_interval_hours", str(DEFAULT_UPDATE_CHECK_INTERVAL_HOURS)) or DEFAULT_UPDATE_CHECK_INTERVAL_HOURS)
                 app_tz = (request.form.get("app_timezone", app_timezone_name()) or app_timezone_name()).strip()
                 if not app_tz:
                     app_tz = DEFAULT_APP_TIMEZONE
@@ -1974,6 +2119,8 @@ def settings_page():
                     raise ValueError("Parallele Größenberechnungen müssen zwischen 1 und 8 liegen.")
                 if auto_size_idle < 1 or auto_size_idle > 10080:
                     raise ValueError("Ruhefenster für automatische Größenberechnung muss zwischen 1 Minute und 7 Tagen liegen.")
+                if update_interval < 1 or update_interval > 720:
+                    raise ValueError("Intervall der Updateprüfung muss zwischen 1 und 720 Stunden liegen.")
                 save_app_setting_values({
                     "max_parallel_jobs": max_jobs,
                     "job_retention_days": retention,
@@ -1985,8 +2132,12 @@ def settings_page():
                     "size_calc_max_parallel": size_parallel,
                     "auto_size_recalc_enabled": auto_size_enabled,
                     "auto_size_idle_minutes": auto_size_idle,
+                    "update_check_enabled": update_enabled,
+                    "update_check_interval_hours": update_interval,
                     "app_timezone": app_tz,
                 })
+                if update_enabled:
+                    threading.Thread(target=update_check_scan, kwargs={"force": True}, daemon=True, name="github-update-check-settings").start()
                 cleanup_old_jobs_and_logs()
                 flash("Systemeinstellungen wurden gespeichert.", "success")
                 return redirect(url_for("settings_page"))
@@ -2018,6 +2169,9 @@ def settings_page():
         size_calc_max_parallel=size_calc_max_parallel(),
         auto_size_recalc_enabled=auto_size_recalc_enabled(),
         auto_size_idle_minutes=auto_size_idle_minutes(),
+        update_check_enabled=update_check_enabled(),
+        update_check_interval_hours=update_check_interval_hours(),
+        update_check=update_check_status(),
         storage_guard=mirror_storage_guard_info(),
         storage_guard_enabled=storage_guard_enabled(),
         storage_guard_threshold_percent=storage_guard_threshold_percent(),
@@ -5405,6 +5559,7 @@ def scheduler_loop() -> None:
         try:
             scheduler_scan()
             healthcheck_scan()
+            update_check_scan()
             process_queued_size_calculations()
             auto_size_recalculation_scan()
         except Exception as exc:
@@ -5536,6 +5691,7 @@ def inject_globals():
         "app_name": APP_NAME,
         "app_version": APP_VERSION,
         "app_release_date": APP_RELEASE_DATE,
+        "update_check": update_check_status(),
         "auth_enabled": auth_enabled(),
         "setup_required": setup_required(),
         "auth_source": (admin_config() or {}).get("source", "nicht eingerichtet"),

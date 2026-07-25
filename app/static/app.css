@@ -1029,3 +1029,10 @@ button.locked-button:disabled {
 .auth-footer { width: 100%; text-align: center; flex: 0 0 auto; }
 
 /* v0.1.85: Debian Trixie / Python 3.13 application container release. */
+
+/* Update status beside the installed version. */
+.brand { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem; }
+.update-state-link { text-decoration: none; margin-left: .15rem; }
+.update-state-link:hover .badge { filter: brightness(.96); text-decoration: underline; }
+.update-state { margin-left: .15rem; white-space: nowrap; }
+.inline-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; margin: .5rem 0 1rem; }

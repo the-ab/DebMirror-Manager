@@ -10,7 +10,19 @@
 </head>
 <body>
 <header class="topbar app-topbar">
-  <div class="brand"><a href="{{ url_for('dashboard') }}">{{ app_name }}</a> <a class="version-link" href="{{ url_for('release_notes') }}" title="Release Notes öffnen">v{{ app_version }}</a></div>
+  <div class="brand"><a href="{{ url_for('dashboard') }}">{{ app_name }}</a> <a class="version-link" href="{{ url_for('release_notes') }}" title="{% if language == 'en' %}Open release notes{% else %}Release Notes öffnen{% endif %}">v{{ app_version }}</a>
+    {% if update_check.enabled %}
+      {% if update_check.state == 'update' and update_check.release_url %}
+        <a class="update-state-link" href="{{ update_check.release_url }}" target="_blank" rel="noopener noreferrer" title="{% if language == 'en' %}Open GitHub release {{ update_check.latest_tag }}{% else %}GitHub-Release {{ update_check.latest_tag }} öffnen{% endif %}"><span class="badge warning">{% if language == 'en' %}Update available{% else %}Update verfügbar{% endif %}</span></a>
+      {% elif update_check.state == 'current' %}
+        <span class="badge ok update-state" title="{% if language == 'en' %}Last checked: {{ update_check.last_checked_at or '-' }}{% else %}Letzte Prüfung: {{ update_check.last_checked_at or '-' }}{% endif %}">{% if language == 'en' %}Version Current{% else %}Version Aktuell{% endif %}</span>
+      {% elif update_check.state == 'error' %}
+        <span class="badge muted update-state" title="{{ update_check.last_error }}">{% if language == 'en' %}Check failed{% else %}Prüfung fehlgeschlagen{% endif %}</span>
+      {% else %}
+        <span class="badge muted update-state">{% if language == 'en' %}Check pending{% else %}Prüfung ausstehend{% endif %}</span>
+      {% endif %}
+    {% endif %}
+  </div>
   <div class="top-actions">
     <span class="top-meta">{% if language == 'en' %}Mirror base: {{ mirror_base }} · Time: {{ app_timezone }} · Authentication: {{ auth_source }}{% else %}Mirror-Basis: {{ mirror_base }} · Zeit: {{ app_timezone }} · Auth: {{ auth_source }}{% endif %}</span>
     <a class="top-user top-user-link" href="{{ url_for('preferences_page') if current_user.username else url_for('login') }}" title="Persönliche Einstellungen">{% if current_user.username %}{{ current_user.username }} · {{ current_user.role }} · {{ language|upper }}{% else %}Gast{% endif %}</a>
