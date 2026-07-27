@@ -9,6 +9,7 @@
     <label class="check"><input type="checkbox" name="enabled" {% if notify.enabled %}checked{% endif %}> Benachrichtigungen aktivieren</label>
     <label class="check"><input type="checkbox" name="on_error" {% if notify.on_error %}checked{% endif %}> Bei Job-Fehlern senden</label>
     <label class="check"><input type="checkbox" name="on_success" {% if notify.on_success %}checked{% endif %}> Bei erfolgreichen Jobs senden</label>
+    <p class="hint">{% if language == 'en' %}Dry-run jobs never send job notifications, regardless of success or failure.{% else %}Dry-Run-Jobs senden grundsätzlich keine Job-Benachrichtigungen – unabhängig von Erfolg oder Fehler.{% endif %}</p>
     <label class="check"><input type="checkbox" name="on_healthcheck_error" {% if notify.on_healthcheck_error %}checked{% endif %}> {% if language == 'en' %}Send on health-check failures{% else %}Bei Healthcheck-Fehlern senden{% endif %}</label>
     <label class="check"><input type="checkbox" name="on_healthcheck_recovery" {% if notify.on_healthcheck_recovery %}checked{% endif %}> {% if language == 'en' %}Send when a failed health check is reachable again{% else %}Senden, wenn ein fehlgeschlagener Healthcheck wieder erreichbar ist{% endif %}</label>
   </fieldset>

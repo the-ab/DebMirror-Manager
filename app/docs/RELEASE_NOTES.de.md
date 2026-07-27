@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.1.93
+
+- Dashboard-Kachel **Profile / Benutzerskripte** angepasst: Mirror-Profile und Benutzerskripte werden innerhalb der kompakten Kachel jetzt untereinander statt nebeneinander angezeigt.
+- Die halbe Kachelbreite aus v0.1.92 bleibt unverändert; beide Einträge und ihre Links bleiben vollständig erhalten.
+- Deutsche/englische Dokumentation aktualisiert.
+- VERSION auf 0.1.93 gesetzt.
+
+## v0.1.92
+
+- Dry-Run-Jobs lösen unabhängig vom Ergebnis keine Job-Benachrichtigungen mehr aus. Fehlgeschlagene Dry-Runs bleiben vollständig in **Jobs / Logs** und der Fehlerübersicht sichtbar, senden aber weder E-Mail-, Telegram- noch Discord-Meldungen.
+- Dashboard um die neue Kachel **Fehlgeschlagene Läufe** ergänzt. Sie zählt Jobs mit Status `error` und öffnet beim Anklicken **Jobs / Logs** direkt mit aktivem Filter **Fehlgeschlagen**. Gestoppte Jobs werden bewusst nicht als Fehler gezählt.
+- Die Dashboard-Statuskacheln verwenden in der Standardanordnung jetzt exakt **25 % Speicherplatz / 25 % Warteschlange / 12,5 % Profile & Benutzerskripte / 12,5 % Healthchecks / 25 % Fehlgeschlagene Läufe**. Die neue Fehler-Kachel steht direkt hinter Healthchecks. Ältere gespeicherte Standardbreiten werden automatisch migriert; bewusst abweichende benutzerdefinierte Breiten werden proportional in das feinere Raster übernommen.
+- `BADSIG` aus der Diagnose für fehlende/falsche GPG-Keys herausgelöst. Eine ungültige Signatur bedeutet jetzt korrekt: Der Key ist vorhanden, aber die geladenen Repository-Metadaten passen nicht zur Signatur.
+- Automatische, sicherheitserhaltende Retries für Mirror-Jobs ergänzt, die ausschließlich mit `BADSIG` scheitern: erster Retry nach 60 Sekunden, zweiter und letzter Retry nach weiteren 180 Sekunden. Die GPG-Signaturprüfung bleibt vollständig aktiv.
+- `NO_PUBKEY`, `ERRSIG`, `EXPKEYSIG` und `REVKEYSIG` verhindern weiterhin den BADSIG-Retry und werden unverändert als echte Key-Probleme behandelt.
+- Manuelles Stoppen während einer BADSIG-Wartezeit wird berücksichtigt; danach startet kein weiterer Versuch.
+- Nach erfolgreichem Retry bleibt keine alte BADSIG-Diagnose stehen. Scheitert ein späterer Versuch aus einem anderen Grund, wird für die Diagnose nur der letzte Versuch ausgewertet.
+- Deutsche/englische Dokumentation und Regressionstests an das neue GPG-Verhalten angepasst.
+- VERSION auf 0.1.92 gesetzt.
+
 ## v0.1.91
 
 - FTP-Healthcheck auf reine Dienst-Erreichbarkeit umgestellt: Es wird keine anonyme Anmeldung und keine Verzeichnisprüfung mehr ausgeführt.

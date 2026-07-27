@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.91**
+Aktuelle Version: **0.1.93**
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,7 +42,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.91.zip
+unzip debmirror-manager-v0.1.93.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -123,13 +123,15 @@ Die Hauptnavigation ist in Bereiche gegliedert:
 
 ## Dashboard
 
-Das Dashboard zeigt Speicher, Warteschlange, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks.
+Das Dashboard zeigt Speicher, Warteschlange, fehlgeschlagene Läufe, Mirror-Profile, Benutzerskripte, letzte Jobs, Ereignisse und Healthchecks.
+Die Standardbreiten der oberen Statuskacheln sind **25 % Speicher**, **25 % Warteschlange**, **12,5 % Profile / Benutzerskripte**, **12,5 % Healthchecks** und **25 % Fehlgeschlagene Läufe**.
 
 Wichtige Bereiche:
 
 - **Speicher**: Auslastung des Mirror-Basisverzeichnisses.
 - **Warteschlange**: laufende/wartende Jobs sowie laufende, wartende oder vorgemerkte Größenberechnungen.
-- **Profile / Benutzerskripte**: zweigeteilte Schnellübersicht; die Überschriften sind direkt anklickbar.
+- **Fehlgeschlagene Läufe**: zeigt die Anzahl aller noch vorhandenen Jobs mit Status `error`. Ein Klick auf die Kachel öffnet **Jobs / Logs** direkt mit aktivem Filter **Fehlgeschlagen**; gestoppte Jobs zählen nicht als Fehler.
+- **Profile / Benutzerskripte**: kompakte Schnellübersicht; Mirror-Profile und Benutzerskripte werden innerhalb der Kachel untereinander angezeigt und sind direkt anklickbar.
 - **Mirror-Profile / Benutzerskripte**: gemeinsame Tabelle mit Art, Status, Größe, Zeitplan, letztem Job und Aktion. Der letzte Job ist vollständig anklickbar und öffnet direkt die zugehörige Job-/Logseite. Name, Status, Art und Größe können über die jeweilige Spaltenüberschrift auf- oder absteigend sortiert werden.
 - **Letzte Jobs**: jüngste Jobs mit Status, Quelle, Dauer und Exit-Code.
 - **Ereignisse**: aktuelle System- und WebUI-Meldungen.
@@ -338,17 +340,11 @@ Mirror-Profile bekommen keine komplette Importdatei und nicht den kompletten Mas
 
 Dieser Profil-Keyring enthält nur die zugeordneten Hauptkeys inklusive der benötigten Subkeys. Dadurch enthalten auch Client-Exports nur die Keys, die für dieses Profil nötig sind.
 
-### Fehlerdiagnose für fehlende Keys
+### GPG-Fehlerdiagnose und BADSIG-Retries
 
-Wenn ein Dry-Run oder Job fehlende GPG-Keys meldet, prüft die Fehlerdiagnose:
+Echte Key-Probleme wie `NO_PUBKEY`, `ERRSIG`, `EXPKEYSIG` und `REVKEYSIG` bleiben Key-bezogene Fehler. Die Diagnose prüft dafür Hauptkey-Fingerprints, Signing-Subkeys sowie Treffer im Master- und Archiv-Keyring. Mehrere benötigte Fingerprints können gemeinsam ausgewählt und dem Profil zugeordnet werden.
 
-- gemeldete `NO_PUBKEY`-IDs
-- Hauptkey-Fingerprints
-- Signing-Subkeys
-- Master-Keyring-Treffer
-- Archiv-Keyring-Treffer
-
-Master-Keyring und Archiv-Keyring werden getrennt angezeigt. Mehrere benötigte Fingerprints können gemeinsam ausgewählt und mit einem einzigen Button dem Profil zugeordnet werden. Archiv-Treffer werden zuerst in den Master-Keyring übernommen; danach wird ein bereinigter Profil-Keyring erzeugt.
+`BADSIG` wird getrennt behandelt: Der öffentliche Schlüssel ist dabei bereits vorhanden, aber die heruntergeladenen Metadaten passen nicht zur Signatur. Das kann während einer temporären Synchronisation eines Upstream-Mirrors oder CDN auftreten. DebMirror Manager lässt die Signaturprüfung vollständig aktiv und wiederholt den Mirror-Job automatisch nach 60 Sekunden und bei Bedarf ein zweites Mal nach weiteren 180 Sekunden. Bleibt `BADSIG` bestehen, wird eine Upstream-/Metadaten-Signaturinkonsistenz angezeigt; ein erneuter Import desselben Keys wird nicht empfohlen.
 
 ## Client-Export
 
@@ -451,7 +447,7 @@ Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Na
 
 ## Benachrichtigungen
 
-Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. Für Healthchecks lassen sich Fehlerbenachrichtigungen und die einmalige Meldung bei erneuter Erreichbarkeit getrennt aktivieren. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Derselbe persistente Schlüssel schützt auch gespeicherte Remote-Passwörter von Mirror-Profilen. Er liegt im Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor Datenbank und Einstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
+Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord konfiguriert werden. **Dry-Run-Jobs sind reine Testläufe und versenden grundsätzlich keine Job-Benachrichtigungen**, unabhängig davon, ob sie erfolgreich sind oder fehlschlagen. Für Healthchecks lassen sich Fehlerbenachrichtigungen und die einmalige Meldung bei erneuter Erreichbarkeit getrennt aktivieren. Geheimwerte wie SMTP-Passwort, Telegram-Bot-Token und Discord-Webhook werden nicht im Formular angezeigt. Neue Eingaben ersetzen den gespeicherten Wert; leere Felder behalten den vorhandenen Wert. Die Verschlüsselung verwendet einen separaten Datenschlüssel unter `/app/data/notification-secrets.key`. Derselbe persistente Schlüssel schützt auch gespeicherte Remote-Passwörter von Mirror-Profilen. Er liegt im Datenverzeichnis, wird in Vollbackups aufgenommen und beim Restore vor Datenbank und Einstellungen wiederhergestellt. Bestehende ältere `enc:v1`-Werte werden beim Start auf das neue Format migriert, sofern sie mit dem bisherigen `APP_SECRET_KEY` noch entschlüsselt werden können.
 
 ## Systembereiche
 

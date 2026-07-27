@@ -333,6 +333,15 @@ EXACT_EN.update({
     "Layout zurücksetzen": "Reset layout",
     "Bearbeitungsmodus aktiv: Blöcke können mit der Maus verschoben werden. Die Größe kann unten rechts am Block verändert werden. Das Layout wird zentral in settings.json gespeichert.": "Edit mode is active: drag blocks with the mouse and resize them from the lower-right corner. The layout is stored centrally in settings.json.",
     "Speicherplatz": "Storage",
+    "Fehlgeschlagene Läufe": "Failed runs",
+    "Fehlgeschlagene Läufe anzeigen": "Show failed runs",
+    "nur fehlgeschlagene Jobs": "failed jobs only",
+    "Gefilterte Läufe öffnen": "Open filtered runs",
+    "Filter:": "Filter:",
+    "Alle": "All",
+    "Fehlgeschlagen": "Failed",
+    "Es werden nur fehlgeschlagene Läufe angezeigt.": "Only failed runs are shown.",
+    "Keine fehlgeschlagenen Läufe vorhanden.": "No failed runs are available.",
     "Größen:": "Sizes:",
     "Keine aktiven Jobs.": "No active jobs.",
     "konfigurierte Prüfungen": "configured checks",
@@ -1093,6 +1102,14 @@ PHRASE_EN: List[Tuple[str, str]] = sorted({
     "Stunde": "hour",
     "Stunden": "hours",
 }.items(), key=lambda item: len(item[0]), reverse=True)
+
+
+EXACT_EN.update({
+    "Inkonsistente Repository-Metadaten / Signatur": "Inconsistent repository metadata / signature",
+    "Der GPG-Key ist vorhanden, aber mindestens eine geladene Release-Datei passt nicht zu ihrer Signatur (BADSIG).": "The GPG key is available, but at least one downloaded Release file does not match its signature (BADSIG).",
+    "Im selben Log wurde außerdem mindestens eine gültige Signatur gesehen; das passt zu einem zeitweise inkonsistenten Upstream-Stand.": "The same log also contains at least one valid signature; this is consistent with a temporarily inconsistent upstream state.",
+    "DebMirror Manager versucht solche temporären BADSIG-Zustände automatisch erneut. Bleibt der Fehler nach allen Retries bestehen, prüfe den Upstream/Mirror beziehungsweise dessen CDN-Synchronisation. Ein erneuter Import desselben Keys ist normalerweise nicht erforderlich.": "DebMirror Manager automatically retries temporary BADSIG states. If the error remains after all retries, check the upstream/mirror or its CDN synchronization. Re-importing the same key is normally not required.",
+})
 
 
 def translate_text(value: str, language: str) -> str:

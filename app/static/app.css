@@ -197,7 +197,7 @@ textarea { width: 100%; padding: .55rem .6rem; border: 1px solid var(--line); bo
 .page-head { margin-bottom: .85rem; }
 .compact-head h1 { font-size: 1.55rem; }
 .compact-head p { margin: .2rem 0 0; color: var(--muted); }
-.summary-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: .85rem; margin-bottom: .85rem; }
+.summary-grid { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: .85rem; margin-bottom: .85rem; }
 .summary-card h2 { font-size: .92rem; margin: 0; color: var(--muted); }
 .summary-value { font-size: 1.7rem; line-height: 1.1; font-weight: 800; margin: .35rem 0 .1rem; }
 .summary-card p { margin-top: .45rem; margin-bottom: 0; }
@@ -351,6 +351,7 @@ details.side-section > summary.side-heading:hover { background: var(--button-hov
 .summary-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; align-items: start; }
 .summary-split > div { border: 1px solid var(--line); border-radius: 8px; padding: .35rem .45rem; background: var(--inline-code-bg); }
 .summary-split .summary-value { margin-top: 0; }
+.summary-split-stacked { grid-template-columns: 1fr; gap: .4rem; }
 .queue-size-line { display: block; margin-top: .15rem; }
 .queue-size-detail { line-height: 1.35; overflow-wrap: anywhere; }
 
@@ -1036,3 +1037,28 @@ button.locked-button:disabled {
 .update-state-link:hover .badge { filter: brightness(.96); text-decoration: underline; }
 .update-state { margin-left: .15rem; white-space: nowrap; }
 .inline-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; margin: .5rem 0 1rem; }
+
+
+/* v0.1.92: five compact dashboard summary tiles and failed-run filter */
+.summary-grid > [data-dashboard-block="storage"] { grid-column: span 6; }
+.summary-grid > [data-dashboard-block="queue"] { grid-column: span 6; }
+.summary-grid > [data-dashboard-block="profile-script-summary"] { grid-column: span 3; }
+.summary-grid > [data-dashboard-block="health-summary"] { grid-column: span 3; }
+.summary-grid > [data-dashboard-block="failed-jobs-summary"] { grid-column: span 6; }
+.failed-jobs-card { position: relative; }
+.summary-card-hitarea { position: absolute; inset: 0; z-index: 2; border-radius: inherit; }
+.summary-card-hitarea:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.failed-jobs-card .summary-value { color: var(--muted); }
+.failed-jobs-card.has-errors .summary-value { color: var(--danger); }
+.failed-jobs-card.has-errors { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.failed-jobs-card .summary-card-action-text { color: var(--primary); text-decoration: underline; }
+.dashboard-root.dashboard-editing .summary-card-hitarea { pointer-events: none; }
+.dashboard-root.dashboard-editing .failed-jobs-card .dashboard-block-tools,
+.dashboard-root.dashboard-editing .failed-jobs-card .dashboard-resize-handle { position: relative; z-index: 3; }
+.job-filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; margin-bottom: .65rem; }
+.job-filter-bar strong { margin-right: .15rem; }
+@media (max-width: 1100px) and (min-width: 721px) {
+  .summary-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .summary-grid > .dashboard-block { grid-column: span 6 !important; }
+  .summary-grid > [data-dashboard-block="profile-script-summary"] { grid-column: span 12 !important; }
+}

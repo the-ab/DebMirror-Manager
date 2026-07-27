@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.1.93
+
+- Adjusted the **Profiles / user scripts** dashboard tile: mirror profiles and user scripts are now shown vertically instead of side by side inside the compact tile.
+- The half-width tile layout introduced in v0.1.92 remains unchanged; both entries and their links are preserved.
+- Updated German/English documentation.
+- VERSION set to 0.1.93.
+
+## v0.1.92
+
+- Dry-run jobs no longer trigger job notifications regardless of their result. Failed dry-runs remain fully visible in **Jobs / Logs** and the failed-run view, but send no email, Telegram, or Discord notification.
+- Added a **Failed runs** dashboard tile. It counts jobs with status `error` and opens **Jobs / Logs** with the **Failed** filter already active. Stopped jobs are deliberately not counted as failures.
+- The dashboard summary now uses the exact default split **25% storage / 25% queue / 12.5% profiles & user scripts / 12.5% health checks / 25% failed runs**, with the new failed-run tile directly after health checks. Older saved default widths are migrated automatically, while deliberate custom widths are proportionally carried into the finer grid.
+- Separated `BADSIG` from missing/invalid GPG-key diagnosis. A bad signature now indicates that the key exists but the downloaded repository metadata does not match its signature.
+- Added automatic, security-preserving retries for mirror jobs that fail only with `BADSIG`: first after 60 seconds, then once more after 180 seconds. Signature verification stays fully enabled.
+- `NO_PUBKEY`, `ERRSIG`, `EXPKEYSIG`, and `REVKEYSIG` continue to block the BADSIG retry path and are handled as genuine key-related errors.
+- Manual job stop is honored during a BADSIG retry delay; no additional attempt is started after a stop request.
+- Successful retries no longer leave a stale BADSIG diagnosis. If a later retry fails for a different reason, diagnosis uses the latest attempt instead of an earlier BADSIG.
+- Updated German/English documentation and regression tests for the new GPG behavior.
+- VERSION set to 0.1.92.
+
 ## v0.1.91
 
 - Changed the FTP health check to service reachability only: it no longer performs anonymous login or directory access checks.

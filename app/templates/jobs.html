@@ -4,11 +4,21 @@
 <div class="page-head">
   <div>
     <h1>Jobs</h1>
-    <p>Anzeige der letzten {{ job_list_limit }} Jobs. Abgeschlossene Jobs/Logs werden nach {{ job_retention_days }} Tagen bereinigt.</p>
+    {% if status_filter == 'error' %}
+      <p>{% if language == 'en' %}Showing the last {{ job_list_limit }} failed runs. Completed jobs/logs are cleaned up after {{ job_retention_days }} days.{% else %}Anzeige der letzten {{ job_list_limit }} fehlgeschlagenen Läufe. Abgeschlossene Jobs/Logs werden nach {{ job_retention_days }} Tagen bereinigt.{% endif %}</p>
+    {% else %}
+      <p>Anzeige der letzten {{ job_list_limit }} Jobs. Abgeschlossene Jobs/Logs werden nach {{ job_retention_days }} Tagen bereinigt.</p>
+    {% endif %}
   </div>
   <div class="actions"><a class="button" href="{{ url_for('schedules_page') }}">Zeitpläne</a></div>
 </div>
 <section class="card">
+  <div class="job-filter-bar" aria-label="Jobfilter">
+    <strong>Filter:</strong>
+    <a class="button{% if not status_filter %} primary{% endif %}" href="{{ url_for('jobs') }}">Alle</a>
+    <a class="button{% if status_filter == 'error' %} primary{% endif %}" href="{{ url_for('jobs', status='error') }}">Fehlgeschlagen</a>
+  </div>
+  {% if status_filter == 'error' %}<div class="notice danger compact-notice">Es werden nur fehlgeschlagene Läufe angezeigt.</div>{% endif %}
   <p>Alle Startanforderungen laufen über eine globale Warteschlange. Aktuell dürfen {{ max_parallel_jobs }} Jobs parallel laufen; aktiv sind {{ active_jobs_count }}.</p>
 {% if jobs %}
   <div class="table-scroll full-list-scroll">
@@ -32,7 +42,7 @@
   </table>
   </div>
   {% else %}
-  <p>Noch keine Jobs vorhanden.</p>
+  <p>{% if status_filter == 'error' %}Keine fehlgeschlagenen Läufe vorhanden.{% else %}Noch keine Jobs vorhanden.{% endif %}</p>
   {% endif %}
 </section>
 {% endblock %}

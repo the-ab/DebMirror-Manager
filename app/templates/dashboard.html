@@ -26,7 +26,7 @@
   <div class="notice dashboard-edit-hint">Bearbeitungsmodus aktiv: Blöcke können mit der Maus verschoben werden. Die Größe kann unten rechts am Block verändert werden. Das Layout wird zentral in settings.json gespeichert.</div>
 
   <section class="summary-grid dashboard-zone" data-dashboard-zone="summary">
-    <article class="card summary-card storage-card dashboard-block" data-dashboard-block="storage" data-dashboard-size="normal">
+    <article class="card summary-card storage-card dashboard-block" data-dashboard-block="storage" data-dashboard-size="normal" data-dashboard-default-width="5">
       {{ dashboard_tools() }}
       <h2>Speicherplatz</h2>
       <p class="summary-value">{{ storage.percent if not storage.error else '-' }}%</p>
@@ -39,7 +39,7 @@
         {% if storage_guard.blocked %}<div class="notice danger"><strong>Sperre aktiv:</strong> {{ storage_guard.message }}</div>{% elif storage_guard.enabled %}<small>Sperre ab {{ storage_guard.threshold }}%</small>{% endif %}
       {% endif %}
     </article>
-    <article class="card summary-card dashboard-block" data-dashboard-block="queue" data-dashboard-size="normal">
+    <article class="card summary-card dashboard-block" data-dashboard-block="queue" data-dashboard-size="normal" data-dashboard-default-width="4">
       {{ dashboard_tools() }}
       <h2>Warteschlange</h2>
       <p class="summary-value">{{ active_jobs_count }}/{{ max_parallel_jobs }}</p>
@@ -54,20 +54,28 @@
         </p>
       {% endif %}
     </article>
-    <article class="card summary-card dashboard-block" data-dashboard-block="profile-script-summary" data-dashboard-size="normal">
+    <article class="card summary-card dashboard-block" data-dashboard-block="profile-script-summary" data-dashboard-size="normal" data-dashboard-default-width="3">
       {{ dashboard_tools() }}
       <h2>Profile / Benutzerskripte</h2>
-      <div class="summary-split">
+      <div class="summary-split summary-split-stacked">
         <div><p class="summary-value">{{ mirrors|length }}</p><small><a href="{{ url_for('mirrors_page') }}">Mirror-Profile</a></small></div>
         <div><p class="summary-value">{{ user_scripts|length }}</p><small><a href="{{ url_for('user_scripts_page') }}">Benutzerskripte</a></small></div>
       </div>
     </article>
-    <article class="card summary-card dashboard-block" data-dashboard-block="health-summary" data-dashboard-size="normal">
+    <article class="card summary-card dashboard-block" data-dashboard-block="health-summary" data-dashboard-size="normal" data-dashboard-default-width="3">
       {{ dashboard_tools() }}
       <h2>Healthchecks</h2>
       <p class="summary-value">{{ healthchecks|length }}</p>
       <small>konfigurierte Prüfungen</small>
       <p><a href="{{ url_for('healthchecks_page') }}">Healthchecks öffnen</a></p>
+    </article>
+    <article class="card summary-card failed-jobs-card dashboard-block{% if failed_jobs_count %} has-errors{% endif %}" data-dashboard-block="failed-jobs-summary" data-dashboard-size="normal" data-dashboard-default-width="6">
+      {{ dashboard_tools() }}
+      <a class="summary-card-hitarea" href="{{ url_for('jobs', status='error') }}" aria-label="Fehlgeschlagene Läufe anzeigen"></a>
+      <h2>Fehlgeschlagene Läufe</h2>
+      <p class="summary-value">{{ failed_jobs_count }}</p>
+      <small>nur fehlgeschlagene Jobs</small>
+      <p class="summary-card-action-text">Gefilterte Läufe öffnen</p>
     </article>
   </section>
 
@@ -275,13 +283,15 @@
     return Array.from(root.querySelectorAll('.dashboard-block'));
   }
 
-  function zoneColumns() { return 12; }
+  function zoneColumns(zone) {
+    return zone && zone.classList && zone.classList.contains('summary-grid') ? 24 : 12;
+  }
 
   function widthFromSize(size, zone) {
     const zoneIsSummary = zone && zone.classList && zone.classList.contains('summary-grid');
-    if (size === 'full') return 12;
-    if (size === 'wide') return zoneIsSummary ? 6 : 9;
-    return zoneIsSummary ? 3 : 6;
+    if (size === 'full') return zoneIsSummary ? 24 : 12;
+    if (size === 'wide') return zoneIsSummary ? 12 : 9;
+    return zoneIsSummary ? 6 : 6;
   }
 
   function setBlockSize(block, size) {
@@ -290,18 +300,21 @@
     block.dataset.dashboardSize = nextSize;
   }
 
-  function sizeFromWidth(width) {
+  function sizeFromWidth(width, zone) {
     const span = parseInt(width || 0, 10);
-    if (span >= 12) return 'full';
-    if (span >= 7) return 'wide';
+    const summary = zone && zone.classList && zone.classList.contains('summary-grid');
+    if (span >= (summary ? 24 : 12)) return 'full';
+    if (span >= (summary ? 13 : 7)) return 'wide';
     return 'normal';
   }
 
   function setBlockWidth(block, width) {
-    const value = Math.max(3, Math.min(12, parseInt(width || 0, 10) || widthFromSize(block.dataset.dashboardSize || 'normal', block.parentElement)));
+    const summary = block.parentElement && block.parentElement.classList.contains('summary-grid');
+    const maximum = summary ? 24 : 12;
+    const value = Math.max(3, Math.min(maximum, parseInt(width || 0, 10) || widthFromSize(block.dataset.dashboardSize || 'normal', block.parentElement)));
     block.dataset.dashboardWidth = String(value);
     block.style.gridColumn = 'span ' + value;
-    setBlockSize(block, sizeFromWidth(value));
+    setBlockSize(block, sizeFromWidth(value, block.parentElement));
   }
 
   function setBlockHeight(block, height) {
@@ -363,7 +376,8 @@
       const savedSize = zState && zState.sizes ? zState.sizes[id] : (block.dataset.dashboardSize || 'normal');
       setBlockSize(block, savedSize);
       const savedWidth = zState && zState.widths ? zState.widths[id] : null;
-      setBlockWidth(block, savedWidth || widthFromSize(savedSize, block.parentElement));
+      const defaultWidth = parseInt(block.dataset.dashboardDefaultWidth || 0, 10) || widthFromSize(savedSize, block.parentElement);
+      setBlockWidth(block, savedWidth || defaultWidth);
       setBlockHeight(block, zState && zState.heights ? zState.heights[id] : block.dataset.dashboardHeight);
     });
   }
@@ -486,8 +500,9 @@
     const zone = resizeState.zone;
     const zoneWidth = Math.max(zone.getBoundingClientRect().width, 1);
     const nextWidth = Math.max(180, resizeState.startWidth + event.clientX - resizeState.startX);
-    const columnWidth = zoneWidth / zoneColumns();
-    const nextSpan = Math.max(3, Math.min(12, Math.round(nextWidth / columnWidth)));
+    const columns = zoneColumns(zone);
+    const columnWidth = zoneWidth / columns;
+    const nextSpan = Math.max(3, Math.min(columns, Math.round(nextWidth / columnWidth)));
     setBlockWidth(block, nextSpan);
 
     const nextHeight = Math.max(120, Math.min(1400, Math.round((resizeState.startHeight + event.clientY - resizeState.startY) / 10) * 10));

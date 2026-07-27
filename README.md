@@ -2,7 +2,7 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.91**
+Current version: **0.1.93**
 
 ## Project status, affiliation, and licensing
 
@@ -43,7 +43,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.91.zip
+unzip debmirror-manager-v0.1.93.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -126,10 +126,13 @@ The main navigation is divided into these areas:
 
 ## Dashboard
 
-The dashboard shows storage usage, queue state, mirror profiles, user scripts, recent jobs, events, and health checks.
+The dashboard shows storage usage, queue state, failed runs, mirror profiles, user scripts, recent jobs, events, and health checks.
+The default widths of the top summary tiles are **25% storage**, **25% queue**, **12.5% profiles / user scripts**, **12.5% health checks**, and **25% failed runs**.
 
 Important behavior:
 
+- The **Failed runs** tile counts retained jobs with status `error`. Clicking the tile opens **Jobs / Logs** with the **Failed** filter already active; stopped jobs are not counted as failures.
+- The **Profiles / user scripts** tile keeps its compact width, but shows mirror profiles and user scripts vertically instead of side by side; both entries remain directly clickable.
 - Profile and script rows show type, state, size, schedule, last job, and available actions.
 - The complete last-job entry is clickable and opens the matching job and log page.
 - Name, status, type, and size columns can be sorted in either direction.
@@ -253,9 +256,11 @@ Verify a fingerprint against the repository owner's official documentation befor
 
 A profile keyring is generated from only the fingerprints assigned to a mirror profile. Rebuilding the master keyring does not silently broaden profile trust.
 
-### Missing-key diagnosis
+### GPG error diagnosis and BADSIG retries
 
-Job diagnosis recognizes common GPG errors such as `NO_PUBKEY`, `ERRSIG`, `EXPKEYSIG`, `REVKEYSIG`, and `BADSIG`. Matching master and archive keys can be selected and applied together before the profile keyring is rebuilt.
+Missing/invalid key conditions such as `NO_PUBKEY`, `ERRSIG`, `EXPKEYSIG`, and `REVKEYSIG` remain key-related errors. Matching master and archive keys can be selected and applied together before the profile keyring is rebuilt.
+
+`BADSIG` is handled separately because the public key is already available but the downloaded metadata does not match the signature. This can occur temporarily while an upstream mirror or CDN is being synchronized. DebMirror Manager keeps signature verification enabled and automatically retries a mirror job after 60 seconds and, if needed, once more after 180 seconds. A persistent `BADSIG` is reported as an upstream/metadata-signature inconsistency instead of recommending that the same key be imported again.
 
 ## Client export
 
@@ -311,7 +316,7 @@ Health checks support HTTP/HTTPS GET or HEAD requests, FTP checks, and ICMP ping
 
 ## Notifications
 
-SMTP email, Telegram, and Discord can be configured under **Operations → Notifications**. Health-check failure alerts and one-time recovery notifications can be enabled independently. Secret values are never returned to the form. Empty secret fields retain the stored value; a new value replaces it.
+SMTP email, Telegram, and Discord can be configured under **Operations → Notifications**. **Dry-run jobs are diagnostic test runs and never send job notifications**, regardless of whether they succeed or fail. Health-check failure alerts and one-time recovery notifications can be enabled independently. Secret values are never returned to the form. Empty secret fields retain the stored value; a new value replaces it.
 
 Secrets and mirror-profile passwords are encrypted with the persistent key `/app/data/notification-secrets.key`, which is included in encrypted full backups and restored before the database and settings.
 

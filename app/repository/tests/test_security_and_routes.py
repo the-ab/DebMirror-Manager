@@ -786,6 +786,100 @@ def test_dashboard_renders_all_configured_healthchecks(client, database_cleanup)
             con.execute("DELETE FROM healthchecks WHERE name LIKE ?", (prefix + "%",))
 
 
+
+
+def test_dashboard_failed_jobs_tile_and_jobs_filter(client, database_cleanup):
+    admin = make_user("dashboard-failed-jobs-admin")
+    authenticate(client, admin)
+    prefix = "zz-dashboard-failed-job-"
+    started_at = dmm.now_iso()
+    with dmm.db() as con:
+        con.execute("DELETE FROM jobs WHERE mirror_name LIKE ?", (prefix + "%",))
+        before = int(con.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='error'").fetchone()["n"] or 0)
+        con.execute(
+            "INSERT INTO jobs(mirror_name, status, dry_run, command, log_path, started_at, finished_at, exit_code, error_message, source) VALUES (?, 'error', 0, '', '', ?, ?, 1, 'test', 'manual')",
+            (prefix + "error", started_at, started_at),
+        )
+        con.execute(
+            "INSERT INTO jobs(mirror_name, status, dry_run, command, log_path, started_at, finished_at, exit_code, error_message, source) VALUES (?, 'success', 0, '', '', ?, ?, 0, '', 'manual')",
+            (prefix + "success", started_at, started_at),
+        )
+    try:
+        dashboard = client.get("/")
+        assert dashboard.status_code == 200
+        html = dashboard.get_data(as_text=True)
+        marker = 'data-dashboard-block="failed-jobs-summary"'
+        assert marker in html
+        fragment = html[html.index(marker):html.index(marker) + 1200]
+        assert f'<p class="summary-value">{before + 1}</p>' in fragment
+        assert '/jobs?status=error' in fragment.replace('&amp;', '&')
+
+        filtered = client.get("/jobs?status=error")
+        assert filtered.status_code == 200
+        filtered_html = filtered.get_data(as_text=True)
+        assert prefix + "error" in filtered_html
+        assert prefix + "success" not in filtered_html
+        assert "Es werden nur fehlgeschlagene Läufe angezeigt." in filtered_html or "Only failed runs are shown." in filtered_html
+
+        all_jobs = client.get("/jobs")
+        all_html = all_jobs.get_data(as_text=True)
+        assert prefix + "error" in all_html
+        assert prefix + "success" in all_html
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE mirror_name LIKE ?", (prefix + "%",))
+
+
+def test_dashboard_layout_migrates_for_failed_jobs_tile():
+    old_layout = {
+        "zones": {
+            "summary": {
+                "order": ["storage", "queue", "profile-script-summary", "health-summary"],
+                "sizes": {},
+                "widths": {"storage": 3, "queue": 3, "profile-script-summary": 3, "health-summary": 3},
+                "heights": {},
+            },
+            "main": {
+                "order": ["mirror-script-list", "recent-jobs", "events", "healthchecks"],
+                "sizes": {},
+                "widths": {},
+                "heights": {},
+            },
+        }
+    }
+    migrated = dmm.sanitize_dashboard_layout(old_layout)
+    summary = migrated["zones"]["summary"]
+    assert migrated["schema_version"] == 2
+    assert summary["order"] == ["storage", "queue", "profile-script-summary", "health-summary", "failed-jobs-summary"]
+    assert summary["widths"] == {
+        "storage": 6,
+        "queue": 6,
+        "profile-script-summary": 3,
+        "health-summary": 3,
+        "failed-jobs-summary": 6,
+    }
+
+
+def test_dashboard_layout_preserves_custom_summary_widths_proportionally():
+    custom_layout = {
+        "zones": {
+            "summary": {
+                "order": ["storage", "queue", "profile-script-summary", "health-summary"],
+                "sizes": {},
+                "widths": {"storage": 6, "queue": 4, "profile-script-summary": 5, "health-summary": 3},
+                "heights": {},
+            },
+            "main": {"order": [], "sizes": {}, "widths": {}, "heights": {}},
+        }
+    }
+    migrated = dmm.sanitize_dashboard_layout(custom_layout)["zones"]["summary"]
+    assert migrated["widths"]["storage"] == 12
+    assert migrated["widths"]["queue"] == 8
+    assert migrated["widths"]["profile-script-summary"] == 10
+    assert migrated["widths"]["health-summary"] == 6
+    assert migrated["widths"]["failed-jobs-summary"] == 6
+
+
 def test_release_footer_is_present_on_app_login_and_setup_templates(client, database_cleanup):
     admin = make_user("footer-admin")
     authenticate(client, admin)
@@ -824,3 +918,110 @@ def test_manual_update_check_can_bypass_disabled_automation():
     source = (project_root / "app" / "main.py").read_text(encoding="utf-8")
     assert "def update_check_scan(force: bool = False, allow_disabled: bool = False)" in source
     assert "update_check_scan(force=True, allow_disabled=True)" in source
+
+
+def test_badsig_is_metadata_mismatch_not_missing_key():
+    log_text = """[GNUPG:] NEWSIG
+[GNUPG:] KEY_CONSIDERED 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 0
+[GNUPG:] BADSIG 7EA0A9C3F273FCD8 Docker Release (CE deb) <docker@docker.com>
+gpgv: BAD signature from \"Docker Release (CE deb) <docker@docker.com>\"
+.temp/.tmp/dists/noble/Release.gpg signature does not verify.
+"""
+    assert dmm.has_badsig_failure(log_text) is True
+    assert dmm.should_retry_badsig(log_text) is True
+    assert dmm.extract_missing_pubkeys(log_text) == []
+    diagnosis = dmm.classify_job_error(log_text, 1, "debmirror wurde mit Exit-Code 1 beendet.")
+    assert diagnosis["type"] == "gpg-metadata-sync"
+    assert diagnosis["missing_keys"] == []
+    assert "erneuter Import" in diagnosis["action"]
+
+
+def test_badsig_retry_is_blocked_by_real_key_error():
+    log_text = """[GNUPG:] BADSIG 871920D1991BC93C Ubuntu Archive Automatic Signing Key
+[GNUPG:] NO_PUBKEY 871920D1991BC93C
+"""
+    assert dmm.should_retry_badsig(log_text) is False
+    missing = dmm.extract_missing_pubkeys(log_text)
+    assert missing
+    assert missing[0]["key_id"].endswith("871920D1991BC93C")
+
+
+def test_success_after_badsig_retry_has_no_stale_diagnosis():
+    log_text = """[GNUPG:] BADSIG 871920D1991BC93C Ubuntu Archive Automatic Signing Key
+[2026-07-27T15:00:00+02:00] BADSIG-Retry 1/2 wird gestartet.
+gpgv: Good signature from \"Ubuntu Archive Automatic Signing Key (2018) <ftpmaster@ubuntu.com>\"
+"""
+    diagnosis = dmm.classify_job_error(log_text, 0, "")
+    assert diagnosis["type"] == ""
+    assert diagnosis["title"] == ""
+
+
+def test_diagnosis_uses_latest_badsig_retry_attempt():
+    log_text = """[GNUPG:] BADSIG 871920D1991BC93C Ubuntu Archive Automatic Signing Key
+[2026-07-27T15:00:00+02:00] BADSIG-Retry 1/2 wird gestartet.
+rsync: connection refused
+"""
+    assert "BADSIG" not in dmm.latest_badsig_attempt_log(log_text)
+    diagnosis = dmm.classify_job_error(log_text, 1, "debmirror wurde mit Exit-Code 1 beendet.")
+    assert diagnosis["type"] == "network"
+
+
+def test_dry_run_job_never_sends_job_notification(tmp_path, monkeypatch):
+    log_path = tmp_path / "dry-run-notification.log"
+    log_path.write_text("simulated dry-run failure\n", encoding="utf-8")
+    sent = []
+    monkeypatch.setattr(
+        dmm,
+        "notification_settings",
+        lambda: {"enabled": True, "on_success": True, "on_error": True},
+    )
+    monkeypatch.setattr(
+        dmm,
+        "send_notification",
+        lambda subject, message, kind="info": sent.append((subject, message, kind)) or ["ok"],
+    )
+
+    dmm.notify_job_finished(
+        12345,
+        "error",
+        1,
+        "dry-run-test",
+        str(log_path),
+        "simulated failure",
+        dry_run=True,
+    )
+
+    assert sent == []
+
+
+def test_run_job_thread_passes_dry_run_to_notification(tmp_path, monkeypatch):
+    log_path = tmp_path / "dry-run-job.log"
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, job_type, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (NULL, 'dry-run-integration', 'mirror', 'starting', 1, 'false', '[\"/bin/sh\",\"-c\",\"exit 1\"]', ?, ?, 'test')
+            """,
+            (str(log_path), now),
+        )
+        job_id = int(cur.lastrowid)
+
+    captured = []
+    monkeypatch.setattr(dmm, "runtime_dependency_checks", lambda: [])
+    monkeypatch.setattr(
+        dmm,
+        "notify_job_finished",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+    try:
+        dmm.run_job_thread(job_id, ["/bin/sh", "-c", "exit 1"], log_path, "test")
+        assert len(captured) == 1
+        assert captured[0][1].get("dry_run") is True
+        with dmm.db() as con:
+            row = con.execute("SELECT status, dry_run FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert row["status"] == "error"
+        assert int(row["dry_run"]) == 1
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))

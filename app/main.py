@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
 import concurrent.futures
 import csv
 import datetime as dt
@@ -102,6 +103,7 @@ SSH_KEY_DIR = SSH_DIR / "keys"
 SSH_KNOWN_HOSTS_PATH = SSH_DIR / "known_hosts"
 SCHEDULER_SCAN_SECONDS = int(os.environ.get("SCHEDULER_SCAN_SECONDS", "60"))
 JOB_STOP_GRACE_SECONDS = int(os.environ.get("JOB_STOP_GRACE_SECONDS", "20"))
+DEBMIRROR_BADSIG_RETRY_DELAYS_SECONDS = (60, 180)
 DEFAULT_MAX_PARALLEL_JOBS = int(os.environ.get("MAX_PARALLEL_JOBS", "1"))
 DEFAULT_JOB_RETENTION_DAYS = int(os.environ.get("JOB_RETENTION_DAYS", "31"))
 DEFAULT_JOB_LIST_LIMIT = int(os.environ.get("JOB_LIST_LIMIT", "100"))
@@ -844,11 +846,18 @@ def save_settings(settings: Dict[str, Any]) -> None:
 
 def default_dashboard_layout() -> Dict[str, Any]:
     return {
+        "schema_version": 2,
         "zones": {
             "summary": {
-                "order": ["storage", "queue", "profile-script-summary", "health-summary"],
+                "order": ["storage", "queue", "profile-script-summary", "health-summary", "failed-jobs-summary"],
                 "sizes": {},
-                "widths": {},
+                "widths": {
+                    "storage": 6,
+                    "queue": 6,
+                    "profile-script-summary": 3,
+                    "health-summary": 3,
+                    "failed-jobs-summary": 6,
+                },
                 "heights": {},
             },
             "main": {
@@ -865,8 +874,12 @@ def sanitize_dashboard_layout(value: Any) -> Dict[str, Any]:
     default = default_dashboard_layout()
     if not isinstance(value, dict):
         return default
+    try:
+        raw_schema_version = int(value.get("schema_version") or 1)
+    except Exception:
+        raw_schema_version = 1
     raw_zones = value.get("zones") if isinstance(value.get("zones"), dict) else {}
-    cleaned = {"zones": {}}
+    cleaned = {"schema_version": 2, "zones": {}}
     allowed_sizes = {"normal", "wide", "full"}
     default_zone_for_block: Dict[str, str] = {}
     for z_name, z_data in default["zones"].items():
@@ -882,6 +895,8 @@ def sanitize_dashboard_layout(value: Any) -> Dict[str, Any]:
             ident = str(item or "").strip()
             if ident:
                 raw_seen.add(ident)
+
+    layout_predates_failed_summary = "failed-jobs-summary" not in raw_seen
 
     for zone_name, default_zone in default["zones"].items():
         raw_zone = raw_zones.get(zone_name) if isinstance(raw_zones.get(zone_name), dict) else {}
@@ -901,6 +916,16 @@ def sanitize_dashboard_layout(value: Any) -> Dict[str, Any]:
                 order.append(item)
                 global_seen.add(item)
 
+        if zone_name == "summary" and layout_predates_failed_summary and "failed-jobs-summary" in order:
+            order.remove("failed-jobs-summary")
+            if "health-summary" in order:
+                insert_at = order.index("health-summary") + 1
+            elif "profile-script-summary" in order:
+                insert_at = order.index("profile-script-summary") + 1
+            else:
+                insert_at = len(order)
+            order.insert(insert_at, "failed-jobs-summary")
+
         raw_sizes = raw_zone.get("sizes") if isinstance(raw_zone.get("sizes"), dict) else {}
         sizes: Dict[str, str] = {}
         for key, val in raw_sizes.items():
@@ -911,6 +936,14 @@ def sanitize_dashboard_layout(value: Any) -> Dict[str, Any]:
 
         raw_widths = raw_zone.get("widths") if isinstance(raw_zone.get("widths"), dict) else {}
         widths: Dict[str, int] = {}
+        legacy_summary_blocks = ("storage", "queue", "profile-script-summary", "health-summary")
+        legacy_default_summary = False
+        if zone_name == "summary" and raw_schema_version < 2:
+            try:
+                legacy_default_summary = all(int(raw_widths.get(block)) == 3 for block in legacy_summary_blocks)
+            except Exception:
+                legacy_default_summary = False
+
         for key, val in raw_widths.items():
             block = str(key or "").strip()
             if not block:
@@ -919,8 +952,19 @@ def sanitize_dashboard_layout(value: Any) -> Dict[str, Any]:
                 width = int(val)
             except Exception:
                 continue
-            if 3 <= width <= 12:
+            if zone_name == "summary":
+                if raw_schema_version < 2:
+                    if legacy_default_summary and block in legacy_summary_blocks:
+                        continue
+                    width *= 2
+                if 3 <= width <= 24:
+                    widths[block] = width
+            elif 3 <= width <= 12:
                 widths[block] = width
+
+        if zone_name == "summary":
+            for block, width in default_zone.get("widths", {}).items():
+                widths.setdefault(block, int(width))
 
         raw_heights = raw_zone.get("heights") if isinstance(raw_zone.get("heights"), dict) else {}
         heights: Dict[str, int] = {}
@@ -3639,7 +3683,9 @@ def extract_missing_pubkeys(log_text: str) -> List[Dict[str, str]]:
     """Extract OpenPGP key IDs/fingerprints that need attention.
 
     `gpgv: using RSA key ...` allein ist kein Fehler. Gewertet werden nur
-    Fehler-Kontexte wie NO_PUBKEY, ERRSIG, EXPKEYSIG, REVKEYSIG oder BADSIG.
+    echte Schlüssel-Kontexte wie NO_PUBKEY, ERRSIG, EXPKEYSIG oder REVKEYSIG.
+    BADSIG ist bewusst ausgenommen: Der Schlüssel ist dabei vorhanden, aber
+    Signatur und geladene Metadaten passen nicht zusammen.
     Die Funktion sammelt kurze Key-IDs, Long-Key-IDs und volle Fingerprints,
     damit die spätere Diagnose gegen Master- und Archiv-Keyrings robust
     auflösen kann.
@@ -3660,14 +3706,14 @@ def extract_missing_pubkeys(log_text: str) -> List[Dict[str, str]]:
 
     for m in re.finditer(r"NO_PUBKEY\s+([A-Fa-f0-9]{8,40})", text, re.I):
         add_missing(m.group(1))
-    for m in re.finditer(r"(?:ERRSIG|EXPKEYSIG|REVKEYSIG|BADSIG)\s+([A-Fa-f0-9]{8,40})", text, re.I):
+    for m in re.finditer(r"(?:ERRSIG|EXPKEYSIG|REVKEYSIG)\s+([A-Fa-f0-9]{8,40})", text, re.I):
         add_missing(m.group(1))
     for m in re.finditer(r"using\s+(?:RSA|DSA|ECDSA|EDDSA)?\s*key\s+([A-Fa-f0-9]{32,40})", text, re.I):
         add_full(m.group(1))
 
     # ERRSIG-Zeilen enthalten bei gpgv häufig zuerst die Key-ID und später
     # optional weitere Fingerprint-ähnliche Tokens.
-    error_markers = ("NO_PUBKEY", "ERRSIG", "EXPKEYSIG", "REVKEYSIG", "BADSIG")
+    error_markers = ("NO_PUBKEY", "ERRSIG", "EXPKEYSIG", "REVKEYSIG")
     for line in text.splitlines():
         if any(marker in line.upper() for marker in error_markers):
             for token in line.split():
@@ -3694,6 +3740,29 @@ def extract_missing_pubkeys(log_text: str) -> List[Dict[str, str]]:
             seen.add(key)
             results.append({"key_id": missing, "fingerprint": key, "has_full_fingerprint": "1" if len(key) >= 32 else "0"})
     return results
+
+
+def has_badsig_failure(log_text: str) -> bool:
+    """Return True when gpgv reports a cryptographically bad signature.
+
+    BADSIG means that a usable public key was found, but the detached/embedded
+    signature does not match the downloaded metadata. This is distinct from a
+    missing, expired or revoked key.
+    """
+    text = log_text or ""
+    return bool(
+        re.search(r"(?:^|\s)BADSIG\s+[A-Fa-f0-9]{8,40}(?:\s|$)", text, re.I | re.M)
+        or re.search(r"\bBAD signature from\b", text, re.I)
+    )
+
+
+def should_retry_badsig(log_text: str) -> bool:
+    """Retry BADSIG only when no non-transient GPG key error is present."""
+    text_upper = (log_text or "").upper()
+    if not has_badsig_failure(log_text):
+        return False
+    non_retryable = ("NO_PUBKEY", "ERRSIG", "EXPKEYSIG", "REVKEYSIG")
+    return not any(marker in text_upper for marker in non_retryable)
 
 
 def default_keyring_filename(fingerprint: str, suffix: str = ".gpg") -> str:
@@ -4568,6 +4637,70 @@ def ensure_job_worker_thread() -> None:
         JOB_WORKER_STARTED = True
 
 
+def run_streamed_process_attempt(
+    job_id: int,
+    cmd: List[str],
+    log,
+    process_env: Dict[str, str],
+    process_umask: int,
+    started_time: str,
+    *,
+    capture_limit: int = 2_000_000,
+) -> Tuple[int, str]:
+    """Run one external job attempt while streaming and retaining a bounded tail."""
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+        start_new_session=True,
+        env=process_env,
+        umask=process_umask,
+    )
+    with RUNNING_PROCESSES_LOCK:
+        RUNNING_PROCESSES[job_id] = proc
+    with db() as con:
+        con.execute(
+            "UPDATE jobs SET status='running', pid=?, started_at=COALESCE(started_at, ?) WHERE id=?",
+            (proc.pid, started_time, job_id),
+        )
+
+    captured = deque()
+    captured_size = 0
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            log.write(line)
+            log.flush()
+            captured.append(line)
+            captured_size += len(line)
+            while captured and captured_size > capture_limit:
+                captured_size -= len(captured.popleft())
+        return proc.wait(), "".join(captured)
+    finally:
+        with RUNNING_PROCESSES_LOCK:
+            if RUNNING_PROCESSES.get(job_id) is proc:
+                RUNNING_PROCESSES.pop(job_id, None)
+        with db() as con:
+            con.execute("UPDATE jobs SET pid=NULL WHERE id=?", (job_id,))
+
+
+def wait_for_badsig_retry(job_id: int, delay_seconds: int) -> bool:
+    """Wait for a retry while remaining responsive to a manual stop request."""
+    deadline = time.monotonic() + max(0, int(delay_seconds))
+    while True:
+        with db() as con:
+            row = con.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if not row or str(row["status"] or "").lower() in {"stopping", "stopped"}:
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return True
+        time.sleep(min(1.0, remaining))
+
+
 def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> None:
     exit_code: Optional[int] = None
     status = "error"
@@ -4641,41 +4774,62 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
                 else:
                     log.write(f"[{now_iso()}] Prozess-umask: 077 (Skriptausgaben bleiben standardmäßig nur für den Eigentümer zugänglich).\n")
                 log.flush()
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True,
-                    start_new_session=True,
-                    env=process_env,
-                    umask=process_umask,
-                )
-                with RUNNING_PROCESSES_LOCK:
-                    RUNNING_PROCESSES[job_id] = proc
-                with db() as con:
-                    con.execute("UPDATE jobs SET status='running', pid=?, started_at=? WHERE id=?", (proc.pid, started_time, job_id))
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    log.write(line)
+                attempt_index = 0
+                while True:
+                    if attempt_index > 0:
+                        log.write(f"\n[{now_iso()}] BADSIG-Retry {attempt_index}/{len(DEBMIRROR_BADSIG_RETRY_DELAYS_SECONDS)} wird gestartet.\n")
+                        log.flush()
+
+                    exit_code, attempt_output = run_streamed_process_attempt(
+                        job_id, cmd, log, process_env, process_umask, started_time
+                    )
+                    if exit_code == 0:
+                        status = "success"
+                        if job_type == "mirror" and not job_dry_run and mirror_for_job and mirror_time_sync_supported(mirror_for_job):
+                            try:
+                                synchronize_mirror_timestamps(mirror_for_job, since_epoch=started_epoch, log=log)
+                            except Exception as exc:  # timestamp preservation is best-effort
+                                log.write(f"[{now_iso()}] WARNUNG: Automatischer Mirror-Zeitabgleich konnte nicht vollständig ausgeführt werden: {exc}\n")
+                                log.write(f"[{now_iso()}] Der Mirror-Job bleibt erfolgreich; Inhalte und Signaturprüfung sind davon nicht betroffen.\n")
+                                log.flush()
+                        break
+                    if exit_code < 0:
+                        status = "stopped"
+                        error_message = f"Prozess wurde durch Signal {-exit_code} beendet."
+                        break
+
+                    can_retry_badsig = (
+                        job_type == "mirror"
+                        and attempt_index < len(DEBMIRROR_BADSIG_RETRY_DELAYS_SECONDS)
+                        and should_retry_badsig(attempt_output)
+                    )
+                    if not can_retry_badsig:
+                        status = "error"
+                        error_message = f"{'Benutzerskript' if job_type == 'script' else 'debmirror'} wurde mit Exit-Code {exit_code} beendet."
+                        break
+
+                    delay_seconds = DEBMIRROR_BADSIG_RETRY_DELAYS_SECONDS[attempt_index]
+                    retry_no = attempt_index + 1
+                    log.write(
+                        f"\n[{now_iso()}] WARNUNG: BADSIG erkannt. Der verwendete GPG-Key ist vorhanden, "
+                        "aber Signatur und heruntergeladene Repository-Metadaten passen nicht zusammen.\n"
+                    )
+                    log.write(
+                        f"[{now_iso()}] Möglicher temporärer Upstream-/Mirror-Sync-Zustand. "
+                        f"Automatischer Retry {retry_no}/{len(DEBMIRROR_BADSIG_RETRY_DELAYS_SECONDS)} in {delay_seconds} Sekunden.\n"
+                    )
+                    log.write(
+                        f"[{now_iso()}] Die GPG-Signaturprüfung bleibt vollständig aktiviert; "
+                        "es werden keine Signaturen ignoriert.\n"
+                    )
                     log.flush()
-                exit_code = proc.wait()
-                if exit_code == 0:
-                    status = "success"
-                    if job_type == "mirror" and not job_dry_run and mirror_for_job and mirror_time_sync_supported(mirror_for_job):
-                        try:
-                            synchronize_mirror_timestamps(mirror_for_job, since_epoch=started_epoch, log=log)
-                        except Exception as exc:  # timestamp preservation is best-effort
-                            log.write(f"[{now_iso()}] WARNUNG: Automatischer Mirror-Zeitabgleich konnte nicht vollständig ausgeführt werden: {exc}\n")
-                            log.write(f"[{now_iso()}] Der Mirror-Job bleibt erfolgreich; Inhalte und Signaturprüfung sind davon nicht betroffen.\n")
-                            log.flush()
-                elif exit_code < 0:
-                    status = "stopped"
-                    error_message = f"Prozess wurde durch Signal {-exit_code} beendet."
-                else:
-                    status = "error"
-                    error_message = f"{'Benutzerskript' if job_type == 'script' else 'debmirror'} wurde mit Exit-Code {exit_code} beendet."
+                    if not wait_for_badsig_retry(job_id, delay_seconds):
+                        exit_code = -15
+                        status = "stopped"
+                        error_message = "Job wurde während der Wartezeit vor einem BADSIG-Retry gestoppt."
+                        log.write(f"[{now_iso()}] {error_message}\n")
+                        break
+                    attempt_index += 1
         except MirrorTimeSyncCancelled as exc:
             exit_code = -15
             status = "stopped"
@@ -4721,7 +4875,15 @@ def run_job_thread(job_id: int, cmd: List[str], log_path: Path, source: str) -> 
                 add_event("warning", f"Automatische Größenberechnung für Job #{job_id} konnte nicht vorgemerkt werden: {exc}")
             try:
                 if job_row:
-                    notify_job_finished(job_id, status, exit_code, job_row["mirror_name"], job_row["log_path"], error_message)
+                    notify_job_finished(
+                        job_id,
+                        status,
+                        exit_code,
+                        job_row["mirror_name"],
+                        job_row["log_path"],
+                        error_message,
+                        dry_run=bool(job_row["dry_run"]),
+                    )
             except Exception as exc:
                 add_event("warning", f"Benachrichtigung für Job #{job_id} fehlgeschlagen: {exc}")
 
@@ -5726,12 +5888,14 @@ def dashboard():
         with db() as con:
             running_jobs = enrich_jobs_duration([row_to_dict(r) for r in con.execute("SELECT * FROM jobs WHERE status IN ('queued','starting','running','stopping') ORDER BY id ASC").fetchall()])
             recent_jobs = enrich_jobs_duration([row_to_dict(r) for r in con.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (dashboard_recent_jobs_limit(),)).fetchall()])
+            failed_jobs_count = int(con.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='error'").fetchone()["n"] or 0)
             for _job in recent_jobs:
                 _job["source_h"] = job_source_label(_job.get("source") or "")
             events = [row_to_dict(r) for r in con.execute("SELECT * FROM app_events ORDER BY id DESC LIMIT ?", (dashboard_events_limit(),)).fetchall()]
     except Exception as exc:
         log_webui_exception("dashboard jobs/events", exc)
         running_jobs, recent_jobs, events = [], [], []
+        failed_jobs_count = 0
         flash(f"Jobs/Ereignisse konnten nicht geladen werden: {exc}", "warning")
     for m in mirrors:
         try:
@@ -5786,6 +5950,7 @@ def dashboard():
         user_scripts=user_scripts,
         running_jobs=running_jobs,
         recent_jobs=recent_jobs,
+        failed_jobs_count=failed_jobs_count,
         events=events,
         storage=storage,
         storage_guard=mirror_storage_guard_info(),
@@ -8200,26 +8365,54 @@ def schedule_delete(schedule_id: int):
 @app.route("/jobs")
 @require_auth
 def jobs():
+    status_filter = str(request.args.get("status") or "").strip().lower()
+    if status_filter not in {"", "error"}:
+        status_filter = ""
     with db() as con:
-        rows = enrich_jobs_duration([row_to_dict(r) for r in con.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (job_list_limit(),)).fetchall()])
-    return render_template("jobs.html", jobs=rows, job_list_limit=job_list_limit(), job_retention_days=job_retention_days(), max_parallel_jobs=max_parallel_jobs(), active_jobs_count=active_jobs_count())
+        if status_filter == "error":
+            query = "SELECT * FROM jobs WHERE status='error' ORDER BY id DESC LIMIT ?"
+        else:
+            query = "SELECT * FROM jobs ORDER BY id DESC LIMIT ?"
+        rows = enrich_jobs_duration([row_to_dict(r) for r in con.execute(query, (job_list_limit(),)).fetchall()])
+    return render_template(
+        "jobs.html",
+        jobs=rows,
+        status_filter=status_filter,
+        job_list_limit=job_list_limit(),
+        job_retention_days=job_retention_days(),
+        max_parallel_jobs=max_parallel_jobs(),
+        active_jobs_count=active_jobs_count(),
+    )
+
+
+def latest_badsig_attempt_log(log_text: str) -> str:
+    """Return only the most recent debmirror attempt after an automatic BADSIG retry."""
+    text = log_text or ""
+    matches = list(re.finditer(r"^\[[^\]]+\] BADSIG-Retry \d+/\d+ wird gestartet\.\s*$", text, re.I | re.M))
+    if not matches:
+        return text
+    return text[matches[-1].end():]
 
 
 def classify_job_error(log_text: str, exit_code: Optional[int], error_message: str = "") -> Dict[str, Any]:
-    text = f"{error_message}\n{log_text}".lower()
+    diagnostic_log = latest_badsig_attempt_log(log_text)
+    text = f"{error_message}\n{diagnostic_log}".lower()
     empty = {"type": "", "title": "", "detail": "", "action": "", "missing_keys": [], "matching_keyrings": []}
     if not log_text and not error_message:
         return empty
 
-    # Ein erfolgreicher Job darf keine Fehlerauswertung mehr anzeigen.
-    # gpgv schreibt auch bei Erfolg `using RSA key ...`; entscheidend ist
-    # `Good signature` zusammen mit Exit-Code 0 / Everything OK / All done.
-    if (exit_code == 0 or exit_code is None) and (
+    # Ein erfolgreich beendeter Job darf keine Diagnose aus einem früheren
+    # Retry-Versuch erben. Das ist insbesondere für BADSIG wichtig: Ein erster
+    # Versuch kann fehlschlagen und der zweite mit denselben Sicherheitschecks
+    # vollständig erfolgreich sein.
+    if exit_code == 0:
+        return empty
+    if exit_code is None and (
         "good signature" in text or "everything ok" in text or "all done" in text
-    ) and not any(p in text for p in ("no_pubkey", "can't check signature", "signature does not verify", "errsig")):
+    ) and not any(p in text for p in ("no_pubkey", "can't check signature", "errsig")):
         return empty
 
-    missing_keys = extract_missing_pubkeys(log_text)
+    missing_keys = extract_missing_pubkeys(diagnostic_log)
     matching_keyrings: List[Dict[str, Any]] = []
     for missing_key in missing_keys:
         for match in find_matching_keyrings(missing_key.get("fingerprint") or missing_key.get("key_id") or ""):
@@ -8240,6 +8433,26 @@ def classify_job_error(log_text: str, exit_code: Optional[int], error_message: s
             "action": "Führe ./update.sh --rebuild oder ein Update auf die aktuelle Version aus. Dadurch wird der Container neu gebaut und die benötigten Pakete gpgv, patch und ed werden installiert.",
             "missing_keys": missing_keys,
             "matching_keyrings": matching_keyrings,
+        }
+
+    if has_badsig_failure(diagnostic_log):
+        recovered_hint = ""
+        if "good signature" in text:
+            recovered_hint = " Im selben Log wurde außerdem mindestens eine gültige Signatur gesehen; das passt zu einem zeitweise inkonsistenten Upstream-Stand."
+        return {
+            "type": "gpg-metadata-sync",
+            "title": "Inkonsistente Repository-Metadaten / Signatur",
+            "detail": (
+                "Der GPG-Key ist vorhanden, aber mindestens eine geladene Release-Datei passt nicht zu ihrer Signatur (BADSIG)."
+                + recovered_hint
+            ),
+            "action": (
+                "DebMirror Manager versucht solche temporären BADSIG-Zustände automatisch erneut. "
+                "Bleibt der Fehler nach allen Retries bestehen, prüfe den Upstream/Mirror beziehungsweise dessen CDN-Synchronisation. "
+                "Ein erneuter Import desselben Keys ist normalerweise nicht erforderlich."
+            ),
+            "missing_keys": [],
+            "matching_keyrings": [],
         }
 
     key_patterns = [
@@ -12510,7 +12723,20 @@ def send_notification(subject: str, message: str, kind: str = "info") -> List[st
     return results
 
 
-def notify_job_finished(job_id: int, status: str, exit_code: Optional[int], mirror_name: str, log_path: str, error_message: str = "") -> None:
+def notify_job_finished(
+    job_id: int,
+    status: str,
+    exit_code: Optional[int],
+    mirror_name: str,
+    log_path: str,
+    error_message: str = "",
+    *,
+    dry_run: bool = False,
+) -> None:
+    # Dry-runs are diagnostic/test executions. They must remain visible in the
+    # job history and logs, but must never trigger operational notifications.
+    if dry_run:
+        return
     cfg = notification_settings()
     if not cfg.get("enabled"):
         return
@@ -13074,8 +13300,8 @@ BUILTIN_HELP = {
     "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
 }
 BUILTIN_RELEASE_NOTES = {
-    "de": "# Release Notes\n\n## v0.1.91\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
-    "en": "# Release Notes\n\n## v0.1.91\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+    "de": "# Release Notes\n\n## v0.1.93\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v0.1.93\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
 }
 
 # ---------------------------------------------------------------------------
