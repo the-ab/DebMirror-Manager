@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.1.91
+
+- FTP-Healthcheck auf reine Dienst-Erreichbarkeit umgestellt: Es wird keine anonyme Anmeldung und keine Verzeichnisprüfung mehr ausgeführt.
+- Jede syntaktisch gültige FTP-Serverantwort bestätigt die Erreichbarkeit des FTP-Dienstes; FTP-Antwortcode und Latenz werden weiterhin gespeichert.
+- Bei FTP-Healthchecks wird bei Eingaben ohne Protokoll, z. B. `192.168.178.20` oder `ftp.example.org:21`, automatisch `ftp://` ergänzt. Die Normalisierung erfolgt sowohl in der WebUI als auch serverseitig bei Speichern und Konfigurationsimport.
+- Veraltete aktuelle Versionsangaben `0.1.87` in README DE/EN, den internen WebUI-Dokumentationskopien und Repository-Tests sowie den veralteten eingebauten Release-Notes-Fallback `v0.1.79` korrigiert.
+- Repository-Audit um Konsistenzprüfungen für `VERSION`, aktuelle README-Version, Installationsbeispiele, interne Dokumentationskopien und obersten Release-Notes-Eintrag erweitert, damit abweichende Versionsangaben künftig beim Release-Check auffallen.
+- Veraltetes Paketbeispiel `v0.1.79` in `update.sh --help` durch das versionsneutrale Schema `vX.Y.Z` ersetzt.
+- Footer-/Versionstests auf den tatsächlichen Wert aus `VERSION` umgestellt, damit sie bei neuen Releases nicht erneut hart codiert veralten.
+- VERSION auf 0.1.91 gesetzt.
+
+## v0.1.90
+
+- Healthchecks um die neue Methode **FTP** ergänzt.
+- FTP-Ziele werden als `ftp://HOST[:PORT]/PFAD` konfiguriert und mit anonymer Anmeldung geprüft; bei angegebenem Pfad wird zusätzlich getestet, ob das Verzeichnis geöffnet werden kann.
+- FTP-Antwortcode, Latenz und konkrete Fehler werden wie bei den vorhandenen Prüfarten gespeichert und in Fehler- sowie Recovery-Benachrichtigungen übernommen.
+- Private und lokale FTP-Ziele verwenden denselben expliziten Freigabeschutz wie HTTP/HTTPS-Healthchecks.
+- Zugangsdaten innerhalb einer FTP-Healthcheck-URL werden abgelehnt, damit keine Kennwörter unverschlüsselt in Healthcheck-Konfiguration oder Konfigurations-Export gelangen.
+- Healthcheck-Formular, Dashboard, deutsche/englische Texte und Dokumentation um FTP ergänzt.
+- VERSION auf 0.1.90 gesetzt.
+
 ## v0.1.89
 
 - Unter **System → Einstellungen → Updateprüfung** den manuellen Button **„Jetzt prüfen“** ergänzt.

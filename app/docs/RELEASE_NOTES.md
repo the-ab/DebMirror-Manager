@@ -1,5 +1,26 @@
 # Release Notes
 
+## v0.1.91
+
+- Changed the FTP health check to service reachability only: it no longer performs anonymous login or directory access checks.
+- Any syntactically valid FTP server reply confirms that the FTP service is reachable; the FTP reply code and latency are still stored.
+- FTP health-check inputs without a scheme, such as `192.168.178.20` or `ftp.example.org:21`, are normalized by automatically adding `ftp://`. Normalization is applied both in the WebUI and server-side during save and configuration import.
+- Corrected stale current-version references to `0.1.87` in the German/English READMEs, their internal WebUI documentation copies, and repository tests, plus the stale built-in release-notes fallback `v0.1.79`.
+- Extended the repository audit with consistency checks for `VERSION`, current README versions, installation examples, internal documentation copies, and the top release-notes entry so mismatched release versions are caught automatically.
+- Replaced the stale `v0.1.79` package example in `update.sh --help` with the version-neutral `vX.Y.Z` scheme.
+- Changed footer/version tests to use the actual value from `VERSION` instead of a hard-coded release number.
+- VERSION set to 0.1.91.
+
+## v0.1.90
+
+- Added **FTP** as a health-check method.
+- FTP targets use `ftp://HOST[:PORT]/PATH` and are checked with anonymous login; when a path is supplied the check also verifies that the directory can be opened.
+- FTP reply code, latency, and concrete errors are stored like the existing check types and included in failure and recovery notifications.
+- Private and local FTP targets use the same explicit opt-in protection as HTTP/HTTPS health checks.
+- Credentials embedded in an FTP health-check URL are rejected so passwords are not stored unencrypted in health-check configuration or normal configuration exports.
+- Updated the health-check form, dashboard, German/English text, and documentation for FTP.
+- VERSION set to 0.1.90.
+
 ## v0.1.89
 
 - Added a manual **“Check now”** button under **System → Settings → Update check**.

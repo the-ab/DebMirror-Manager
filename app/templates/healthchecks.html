@@ -4,7 +4,7 @@
 <div class="page-head">
   <div>
     <h1>Healthchecks für lokale Clients und Server</h1>
-    <p>Prüft Mirror-URLs per HTTP/HTTPS oder die Erreichbarkeit eines Servers per ICMP-Ping.</p>
+    <p>Prüft Mirror-URLs per HTTP/HTTPS oder FTP sowie die Erreichbarkeit eines Servers per ICMP-Ping.</p>
   </div>
 </div>
 
@@ -26,6 +26,7 @@
             <option value="GET" {% if not edit_check or edit_check.method == 'GET' %}selected{% endif %}>HTTP GET</option>
             <option value="HEAD" {% if edit_check and edit_check.method == 'HEAD' %}selected{% endif %}>HTTP HEAD</option>
             <option value="PING" {% if edit_check and edit_check.method == 'PING' %}selected{% endif %}>Ping (ICMP)</option>
+            <option value="FTP" {% if edit_check and edit_check.method == 'FTP' %}selected{% endif %}>FTP</option>
           </select>
         </div>
         <div id="healthcheckExpectedStatusField">
@@ -57,6 +58,10 @@
 http://SERVER-IP:8110/debian/dists/bookworm/Release
 https://mirror.example.org/ubuntu/dists/noble/InRelease
 
+FTP (nur Erreichbarkeit des FTP-Dienstes, kein Login):
+ftp://ftp.example.org
+192.168.178.20  (ftp:// wird automatisch ergänzt)
+
 Ping (nur Host oder IP):
 repository-server.local
 192.168.178.10
@@ -74,15 +79,15 @@ repository-server.local
       <tbody>
       {% for c in checks %}
         <tr>
-          <td data-label="Name"><strong translate="no">{{ c.name }}</strong><br><small>{% if c.method == 'PING' %}Ping (ICMP){% else %}{{ c.method }} erwartet {{ c.expected_status }}{% endif %}, alle {{ c.interval_minutes }} min</small></td>
+          <td data-label="Name"><strong translate="no">{{ c.name }}</strong><br><small>{% if c.method == 'PING' %}Ping (ICMP){% elif c.method == 'FTP' %}FTP{% else %}{{ c.method }} erwartet {{ c.expected_status }}{% endif %}, alle {{ c.interval_minutes }} min</small></td>
           <td data-label="Ziel"><code class="breakable-code">{{ c.url }}</code>{% if c.allow_private %}<br><span class="badge warning">privates Ziel erlaubt</span>{% endif %}</td>
           <td data-label="Status">
             {% if c.last_ok is none %}
               <span class="badge muted">nie geprüft</span>
             {% elif c.last_ok %}
-              <span class="badge ok">OK{% if c.method != 'PING' %} {{ c.last_status_code }}{% endif %}</span>
+              <span class="badge ok">OK{% if c.method == 'FTP' and c.last_status_code %} FTP {{ c.last_status_code }}{% elif c.method != 'PING' %} {{ c.last_status_code }}{% endif %}</span>
             {% else %}
-              <span class="badge error">Fehler{% if c.method != 'PING' %} {{ c.last_status_code or '-' }}{% endif %}</span>
+              <span class="badge error">Fehler{% if c.method == 'FTP' %} FTP {{ c.last_status_code or '-' }}{% elif c.method != 'PING' %} {{ c.last_status_code or '-' }}{% endif %}</span>
               {% if c.last_error %}<small class="healthcheck-error" translate="no">{{ c.last_error }}</small>{% endif %}
             {% endif %}
           </td>
@@ -115,15 +120,46 @@ repository-server.local
   var english = {{ (language == 'en')|tojson }};
   function updateFields() {
     var ping = method.value === 'PING';
-    targetLabel.textContent = ping ? (english ? 'Ping target (host or IP)' : 'Ping-Ziel (Host oder IP)') : 'URL';
-    target.placeholder = ping ? 'repository-server.local oder 192.168.178.10' : 'http://SERVER-IP:8110/debian/dists/bookworm/Release';
-    expectedWrap.hidden = ping;
-    expected.disabled = ping;
-    hint.textContent = ping
-      ? (english ? 'Ping sends one ICMP echo request. The HTTP status field is not used.' : 'Ping sendet eine ICMP-Echo-Anfrage. Der HTTP-Status wird dabei nicht verwendet.')
-      : (english ? 'GET or HEAD checks the configured HTTP status and response time.' : 'GET oder HEAD prüft den eingestellten HTTP-Status und die Antwortzeit.');
+    var ftp = method.value === 'FTP';
+    var nonHttp = ping || ftp;
+    if (ping) {
+      targetLabel.textContent = english ? 'Ping target (host or IP)' : 'Ping-Ziel (Host oder IP)';
+      target.placeholder = 'repository-server.local oder 192.168.178.10';
+      hint.textContent = english
+        ? 'Ping sends one ICMP echo request. The HTTP status field is not used.'
+        : 'Ping sendet eine ICMP-Echo-Anfrage. Der HTTP-Status wird dabei nicht verwendet.';
+    } else if (ftp) {
+      targetLabel.textContent = english ? 'FTP target (host, IP, or URL)' : 'FTP-Ziel (Host, IP oder URL)';
+      target.placeholder = 'ftp://ftp.example.org oder 192.168.178.20';
+      hint.textContent = english
+        ? 'FTP only checks whether an FTP service answers. No login or path access is tested. Missing ftp:// is added automatically. The HTTP status field is not used.'
+        : 'FTP prüft nur, ob ein FTP-Dienst antwortet. Anmeldung und Pfadzugriff werden nicht geprüft. Fehlendes ftp:// wird automatisch ergänzt. Der HTTP-Status wird dabei nicht verwendet.';
+    } else {
+      targetLabel.textContent = 'URL';
+      target.placeholder = 'http://SERVER-IP:8110/debian/dists/bookworm/Release';
+      hint.textContent = english
+        ? 'GET or HEAD checks the configured HTTP status and response time.'
+        : 'GET oder HEAD prüft den eingestellten HTTP-Status und die Antwortzeit.';
+    }
+    expectedWrap.hidden = nonHttp;
+    expected.disabled = nonHttp;
+  }
+  function normalizeFtpTarget() {
+    if (method.value !== 'FTP') return;
+    var value = target.value.trim();
+    if (value && value.indexOf('://') === -1) {
+      var slash = value.indexOf('/');
+      var authority = slash === -1 ? value : value.substring(0, slash);
+      var suffix = slash === -1 ? '' : value.substring(slash);
+      if (authority.split(':').length > 2 && authority.charAt(0) !== '[') {
+        authority = '[' + authority + ']';
+      }
+      target.value = 'ftp://' + authority + suffix;
+    }
   }
   method.addEventListener('change', updateFields);
+  target.addEventListener('blur', normalizeFtpTarget);
+  if (target.form) target.form.addEventListener('submit', normalizeFtpTarget);
   updateFields();
 })();
 </script>

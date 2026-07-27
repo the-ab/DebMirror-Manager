@@ -2,7 +2,7 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.87**
+Aktuelle Version: **0.1.91**
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,7 +42,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.87.zip
+unzip debmirror-manager-v0.1.91.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -432,17 +432,19 @@ Dry-Runs und Benutzerskripte bleiben erlaubt. Die Einstellungen befinden sich un
 
 ## Healthchecks
 
-Healthchecks unterstützen zwei Prüfarten:
+Healthchecks unterstützen drei Prüfarten:
 
 - **HTTP/HTTPS (GET oder HEAD):** prüft eine URL, den erwarteten HTTP-Status und die Antwortzeit.
+- **FTP:** prüft ausschließlich, ob auf dem Ziel ein FTP-Dienst mit einer syntaktisch gültigen FTP-Antwort reagiert. Es erfolgt weder eine Anmeldung noch eine Verzeichnisprüfung. Bei Eingabe eines Hostnamens, einer IPv4-Adresse oder `Host:Port` ohne Protokoll wird `ftp://` automatisch ergänzt. Ein vorhandener Pfad bleibt in der gespeicherten URL erhalten, wird für den Erreichbarkeitstest aber bewusst nicht geprüft. FTP-Antwortcode und Latenz werden gespeichert; Zugangsdaten innerhalb der FTP-URL sind nicht zulässig.
 - **Ping (ICMP):** prüft einen Hostnamen oder eine IP-Adresse mit einer einzelnen ICMP-Echo-Anfrage und erfasst die Latenz. Für Ping werden weder Protokoll, Port noch Pfad angegeben.
 
-Private und lokale Ziele müssen pro Healthcheck ausdrücklich freigegeben werden. Ping verwendet das im Container installierte `iputils-ping`; der Container erhält dafür ausschließlich die Linux-Capability `NET_RAW`. Zeitplan, manuelle Ausführung, Benachrichtigung und API funktionieren bei beiden Prüfarten identisch.
+Private und lokale Ziele müssen pro Healthcheck ausdrücklich freigegeben werden. Ping verwendet das im Container installierte `iputils-ping`; der Container erhält dafür ausschließlich die Linux-Capability `NET_RAW`. Zeitplan, manuelle Ausführung, Benachrichtigung und API funktionieren bei allen Prüfarten identisch.
 
-HTTP-/HTTPS-Healthchecks prüfen lokale Repository-URLs wie:
+Beispiele:
 
 ```text
 http://mirror.local/debian/dists/bookworm/Release
+ftp://ftp.example.org/debian
 ```
 
 Sie können regelmäßig laufen und bei Fehlern Benachrichtigungen auslösen. Nach einem Fehler kann zusätzlich genau einmal eine Recovery-Benachrichtigung gesendet werden, sobald das Ziel wieder erreichbar ist; dauerhaft erfolgreiche oder weiterhin fehlerhafte Prüfungen erzeugen dadurch keine wiederholten Meldungen. Fehler- und Recovery-Benachrichtigungen sind getrennt konfigurierbar. Auf dem Dashboard werden Status, letzte Prüfung, URL und die zuletzt gemessene Latenz angezeigt. Die Healthcheck-Liste und das Bearbeitungsformular sind für schmale Displays kompakt angeordnet.

@@ -6,6 +6,7 @@ import concurrent.futures
 import csv
 import datetime as dt
 import functools
+import ftplib
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -12307,10 +12308,13 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
                 continue
             vals["timeout_seconds"] = max(1, min(120, vals["timeout_seconds"]))
             vals["interval_minutes"] = max(1, vals["interval_minutes"])
-            if vals["method"] not in {"GET", "HEAD", "PING"}:
-                raise ValueError(f"Healthcheck {vals['name']}: nur GET, HEAD oder PING ist zulässig.")
+            if vals["method"] not in {"GET", "HEAD", "PING", "FTP"}:
+                raise ValueError(f"Healthcheck {vals['name']}: nur GET, HEAD, PING oder FTP ist zulässig.")
             if vals["method"] == "PING":
                 vals["url"], _resolved = validate_ping_target(vals["url"], allow_private=bool(vals["allow_private"]))
+                vals["expected_status"] = 200
+            elif vals["method"] == "FTP":
+                vals["url"], _resolved, _port, _path = validate_ftp_target(vals["url"], allow_private=bool(vals["allow_private"]))
                 vals["expected_status"] = 200
             else:
                 if not 100 <= vals["expected_status"] <= 599:
@@ -12561,6 +12565,147 @@ def get_healthcheck(check_id: int) -> Optional[Dict[str, Any]]:
         return row_to_dict(row) if row else None
 
 
+def normalize_ftp_healthcheck_target(target: str) -> str:
+    value = (target or "").strip()
+    if not value:
+        return value
+    if "://" not in value:
+        authority, slash, suffix = value.partition("/")
+        # A plain IPv6 address needs brackets once it becomes a URL authority.
+        if authority.count(":") >= 2 and not authority.startswith("["):
+            try:
+                ipaddress.IPv6Address(authority)
+            except ValueError:
+                pass
+            else:
+                authority = f"[{authority}]"
+        value = "ftp://" + authority + (("/" + suffix) if slash else "")
+    return value
+
+
+def validate_ftp_target(target: str, allow_private: bool = False) -> Tuple[str, str, int, str]:
+    value = normalize_ftp_healthcheck_target(target)
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() != "ftp":
+        raise ValueError("FTP-Healthchecks unterstützen nur ftp://-Ziele.")
+    if not parsed.hostname:
+        raise ValueError("FTP-Ziel enthält keinen gültigen Hostnamen.")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Zugangsdaten innerhalb eines FTP-Healthcheck-Ziels sind nicht erlaubt.")
+    if parsed.query or parsed.fragment:
+        raise ValueError("FTP-Healthcheck-Ziele dürfen keine Query-Parameter oder Fragmente enthalten.")
+    try:
+        port = int(parsed.port or 21)
+    except ValueError as exc:
+        raise ValueError("FTP-Ziel enthält einen ungültigen Port.") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("FTP-Port muss zwischen 1 und 65535 liegen.")
+
+    hostname = parsed.hostname.strip("[]").rstrip(".")
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"FTP-Hostname konnte nicht aufgelöst werden: {hostname}") from exc
+    addresses = []
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        except ValueError:
+            continue
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        raise ValueError("Für das FTP-Ziel wurde keine gültige Zieladresse ermittelt.")
+    for address in addresses:
+        if address.is_global:
+            continue
+        if allow_private or _private_target_allowlisted(hostname, address):
+            continue
+        raise ValueError(f"Private, lokale oder reservierte FTP-Zieladresse ist nicht erlaubt: {hostname} ({address})")
+
+    selected = next((address for address in addresses if address.version == 4), addresses[0])
+    path = urllib.parse.unquote(parsed.path or "/")
+    if "\x00" in path:
+        raise ValueError("FTP-Pfad enthält ein unzulässiges Nullzeichen.")
+    return value, str(selected), port, path
+
+
+def _ftp_reply_code(reply: Any) -> Optional[int]:
+    match = re.match(r"^([0-9]{3})(?:[ -]|$)", str(reply or "").strip())
+    if not match:
+        return None
+    code = int(match.group(1))
+    return code if 100 <= code <= 599 else None
+
+
+def _run_ftp_healthcheck(target: str, timeout_seconds: int, allow_private: bool) -> Dict[str, Any]:
+    display_target, resolved_address, port, _remote_path = validate_ftp_target(target, allow_private=allow_private)
+    timeout_seconds = max(1, min(120, int(timeout_seconds or 10)))
+    started = time.monotonic()
+    status_code = None
+    sock = None
+    stream = None
+    try:
+        sock = socket.create_connection((resolved_address, port), timeout=timeout_seconds)
+        sock.settimeout(timeout_seconds)
+        stream = sock.makefile("rb")
+        raw_reply = stream.readline(1025)
+        if not raw_reply:
+            raise RuntimeError("FTP-Server hat nach dem Verbindungsaufbau nicht geantwortet.")
+        if len(raw_reply) > 1024:
+            raise RuntimeError("FTP-Serverantwort ist ungewöhnlich lang.")
+        reply = raw_reply.decode("utf-8", errors="replace").strip()
+        status_code = _ftp_reply_code(reply)
+        if status_code is None:
+            raise RuntimeError(f"Keine gültige FTP-Serverantwort: {reply[:200]}")
+        latency_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "ok": True,
+            "status_code": status_code,
+            "latency_ms": latency_ms,
+            "error": "",
+            "target": display_target,
+            "resolved_address": resolved_address,
+        }
+    except (socket.timeout, TimeoutError):
+        return {
+            "ok": False,
+            "status_code": status_code,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": f"FTP-Zeitüberschreitung nach {timeout_seconds} Sekunden.",
+            "target": display_target,
+            "resolved_address": resolved_address,
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "status_code": status_code,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": str(exc)[:500],
+            "target": display_target,
+            "resolved_address": resolved_address,
+        }
+    except RuntimeError as exc:
+        return {
+            "ok": False,
+            "status_code": status_code,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": str(exc)[:500],
+            "target": display_target,
+            "resolved_address": resolved_address,
+        }
+    finally:
+        try:
+            if stream is not None:
+                stream.close()
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+
 def _run_ping_healthcheck(target: str, timeout_seconds: int, allow_private: bool) -> Dict[str, Any]:
     display_target, resolved_address = validate_ping_target(target, allow_private=allow_private)
     ping_binary = shutil.which("ping")
@@ -12613,7 +12758,7 @@ def _run_ping_healthcheck(target: str, timeout_seconds: int, allow_private: bool
 
 def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
     method = (check.get("method") or "GET").upper()
-    if method not in {"GET", "HEAD", "PING"}:
+    if method not in {"GET", "HEAD", "PING", "FTP"}:
         method = "GET"
     timeout_seconds = max(1, min(120, int(check.get("timeout_seconds") or 10)))
     status_code = None
@@ -12632,6 +12777,21 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
             ok = bool(ping_result.get("ok"))
             err = str(ping_result.get("error") or "")
             latency = int(ping_result.get("latency_ms") or 0)
+        except Exception as exc:
+            err = str(exc)
+            latency = int((time.monotonic() - start) * 1000)
+    elif method == "FTP":
+        start = time.monotonic()
+        try:
+            ftp_result = _run_ftp_healthcheck(
+                str(check.get("url") or ""),
+                timeout_seconds,
+                bool(check.get("allow_private")),
+            )
+            status_code = ftp_result.get("status_code")
+            ok = bool(ftp_result.get("ok"))
+            err = str(ftp_result.get("error") or "")
+            latency = int(ftp_result.get("latency_ms") or 0)
         except Exception as exc:
             err = str(exc)
             latency = int((time.monotonic() - start) * 1000)
@@ -12664,6 +12824,8 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
         if not ok and notify_cfg.get("on_healthcheck_error") and previous_state != "error":
             if method == "PING":
                 detail = f"Ping-Ziel: {check['url']}\nStatus: fehlgeschlagen\nFehler: {err}\nZeit: {checked_at}"
+            elif method == "FTP":
+                detail = f"FTP-Ziel: {check['url']}\nFTP-Status: {status_code or '-'}\nFehler: {err}\nZeit: {checked_at}"
             else:
                 detail = f"URL: {check['url']}\nErwartet: {check.get('expected_status')}\nStatus: {status_code}\nFehler: {err}\nZeit: {checked_at}"
             send_notification(f"DebMirror Healthcheck Fehler: {check['name']}", detail, kind="healthcheck")
@@ -12672,6 +12834,14 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
                 detail = (
                     f"Ping-Ziel: {check['url']}\n"
                     f"Status: wieder erreichbar\n"
+                    f"Latenz: {latency} ms\n"
+                    f"Zeit: {checked_at}"
+                )
+            elif method == "FTP":
+                detail = (
+                    f"FTP-Ziel: {check['url']}\n"
+                    f"Status: wieder erreichbar\n"
+                    f"FTP-Status: {status_code or '-'}\n"
                     f"Latenz: {latency} ms\n"
                     f"Zeit: {checked_at}"
                 )
@@ -12729,10 +12899,13 @@ def healthchecks_page():
                 }
                 if not values["name"] or not values["url"]:
                     raise ValueError("Name und Zieladresse sind Pflichtfelder.")
-                if values["method"] not in {"GET", "HEAD", "PING"}:
-                    raise ValueError("Als Healthcheck-Methode sind nur GET, HEAD oder PING zulässig.")
+                if values["method"] not in {"GET", "HEAD", "PING", "FTP"}:
+                    raise ValueError("Als Healthcheck-Methode sind nur GET, HEAD, PING oder FTP zulässig.")
                 if values["method"] == "PING":
                     values["url"], _resolved = validate_ping_target(values["url"], allow_private=bool(values["allow_private"]))
+                    values["expected_status"] = 200
+                elif values["method"] == "FTP":
+                    values["url"], _resolved, _port, _path = validate_ftp_target(values["url"], allow_private=bool(values["allow_private"]))
                     values["expected_status"] = 200
                 else:
                     if not 100 <= values["expected_status"] <= 599:
@@ -12901,8 +13074,8 @@ BUILTIN_HELP = {
     "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
 }
 BUILTIN_RELEASE_NOTES = {
-    "de": "# Release Notes\n\n## v0.1.79\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
-    "en": "# Release Notes\n\n## v0.1.79\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+    "de": "# Release Notes\n\n## v0.1.91\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v0.1.91\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
 }
 
 # ---------------------------------------------------------------------------

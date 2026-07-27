@@ -8,6 +8,7 @@ import http.server
 import threading
 import stat
 import sys
+import re
 
 import pytest
 
@@ -36,7 +37,12 @@ def test_repository_publication_files_exist():
         "RELEASE_NOTES.de.md",
     }
     assert all((project_root / name).is_file() for name in required)
-    assert (project_root / "VERSION").read_text(encoding="utf-8").strip() == "0.1.87"
+    version_file = project_root / "VERSION"
+    if version_file.is_file():
+        version = version_file.read_text(encoding="utf-8").strip()
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+        assert f"Current version: **{version}**" in (project_root / "README.md").read_text(encoding="utf-8")
+        assert f"Aktuelle Version: **{version}**" in (project_root / "README.de.md").read_text(encoding="utf-8")
 
 
 def test_application_container_uses_pinned_trixie_base():
@@ -514,6 +520,75 @@ def test_ping_healthcheck_success_updates_database(monkeypatch):
 
 
 
+def test_ftp_healthcheck_success_updates_database(monkeypatch):
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO healthchecks(name, url, expected_status, method, timeout_seconds, interval_minutes, enabled, allow_private, created_at, updated_at)
+            VALUES ('ftp-test-success', 'ftp://ftp.example.org/debian', 200, 'FTP', 5, 60, 1, 0, ?, ?)
+            """,
+            (now, now),
+        )
+        check_id = int(cur.lastrowid)
+    monkeypatch.setattr(
+        dmm,
+        "_run_ftp_healthcheck",
+        lambda *_args, **_kwargs: {"ok": True, "status_code": 250, "latency_ms": 11, "error": ""},
+    )
+    try:
+        result = dmm.run_healthcheck_once(dmm.get_healthcheck(check_id))
+        assert result["ok"] is True
+        assert result["method"] == "FTP"
+        with dmm.db() as con:
+            row = con.execute("SELECT last_ok, last_status_code, last_latency_ms, last_error FROM healthchecks WHERE id=?", (check_id,)).fetchone()
+        assert row["last_ok"] == 1
+        assert row["last_status_code"] == 250
+        assert row["last_latency_ms"] == 11
+        assert row["last_error"] == ""
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM healthchecks WHERE id=?", (check_id,))
+
+
+def test_ftp_healthcheck_only_requires_valid_server_reply(monkeypatch):
+    calls = []
+
+    class FakeStream:
+        def readline(self, limit):
+            calls.append(("readline", limit))
+            return b"530 Login incorrect.\r\n"
+
+        def close(self):
+            calls.append(("stream-close",))
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            calls.append(("settimeout", timeout))
+
+        def makefile(self, mode):
+            calls.append(("makefile", mode))
+            return FakeStream()
+
+        def close(self):
+            calls.append(("socket-close",))
+
+    monkeypatch.setattr(
+        dmm,
+        "validate_ftp_target",
+        lambda target, allow_private=False: (target, "192.0.2.20", 21, "/debian"),
+    )
+    monkeypatch.setattr(
+        dmm.socket,
+        "create_connection",
+        lambda address, timeout: calls.append(("connect", address, timeout)) or FakeSocket(),
+    )
+    result = dmm._run_ftp_healthcheck("ftp://ftp.example.org/debian", 5, False)
+    assert result["ok"] is True
+    assert result["status_code"] == 530
+    assert ("connect", ("192.0.2.20", 21), 5) in calls
+    assert all(call[0] not in {"login", "cwd"} for call in calls)
+
 def test_healthcheck_recovery_notification_is_sent_once(monkeypatch):
     now = dmm.now_iso()
     with dmm.db() as con:
@@ -634,6 +709,55 @@ def test_healthcheck_form_accepts_ping_and_hides_http_status(client, database_cl
     assert 'Ping (ICMP)' in html
 
 
+def test_ftp_healthcheck_target_adds_default_scheme(monkeypatch):
+    monkeypatch.setattr(
+        dmm.socket,
+        "getaddrinfo",
+        lambda host, port, type=0: [(dmm.socket.AF_INET, dmm.socket.SOCK_STREAM, 6, "", ("203.0.113.20", port))],
+    )
+    normalized, resolved, port, path = dmm.validate_ftp_target("ftp.example.org:2121", allow_private=True)
+    assert normalized == "ftp://ftp.example.org:2121"
+    assert resolved == "203.0.113.20"
+    assert port == 2121
+    assert path == "/"
+
+
+def test_healthcheck_form_accepts_ftp_and_hides_http_status(client, database_cleanup, monkeypatch):
+    admin = make_user("ftp-healthcheck-admin")
+    token = authenticate(client, admin)
+    monkeypatch.setattr(
+        dmm,
+        "validate_ftp_target",
+        lambda target, allow_private=False: (target, "192.0.2.20", 21, "/debian"),
+    )
+    response = client.post(
+        "/healthchecks",
+        data={
+            "_csrf_token": token,
+            "action": "save",
+            "name": "external-ftp",
+            "url": "ftp://ftp.example.org/debian",
+            "method": "FTP",
+            "timeout_seconds": "5",
+            "interval_minutes": "10",
+            "enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code in {302, 303}
+    with dmm.db() as con:
+        row = con.execute("SELECT method, url, expected_status FROM healthchecks WHERE name='external-ftp'").fetchone()
+        con.execute("DELETE FROM healthchecks WHERE name='external-ftp'")
+    assert row["method"] == "FTP"
+    assert row["url"] == "ftp://ftp.example.org/debian"
+    assert row["expected_status"] == 200
+    page = client.get("/healthchecks")
+    html = page.get_data(as_text=True)
+    assert 'value="FTP"' in html
+    assert "var ftp = method.value === 'FTP';" in html
+    assert "FTP (nur Erreichbarkeit des FTP-Dienstes, kein Login)" in html
+
+
 def test_dashboard_renders_all_configured_healthchecks(client, database_cleanup):
     admin = make_user("dashboard-healthchecks-admin")
     authenticate(client, admin)
@@ -668,16 +792,16 @@ def test_release_footer_is_present_on_app_login_and_setup_templates(client, data
     page = client.get("/")
     assert page.status_code == 200
     html = page.get_data(as_text=True)
-    assert "v0.1.89" in html
-    assert "2026-07-25" in html or "25.07.2026" in html
+    assert f"v{dmm.APP_VERSION}" in html
+    assert "2026-07-27" in html or "27.07.2026" in html
 
     with client.session_transaction() as session:
         session.clear()
     login = client.get("/login")
     assert login.status_code == 200
     login_html = login.get_data(as_text=True)
-    assert "v0.1.89" in login_html
-    assert "2026-07-25" in login_html or "25.07.2026" in login_html
+    assert f"v{dmm.APP_VERSION}" in login_html
+    assert "2026-07-27" in login_html or "27.07.2026" in login_html
 
 
 def test_ping_runtime_dependencies_are_declared():

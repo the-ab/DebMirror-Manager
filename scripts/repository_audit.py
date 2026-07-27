@@ -28,8 +28,67 @@ def iter_files():
             yield path
 
 
+
+def audit_release_version(findings: list[str]) -> None:
+    version_path = ROOT / "VERSION"
+    if not version_path.is_file():
+        # The reduced app/repository policy snapshot intentionally has no release files.
+        return
+    version = version_path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        findings.append(f"invalid VERSION value: {version!r}")
+        return
+
+    expected = {
+        "README.md": (f"Current version: **{version}**", f"debmirror-manager-v{version}.zip"),
+        "README.de.md": (f"Aktuelle Version: **{version}**", f"debmirror-manager-v{version}.zip"),
+    }
+    for rel_name, markers in expected.items():
+        path = ROOT / rel_name
+        if not path.is_file():
+            findings.append(f"missing release-version file: {rel_name}")
+            continue
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                findings.append(f"version mismatch in {rel_name}: missing {marker!r}")
+
+    for rel_name in ("RELEASE_NOTES.md", "RELEASE_NOTES.de.md"):
+        path = ROOT / rel_name
+        if not path.is_file():
+            findings.append(f"missing release notes: {rel_name}")
+            continue
+        match = re.search(r"^## v([^\s]+)", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
+        if not match or match.group(1) != version:
+            found = match.group(1) if match else "missing"
+            findings.append(f"version mismatch in {rel_name}: top release is {found}, expected {version}")
+
+    main_source = ROOT / "app" / "main.py"
+    if main_source.is_file():
+        main_text = main_source.read_text(encoding="utf-8")
+        if main_text.count(f"## v{version}\\n") < 2:
+            findings.append("built-in DE/EN release-notes fallback does not match VERSION")
+
+    update_script = ROOT / "update.sh"
+    if update_script.is_file():
+        update_text = update_script.read_text(encoding="utf-8")
+        if f"${{PROJECT_NAME}}-vX.Y.Z.zip" not in update_text:
+            findings.append("update.sh help must use the version-neutral vX.Y.Z package example")
+        if re.search(r"\$\{PROJECT_NAME\}-v\d+\.\d+\.\d+\.zip", update_text):
+            findings.append("update.sh help contains a hard-coded release package version")
+
+    docs_dir = ROOT / "app" / "docs"
+    if docs_dir.is_dir():
+        for rel_name in ("README.md", "README.de.md", "RELEASE_NOTES.md", "RELEASE_NOTES.de.md"):
+            source = ROOT / rel_name
+            copy = docs_dir / rel_name
+            if source.is_file() and copy.is_file() and source.read_bytes() != copy.read_bytes():
+                findings.append(f"internal documentation copy differs from {rel_name}: app/docs/{rel_name}")
+
+
 def main() -> int:
     findings: list[str] = []
+    audit_release_version(findings)
     for path in iter_files():
         rel = path.relative_to(ROOT)
         if path.name in ALLOWED_FILES:

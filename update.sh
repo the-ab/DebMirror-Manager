@@ -48,8 +48,8 @@ Verwendung:
 
 Update-Paket:
   ZIP und zugehörige SHA-256-Datei nach ${UPDATE_DIR}/ kopieren, z. B.:
-    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.79.zip
-    ${UPDATE_DIR}/${PROJECT_NAME}-v0.1.79.zip.sha256
+    ${UPDATE_DIR}/${PROJECT_NAME}-vX.Y.Z.zip
+    ${UPDATE_DIR}/${PROJECT_NAME}-vX.Y.Z.zip.sha256
   Danach nur noch ausführen:
     ./update.sh
 USAGE
