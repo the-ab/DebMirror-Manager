@@ -2,7 +2,9 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **0.1.93**
+Aktuelle Version: **1.0.1**
+
+Neu in v1.0.1: Protokolle werden bei manueller oder automatischer Bereinigung vollständig aus Dateiablage und Datenbank entfernt.
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -42,7 +44,7 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.93.zip
+unzip debmirror-manager-v1.0.1.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -453,7 +455,7 @@ Unter **Betrieb -> Benachrichtigungen** können SMTP-Mail, Telegram und Discord 
 
 ### Einstellungen
 
-Zentrale Systemeinstellungen für Jobs, Warteschlange, Log-Aufbewahrung, Dashboard-Limits, Größenberechnung, Zeitzone, Container-Prüfung und Mirror-Speicher. Sprache und Darstellung werden benutzerbezogen unter **Persönliche Einstellungen** gespeichert.
+Zentrale Systemeinstellungen für Jobs, Warteschlange, Protokoll-Aufbewahrung, Dashboard-Limits, Größenberechnung, Zeitzone, Container-Prüfung und Mirror-Speicher. Unter **Jobs / Protokolle** können Admins abgeschlossene Protokolle gezielt auswählen und vollständig löschen oder die Aufbewahrungsfrist sofort anwenden. Dabei werden die Protokolldatei und der zugehörige Datenbankeintrag gemeinsam entfernt. Sprache und Darstellung werden benutzerbezogen unter **Persönliche Einstellungen** gespeichert.
 
 ### Generator-Einstellungen
 

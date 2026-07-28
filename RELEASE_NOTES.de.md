@@ -1,5 +1,32 @@
 # Release Notes
 
+## v1.0.1
+
+- Protokolllöschung korrigiert: Ein ausgewähltes abgeschlossenes Protokoll wird jetzt vollständig entfernt, einschließlich Protokolldatei und zugehörigem Datensatz in `jobs`.
+- Gelöschte Protokolle erscheinen dadurch nicht mehr als Platzhalter mit dem Status „gelöscht“ unter **Jobs / Protokolle**.
+- Die automatische Protokoll-Aufbewahrung verwendet dieselbe vollständige Löschlogik.
+- Beim ersten Start nach dem Update werden von v1.0.0 hinterlassene `log_deleted_at`-Platzhalter automatisch aus der Datenbank entfernt.
+- Laufende, startende, stoppende und wartende Jobs bleiben weiterhin geschützt und können nicht gelöscht werden.
+- Der Zähler **Fehlgeschlagene Läufe** wird direkt aus den noch vorhandenen `jobs`-Datensätzen berechnet und sinkt daher korrekt, wenn ein fehlgeschlagenes Protokoll vollständig gelöscht wird.
+- Fortlaufende Job-IDs bleiben durch SQLite `AUTOINCREMENT` erhalten; dafür müssen keine gelöschten Datensätze aufbewahrt werden.
+- Die Einstellungen wurden auf eine eindeutige Protokoll-Aufbewahrungsfrist vereinfacht. Der bisherige Job-Aufbewahrungswert bleibt intern nur aus Kompatibilitätsgründen synchronisiert.
+- Deutsche/englische Dokumentation und Regressionstests aktualisiert.
+- VERSION auf 1.0.1 gesetzt.
+
+## v1.0.0
+
+- Unter **Jobs / Protokolle** eine gezielte Protokollbereinigung ergänzt: Admins können einzelne oder mehrere vorhandene Protokolldateien auswählen und löschen, ohne den zugehörigen Jobeintrag aus der Laufhistorie zu entfernen.
+- Laufende, startende, stoppende oder wartende Jobs sind von der manuellen Protokolllöschung ausgeschlossen.
+- Jobhistorie und Protokolldateien besitzen jetzt getrennte, jeweils zwischen 1 und 3660 Tagen einstellbare Aufbewahrungsfristen.
+- Die automatische Bereinigung entfernt Protokolldateien nach der Protokollfrist; Jobeinträge bleiben bis zum Ablauf der unabhängigen Job-Aufbewahrung sichtbar.
+- Beim endgültigen Entfernen eines Jobeintrags wird eine eventuell noch vorhandene zugehörige Protokolldatei mit gelöscht, sodass keine verwaisten Joblogs entstehen.
+- Detailansicht und Jobliste kennzeichnen gelöschte bzw. nicht mehr vorhandene Protokolle eindeutig. Der direkte Protokollabruf liefert in diesem Fall einen klaren Status statt einer leeren Ausgabe.
+- Die Aktion **Aufbewahrung jetzt anwenden** wurde direkt in **Jobs / Protokolle** integriert; der Zeitplanbereich verweist auf diese zentrale Stelle.
+- Neue Installationen erhalten getrennte Standardwerte `JOB_RETENTION_DAYS` und `LOG_RETENTION_DAYS`; bestehende Installationen übernehmen für die neue Protokollfrist zunächst den bisherigen Job-Aufbewahrungswert.
+- Konfigurationsexport und -import um die Protokoll-Aufbewahrungsfrist ergänzt.
+- Deutsche/englische Dokumentation und Regressionstests aktualisiert.
+- VERSION auf 1.0.0 gesetzt.
+
 ## v0.1.93
 
 - Dashboard-Kachel **Profile / Benutzerskripte** angepasst: Mirror-Profile und Benutzerskripte werden innerhalb der kompakten Kachel jetzt untereinander statt nebeneinander angezeigt.

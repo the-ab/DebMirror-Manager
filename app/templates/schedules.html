@@ -21,7 +21,7 @@
   </div>
   <div class="stats-row compact">
     <span><strong>{{ max_parallel_jobs }}</strong> parallele Jobs</span>
-    <span><strong>{{ job_retention_days }}</strong> Tage Aufbewahrung</span>
+    <span><strong>{{ log_retention_days }}</strong> Tage Protokolle</span>
     <span><strong>{{ job_list_limit }}</strong> Jobs in Listen</span>
   </div>
   {% if is_admin %}<p class="hint">{% if language == 'en' %}Change these values under <a href="{{ url_for('settings_page') }}">System → Settings</a>.{% else %}Diese Werte änderst du unter <a href="{{ url_for('settings_page') }}">System → Einstellungen</a>.{% endif %}</p>{% else %}<p class="hint">{% if language == 'en' %}These are global system settings and can be changed only by administrators.{% else %}Diese Werte sind globale Systemeinstellungen und können nur von Admin-Benutzern geändert werden.{% endif %}</p>{% endif %}
@@ -156,14 +156,7 @@
 {% endif %}
 
 
-{% if is_admin %}<section class="card compact-card">
-  <h2>Bereinigung</h2>
-  <p>Die automatische Bereinigung löscht abgeschlossene Jobs und deren Logdateien nach der eingestellten Aufbewahrungszeit.</p>
-  <form method="post" action="{{ url_for('schedules_page') }}"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-    <input type="hidden" name="action" value="cleanup_now">
-    <button type="submit">Jetzt bereinigen</button>
-  </form>
-</section>{% endif %}
+{% if is_admin %}<section class="card compact-card"><h2>Protokollbereinigung</h2><p>Gezielte Protokolle und die getrennten Aufbewahrungsfristen verwaltest du unter <a href="{{ url_for('jobs') }}">Jobs / Protokolle</a>.</p></section>{% endif %}
 
 <script>
 (function () {

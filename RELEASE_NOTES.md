@@ -1,5 +1,32 @@
 # Release Notes
 
+## v1.0.1
+
+- Corrected protocol deletion: deleting a completed protocol now removes both its physical log file and the corresponding row in `jobs`.
+- Deleted protocols therefore no longer remain as placeholder rows marked “deleted” under **Jobs / Logs**.
+- Automatic log retention uses the same complete-removal semantics.
+- On first startup after upgrading, legacy v1.0.0 rows marked through `log_deleted_at` are removed automatically.
+- Queued, starting, running, and stopping jobs remain protected from deletion.
+- The **Failed runs** counter is calculated from the remaining `jobs` rows and therefore decreases correctly when a failed protocol is deleted.
+- Sequential job IDs remain monotonic through SQLite `AUTOINCREMENT`; deleted rows do not need to be retained for numbering.
+- Settings now expose one unambiguous protocol-retention period. The previous job-retention value is synchronized internally for compatibility only.
+- Updated German/English documentation and regression tests.
+- VERSION set to 1.0.1.
+
+## v1.0.0
+
+- Added targeted log cleanup under **Jobs / Logs**: administrators can select and delete one or multiple existing log files without removing the associated job record from run history.
+- Queued, starting, running, or stopping jobs cannot have their logs deleted manually.
+- Job history and log files now use separate retention periods, each configurable from 1 to 3660 days.
+- Automatic cleanup removes log files after log retention expires while keeping job records visible until the independent job-history retention expires.
+- When a job record is finally removed, any remaining associated log file is deleted as well to avoid orphaned job logs.
+- Job list and detail view clearly mark deleted or missing logs. Direct log access returns an explicit status instead of an empty response.
+- The **Apply retention now** action is now available directly under **Jobs / Logs**; the schedules page links to this central cleanup location.
+- New installations receive separate `JOB_RETENTION_DAYS` and `LOG_RETENTION_DAYS` defaults; existing installations initially inherit the previous job-retention value for the new log-retention setting.
+- Added log retention to configuration export and import.
+- Updated German/English documentation and regression tests.
+- VERSION set to 1.0.0.
+
 ## v0.1.93
 
 - Adjusted the **Profiles / user scripts** dashboard tile: mirror profiles and user scripts are now shown vertically instead of side by side inside the compact tile.

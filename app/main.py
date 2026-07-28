@@ -106,6 +106,7 @@ JOB_STOP_GRACE_SECONDS = int(os.environ.get("JOB_STOP_GRACE_SECONDS", "20"))
 DEBMIRROR_BADSIG_RETRY_DELAYS_SECONDS = (60, 180)
 DEFAULT_MAX_PARALLEL_JOBS = int(os.environ.get("MAX_PARALLEL_JOBS", "1"))
 DEFAULT_JOB_RETENTION_DAYS = int(os.environ.get("JOB_RETENTION_DAYS", "31"))
+DEFAULT_LOG_RETENTION_DAYS = int(os.environ.get("LOG_RETENTION_DAYS", os.environ.get("JOB_RETENTION_DAYS", "31")))
 DEFAULT_JOB_LIST_LIMIT = int(os.environ.get("JOB_LIST_LIMIT", "100"))
 DEFAULT_DASHBOARD_RECENT_JOBS_LIMIT = int(os.environ.get("DASHBOARD_RECENT_JOBS_LIMIT", "10"))
 DEFAULT_DASHBOARD_EVENTS_LIMIT = int(os.environ.get("DASHBOARD_EVENTS_LIMIT", "10"))
@@ -426,6 +427,7 @@ def init_db() -> None:
                 pid INTEGER DEFAULT NULL,
                 command TEXT NOT NULL DEFAULT '',
                 log_path TEXT NOT NULL,
+                log_deleted_at TEXT DEFAULT '',
                 started_at TEXT NOT NULL,
                 finished_at TEXT DEFAULT NULL,
                 exit_code INTEGER DEFAULT NULL,
@@ -619,6 +621,7 @@ def init_db() -> None:
                     pid INTEGER DEFAULT NULL,
                     command TEXT NOT NULL DEFAULT '',
                     log_path TEXT NOT NULL,
+                    log_deleted_at TEXT DEFAULT '',
                     started_at TEXT NOT NULL,
                     finished_at TEXT DEFAULT NULL,
                     exit_code INTEGER DEFAULT NULL,
@@ -642,6 +645,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE jobs ADD COLUMN job_type TEXT NOT NULL DEFAULT 'mirror'")
         if "script_name" not in job_columns:
             con.execute("ALTER TABLE jobs ADD COLUMN script_name TEXT NOT NULL DEFAULT ''")
+        if "log_deleted_at" not in job_columns:
+            con.execute("ALTER TABLE jobs ADD COLUMN log_deleted_at TEXT DEFAULT ''")
 
         schedule_columns = {row["name"] for row in con.execute("PRAGMA table_info(job_schedules)").fetchall()}
         if "job_kind" not in schedule_columns:
@@ -1184,7 +1189,23 @@ def max_parallel_jobs() -> int:
 
 
 def job_retention_days() -> int:
-    return get_int_setting("job_retention_days", DEFAULT_JOB_RETENTION_DAYS, 1, 3660)
+    # Legacy compatibility: since v1.0.1 a protocol entry and its job row are
+    # one unit. The visible retention is therefore governed by log_retention_days().
+    return log_retention_days()
+
+
+def log_retention_days() -> int:
+    settings = load_settings()
+    if "log_retention_days" not in settings:
+        try:
+            inherited = int(settings.get("job_retention_days", DEFAULT_LOG_RETENTION_DAYS))
+        except Exception:
+            inherited = DEFAULT_LOG_RETENTION_DAYS
+        inherited = max(1, min(3660, inherited))
+        settings["log_retention_days"] = inherited
+        save_settings(settings)
+        return inherited
+    return get_int_setting("log_retention_days", DEFAULT_LOG_RETENTION_DAYS, 1, 3660)
 
 
 def job_list_limit() -> int:
@@ -2127,7 +2148,8 @@ def settings_page():
                 return redirect(url_for("settings_page"))
             if action == "save_system_settings":
                 max_jobs = int(request.form.get("max_parallel_jobs", "1") or 1)
-                retention = int(request.form.get("job_retention_days", "31") or 31)
+                log_retention = int(request.form.get("log_retention_days", str(DEFAULT_LOG_RETENTION_DAYS)) or DEFAULT_LOG_RETENTION_DAYS)
+                retention = log_retention  # keep legacy setting synchronized for older installations/tools
                 list_limit = int(request.form.get("job_list_limit", "100") or 100)
                 dashboard_jobs_limit = int(request.form.get("dashboard_recent_jobs_limit", str(DEFAULT_DASHBOARD_RECENT_JOBS_LIMIT)) or DEFAULT_DASHBOARD_RECENT_JOBS_LIMIT)
                 dashboard_events_limit_value = int(request.form.get("dashboard_events_limit", str(DEFAULT_DASHBOARD_EVENTS_LIMIT)) or DEFAULT_DASHBOARD_EVENTS_LIMIT)
@@ -2148,8 +2170,8 @@ def settings_page():
                         raise ValueError("Ungültige Zeitzone. Beispiel: Europe/Berlin")
                 if max_jobs < 1 or max_jobs > 16:
                     raise ValueError("Gleichzeitig laufende Jobs müssen zwischen 1 und 16 liegen.")
-                if retention < 1 or retention > 3660:
-                    raise ValueError("Job-/Log-Aufbewahrung muss zwischen 1 und 3660 Tagen liegen.")
+                if log_retention < 1 or log_retention > 3660:
+                    raise ValueError("Protokoll-Aufbewahrung muss zwischen 1 und 3660 Tagen liegen.")
                 if list_limit < 10 or list_limit > 5000:
                     raise ValueError("Anzeige-Limit muss zwischen 10 und 5000 liegen.")
                 if dashboard_jobs_limit < 1 or dashboard_jobs_limit > 200:
@@ -2169,6 +2191,7 @@ def settings_page():
                 save_app_setting_values({
                     "max_parallel_jobs": max_jobs,
                     "job_retention_days": retention,
+                    "log_retention_days": log_retention,
                     "job_list_limit": list_limit,
                     "dashboard_recent_jobs_limit": dashboard_jobs_limit,
                     "dashboard_events_limit": dashboard_events_limit_value,
@@ -2205,7 +2228,7 @@ def settings_page():
         appearance=current_appearance(),
         dependency_checks=runtime_dependency_checks(),
         max_parallel_jobs=max_parallel_jobs(),
-        job_retention_days=job_retention_days(),
+        log_retention_days=log_retention_days(),
         job_list_limit=job_list_limit(),
         dashboard_recent_jobs_limit=dashboard_recent_jobs_limit(),
         dashboard_events_limit=dashboard_events_limit(),
@@ -5257,30 +5280,152 @@ def describe_schedule_target(schedule: Dict[str, Any]) -> str:
     return "Alle aktiven Mirror-Profile"
 
 
-def cleanup_old_jobs_and_logs() -> Dict[str, int]:
-    days = job_retention_days()
-    cutoff = local_now() - dt.timedelta(days=days)
-    cutoff_s = cutoff.isoformat(sep=" ", timespec="seconds")
-    deleted_jobs = 0
+ACTIVE_JOB_STATUSES = {"queued", "starting", "running", "stopping"}
+
+
+def safe_job_log_path(value: str) -> Optional[Path]:
+    """Return a log path only when it stays inside the managed log directory."""
+    try:
+        path = Path(value or "").resolve(strict=False)
+        base = APP_LOG_DIR.resolve(strict=False)
+        if path == base or base not in path.parents:
+            return None
+        return path
+    except Exception:
+        return None
+
+
+def delete_job_log_files(job_ids: Iterable[int]) -> Dict[str, int]:
+    """Delete completed protocol entries completely.
+
+    A protocol entry consists of the physical log file and the corresponding
+    row in ``jobs``.  Active jobs are never removed.  The legacy function name
+    is kept so existing routes and tests remain compatible.
+    """
+    normalized: List[int] = []
+    for value in job_ids:
+        try:
+            job_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if job_id > 0 and job_id not in normalized:
+            normalized.append(job_id)
+    if not normalized:
+        return {
+            "selected": 0, "deleted_logs": 0, "deleted_jobs": 0,
+            "missing_logs": 0, "skipped_active": 0, "skipped_invalid": 0,
+        }
+    if len(normalized) > 5000:
+        raise ValueError("Es können höchstens 5000 Protokolle gleichzeitig bereinigt werden.")
+
+    placeholders = ",".join("?" for _ in normalized)
     deleted_logs = 0
+    deleted_jobs = 0
+    missing_logs = 0
+    skipped_active = 0
+    skipped_invalid = 0
     with db() as con:
         rows = con.execute(
-            "SELECT id, log_path FROM jobs WHERE status NOT IN ('queued','starting','running','stopping') AND COALESCE(finished_at, started_at) < ?",
+            f"SELECT id, status, log_path FROM jobs WHERE id IN ({placeholders})",
+            normalized,
+        ).fetchall()
+        for row in rows:
+            if str(row["status"] or "") in ACTIVE_JOB_STATUSES:
+                skipped_active += 1
+                continue
+            path = safe_job_log_path(str(row["log_path"] or ""))
+            try:
+                if path is not None and path.exists() and path.is_file():
+                    path.unlink()
+                    deleted_logs += 1
+                else:
+                    # Missing files must not keep a dead placeholder in the list.
+                    missing_logs += 1
+                con.execute("DELETE FROM jobs WHERE id=?", (int(row["id"]),))
+                deleted_jobs += 1
+            except OSError:
+                # Keep the row when the physical file could not be removed, so
+                # the administrator can retry and no unmanaged orphan is hidden.
+                skipped_invalid += 1
+    return {
+        "selected": len(normalized),
+        "deleted_logs": deleted_logs,
+        "deleted_jobs": deleted_jobs,
+        "missing_logs": missing_logs,
+        "skipped_active": skipped_active,
+        "skipped_invalid": skipped_invalid,
+    }
+
+
+def cleanup_old_jobs_and_logs() -> Dict[str, int]:
+    """Remove complete protocol entries after the configured retention."""
+    retention_days = log_retention_days()
+    cutoff_s = (local_now() - dt.timedelta(days=retention_days)).isoformat(sep=" ", timespec="seconds")
+    deleted_jobs = 0
+    deleted_logs = 0
+    missing_logs = 0
+    skipped_invalid = 0
+
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT id, log_path
+            FROM jobs
+            WHERE status NOT IN ('queued','starting','running','stopping')
+              AND COALESCE(finished_at, started_at) < ?
+            ORDER BY id ASC
+            """,
             (cutoff_s,),
         ).fetchall()
-        ids = [int(r["id"]) for r in rows]
-        for r in rows:
+        for row in rows:
+            path = safe_job_log_path(str(row["log_path"] or ""))
             try:
-                lp = Path(r["log_path"])
-                if lp.exists() and lp.is_file():
-                    lp.unlink()
+                if path is not None and path.exists() and path.is_file():
+                    path.unlink()
                     deleted_logs += 1
-            except Exception:
-                pass
-        if ids:
-            con.executemany("DELETE FROM jobs WHERE id=?", [(i,) for i in ids])
-            deleted_jobs = len(ids)
-    return {"deleted_jobs": deleted_jobs, "deleted_logs": deleted_logs, "retention_days": days}
+                else:
+                    missing_logs += 1
+                con.execute("DELETE FROM jobs WHERE id=?", (int(row["id"]),))
+                deleted_jobs += 1
+            except OSError:
+                skipped_invalid += 1
+
+    return {
+        "deleted_jobs": deleted_jobs,
+        "deleted_logs": deleted_logs,
+        "missing_logs": missing_logs,
+        "skipped_invalid": skipped_invalid,
+        "retention_days": retention_days,
+        # Compatibility keys for callers from v1.0.0.
+        "job_retention_days": retention_days,
+        "log_retention_days": retention_days,
+    }
+
+
+def purge_legacy_deleted_protocol_rows() -> int:
+    """Remove v1.0.0 placeholders whose files were already deleted."""
+    removed = 0
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT id, status, log_path, log_deleted_at
+            FROM jobs
+            WHERE status NOT IN ('queued','starting','running','stopping')
+              AND COALESCE(log_deleted_at, '') <> ''
+            """
+        ).fetchall()
+        for row in rows:
+            path = safe_job_log_path(str(row["log_path"] or ""))
+            try:
+                if path is not None and path.exists() and path.is_file():
+                    path.unlink()
+                con.execute("DELETE FROM jobs WHERE id=?", (int(row["id"]),))
+                removed += 1
+            except OSError:
+                continue
+    if removed:
+        add_event("info", f"{removed} alte Platzhalter gelöschter Protokolle vollständig entfernt.")
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -8259,7 +8404,7 @@ def schedules_page():
             action = request.form.get("action", "create")
             if action == "cleanup_now":
                 result = cleanup_old_jobs_and_logs()
-                flash(f"Bereinigung abgeschlossen: {result['deleted_jobs']} Jobs und {result['deleted_logs']} Logdateien gelöscht.", "success")
+                flash(f"Bereinigung abgeschlossen: {result['deleted_jobs']} Jobs und {result['deleted_logs']} Protokolldateien gelöscht.", "success")
                 return redirect(url_for("schedules_page"))
             values = normalize_schedule_form_values()
             values["created_at"] = now_iso()
@@ -8283,7 +8428,7 @@ def schedules_page():
         mirrors=list_mirrors(),
         user_scripts=list_user_scripts(),
         max_parallel_jobs=max_parallel_jobs(),
-        job_retention_days=job_retention_days(),
+        log_retention_days=log_retention_days(),
         job_list_limit=job_list_limit(),
     )
 
@@ -8323,7 +8468,7 @@ def schedule_edit(schedule_id: int):
         mirrors=list_mirrors(),
         user_scripts=list_user_scripts(),
         max_parallel_jobs=max_parallel_jobs(),
-        job_retention_days=job_retention_days(),
+        log_retention_days=log_retention_days(),
         job_list_limit=job_list_limit(),
     )
 
@@ -8362,6 +8507,16 @@ def schedule_delete(schedule_id: int):
     return redirect(url_for("schedules_page"))
 
 
+def enrich_jobs_log_state(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    for job in jobs:
+        path = safe_job_log_path(str(job.get("log_path") or ""))
+        available = bool(path and path.exists() and path.is_file())
+        job["log_available"] = available
+        job["log_deleted"] = bool(str(job.get("log_deleted_at") or "")) or not available
+        job["log_selectable"] = available and str(job.get("status") or "") not in ACTIVE_JOB_STATUSES
+    return jobs
+
+
 @app.route("/jobs")
 @require_auth
 def jobs():
@@ -8373,16 +8528,63 @@ def jobs():
             query = "SELECT * FROM jobs WHERE status='error' ORDER BY id DESC LIMIT ?"
         else:
             query = "SELECT * FROM jobs ORDER BY id DESC LIMIT ?"
-        rows = enrich_jobs_duration([row_to_dict(r) for r in con.execute(query, (job_list_limit(),)).fetchall()])
+        rows = [row_to_dict(r) for r in con.execute(query, (job_list_limit(),)).fetchall()]
+    rows = enrich_jobs_log_state(enrich_jobs_duration(rows))
     return render_template(
         "jobs.html",
         jobs=rows,
         status_filter=status_filter,
         job_list_limit=job_list_limit(),
-        job_retention_days=job_retention_days(),
+        log_retention_days=log_retention_days(),
         max_parallel_jobs=max_parallel_jobs(),
         active_jobs_count=active_jobs_count(),
     )
+
+
+@app.route("/jobs/logs/delete", methods=["POST"])
+@require_admin
+def jobs_delete_logs():
+    status_filter = str(request.form.get("status_filter") or "").strip().lower()
+    result = {"deleted_jobs": 0}
+    try:
+        return_job_id = int(request.form.get("return_job_id") or 0)
+    except (TypeError, ValueError):
+        return_job_id = 0
+    try:
+        result = delete_job_log_files(request.form.getlist("job_ids"))
+        if result["selected"] == 0:
+            raise ValueError("Bitte mindestens ein vorhandenes Protokoll auswählen.")
+        parts = [f"{result['deleted_jobs']} Protokolleintrag/-einträge vollständig gelöscht"]
+        if result["deleted_logs"]:
+            parts.append(f"{result['deleted_logs']} zugehörige Datei(en) entfernt")
+        if result["missing_logs"]:
+            parts.append(f"{result['missing_logs']} bereits fehlende Datei(en) bereinigt")
+        if result["skipped_active"]:
+            parts.append(f"{result['skipped_active']} laufende Jobs übersprungen")
+        if result["skipped_invalid"]:
+            parts.append(f"{result['skipped_invalid']} ungültige/nicht löschbare Pfade übersprungen")
+        message = ", ".join(parts) + "."
+        flash(message, "success" if result["deleted_jobs"] else "warning")
+        add_event("warning", f"Gezielte Protokollbereinigung: {message}")
+    except Exception as exc:
+        flash(str(exc), "danger")
+    if return_job_id > 0 and result.get("deleted_jobs", 0) == 0:
+        return redirect(url_for("job_detail", job_id=return_job_id))
+    return redirect(url_for("jobs", status="error") if status_filter == "error" else url_for("jobs"))
+
+
+@app.route("/jobs/cleanup", methods=["POST"])
+@require_admin
+def jobs_cleanup_now():
+    status_filter = str(request.form.get("status_filter") or "").strip().lower()
+    result = cleanup_old_jobs_and_logs()
+    message = (
+        f"Aufbewahrung angewendet: {result['deleted_jobs']} Protokolleintrag/-einträge vollständig gelöscht; "
+        f"{result['deleted_logs']} zugehörige Datei(en) entfernt."
+    )
+    flash(message, "success")
+    add_event("info", message)
+    return redirect(url_for("jobs", status="error") if status_filter == "error" else url_for("jobs"))
 
 
 def latest_badsig_attempt_log(log_text: str) -> str:
@@ -8550,12 +8752,15 @@ def job_detail(job_id: int):
             flash("Job nicht gefunden.", "danger")
             return redirect(url_for("jobs"))
         job = enrich_job_duration(row_to_dict(row))
-    log_path = Path(job["log_path"])
-    log_tail = read_log_tail(log_path, max_bytes=80_000)
+    log_path = safe_job_log_path(str(job.get("log_path") or ""))
+    log_available = bool(log_path and log_path.exists() and log_path.is_file())
+    log_tail = read_log_tail(log_path, max_bytes=80_000) if log_available and log_path else ""
     try:
-        log_size = log_path.stat().st_size if log_path.exists() else 0
+        log_size = log_path.stat().st_size if log_available and log_path else 0
     except Exception:
         log_size = 0
+    job["log_available"] = log_available
+    job["log_deleted"] = bool(str(job.get("log_deleted_at") or "")) or not log_available
     diagnosis = build_job_diagnosis(job)
     return render_template("job_detail.html", job=job, log_tail=log_tail, log_size=log_size, diagnosis=diagnosis)
 
@@ -8590,7 +8795,9 @@ def job_log(job_id: int):
         row = con.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
             return "Job nicht gefunden", 404
-        path = Path(row["log_path"])
+        path = safe_job_log_path(str(row["log_path"] or ""))
+    if not path or not path.exists() or not path.is_file():
+        return "Protokoll wurde gelöscht oder ist nicht mehr vorhanden.", 410
     return Response(read_log_tail(path, max_bytes=2_000_000), mimetype="text/plain; charset=utf-8")
 
 
@@ -12466,7 +12673,7 @@ def build_config_export() -> Dict[str, Any]:
     for m in list_mirrors():
         mirrors.append({k: m.get(k) for k in EXPORT_MIRROR_COLUMNS if k in m})
     settings = load_settings()
-    safe_settings = {k: v for k, v in settings.items() if k in {"max_parallel_jobs", "job_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"}}
+    safe_settings = {k: v for k, v in settings.items() if k in {"max_parallel_jobs", "job_retention_days", "log_retention_days", "job_list_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_recent_jobs_limit", "dashboard_events_limit", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"}}
     if isinstance(settings.get("notify"), dict):
         notify_export = dict(settings["notify"])
         for field in SECRET_FIELDS:
@@ -12570,7 +12777,7 @@ def import_config_data(data: Dict[str, Any], replace_existing: bool = False) -> 
     safe_settings = data.get("settings") or {}
     if isinstance(safe_settings, dict):
         current = load_settings()
-        for key in ("notify", "max_parallel_jobs", "job_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"):
+        for key in ("notify", "max_parallel_jobs", "job_retention_days", "log_retention_days", "job_list_limit", "dashboard_recent_jobs_limit", "dashboard_events_limit", "size_cache_ttl_seconds", "size_calc_timeout_seconds", "size_calc_max_parallel", "auto_size_recalc_enabled", "auto_size_idle_minutes", "storage_guard_enabled", "storage_guard_threshold_percent", "profile_generator_config", "profile_scan_path_variables", "dashboard_layout", "user_script_targets", "keyring_metadata", "key_fingerprint_metadata", "mirror_keyring_assignments"):
             if key in safe_settings:
                 current[key] = safe_settings[key]
                 imported["settings"] += 1
@@ -13300,8 +13507,8 @@ BUILTIN_HELP = {
     "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
 }
 BUILTIN_RELEASE_NOTES = {
-    "de": "# Release Notes\n\n## v0.1.93\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
-    "en": "# Release Notes\n\n## v0.1.93\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+    "de": "# Release Notes\n\n## v1.0.1\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v1.0.1\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
 }
 
 # ---------------------------------------------------------------------------
@@ -13416,6 +13623,7 @@ def create_app() -> Flask:
     ensure_secure_runtime_permissions()
     init_db()
     migrate_short_trust_fingerprints()
+    purge_legacy_deleted_protocol_rows()
     cleanup_stale_job_auth_configs()
     ensure_initial_user_from_legacy_config()
     migrate_notification_secret_storage()

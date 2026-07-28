@@ -2,7 +2,9 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **0.1.93**
+Current version: **1.0.1**
+
+New in v1.0.1: complete removal of protocol entries from file storage and the database, plus targeted deletion of selected logs under **Jobs / Logs**.
 
 ## Project status, affiliation, and licensing
 
@@ -43,7 +45,7 @@ The selected host mirror directory is mounted as `/mirror` inside the applicatio
 ## Installation
 
 ```bash
-unzip debmirror-manager-v0.1.93.zip
+unzip debmirror-manager-v1.0.1.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -322,7 +324,7 @@ Secrets and mirror-profile passwords are encrypted with the persistent key `/app
 
 ## System settings
 
-System settings control queue concurrency, job and log retention, list limits, time zone, size calculation, automatic size refresh, storage guard, and dependency checks.
+System settings control queue concurrency, protocol retention, list limits, time zone, size calculation, automatic size refresh, storage guard, and dependency checks. Under **Jobs / Logs**, administrators can select completed protocols for complete deletion or apply the retention period immediately. Both the physical log file and the corresponding database row are removed together.
 
 Language and appearance are not global system settings. They are stored per user under **Personal settings**.
 

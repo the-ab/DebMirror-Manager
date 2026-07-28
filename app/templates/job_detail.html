@@ -11,8 +11,11 @@
     <a class="button" href="{{ url_for('jobs') }}">Zurück zu Jobs</a>
     {% if job.mirror_id %}<a class="button" href="{{ url_for('mirror_detail', mirror_id=job.mirror_id) }}">Zum Profil</a>{% endif %}
     {% if job.job_type == 'script' %}<a class="button" href="{{ url_for('user_scripts_page') }}">Zu Benutzerskripten</a>{% endif %}
-    <a class="button" href="{{ url_for('job_log', job_id=job.id) }}" target="_blank">Log als Text</a>
-    {% if is_admin and job.status in ['queued','running','stopping'] %}
+    {% if job.log_available %}<a class="button" href="{{ url_for('job_log', job_id=job.id) }}" target="_blank">Protokoll als Text</a>{% else %}<span class="badge muted">Protokoll gelöscht</span>{% endif %}
+    {% if is_admin and job.log_available and job.status not in ['queued','starting','running','stopping'] %}
+    <form method="post" action="{{ url_for('jobs_delete_logs') }}" class="inline" onsubmit="return confirm('Dieses Protokoll wirklich vollständig löschen? Der Job-Eintrag und die zugehörige Datei werden entfernt.');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="job_ids" value="{{ job.id }}"><input type="hidden" name="return_job_id" value="{{ job.id }}"><button class="danger" type="submit">Protokoll löschen</button></form>
+    {% endif %}
+    {% if is_admin and job.status in ['queued','starting','running','stopping'] %}
     <form method="post" action="{{ url_for('job_stop', job_id=job.id) }}" class="inline"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><button class="danger" type="submit">Stoppen</button></form>
     {% endif %}
   </div>
@@ -29,11 +32,11 @@
 </div>
 
 <section class="card">
-  <h2>Live-Log</h2>
-  <pre id="log" class="logbox">{{ log_tail }}</pre>
+  <h2>{% if job.status in ['queued','starting','running','stopping'] %}Live-Protokoll{% else %}Protokoll{% endif %}</h2>
+  {% if job.log_available %}<pre id="log" class="logbox">{{ log_tail }}</pre>{% else %}<div class="notice warning">Die Protokolldatei ist nicht verfügbar. Abgeschlossene Einträge ohne Protokolldatei werden bei der nächsten Bereinigung vollständig entfernt.</div>{% endif %}
 </section>
 
-{% if job.status in ['queued','running','stopping'] %}
+{% if job.status in ['queued','starting','running','stopping'] and job.log_available %}
 <script>
 (function() {
   const log = document.getElementById('log');

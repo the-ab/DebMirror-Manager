@@ -1062,3 +1062,10 @@ button.locked-button:disabled {
   .summary-grid > .dashboard-block { grid-column: span 6 !important; }
   .summary-grid > [data-dashboard-block="profile-script-summary"] { grid-column: span 12 !important; }
 }
+
+/* v1.0.0: targeted job-log cleanup */
+.log-cleanup-toolbar, .log-selection-actions { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; margin:.75rem 0; }
+.log-cleanup-toolbar form { margin:0; }
+.select-column { width:2.25rem; text-align:center; }
+.select-column input { margin:0; }
+@media (max-width: 720px) { .log-cleanup-toolbar, .log-selection-actions { align-items:stretch; flex-direction:column; } .log-cleanup-toolbar button, .log-selection-actions button { width:100%; } }

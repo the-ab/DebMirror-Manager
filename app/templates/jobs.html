@@ -3,11 +3,11 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <h1>Jobs</h1>
+    <h1>Jobs / Protokolle</h1>
     {% if status_filter == 'error' %}
-      <p>{% if language == 'en' %}Showing the last {{ job_list_limit }} failed runs. Completed jobs/logs are cleaned up after {{ job_retention_days }} days.{% else %}Anzeige der letzten {{ job_list_limit }} fehlgeschlagenen Läufe. Abgeschlossene Jobs/Logs werden nach {{ job_retention_days }} Tagen bereinigt.{% endif %}</p>
+      <p>{% if language == 'en' %}Showing the last {{ job_list_limit }} failed runs. Completed protocol entries are retained for {{ log_retention_days }} days.{% else %}Anzeige der letzten {{ job_list_limit }} fehlgeschlagenen Läufe. Abgeschlossene Protokolle werden {{ log_retention_days }} Tage aufbewahrt.{% endif %}</p>
     {% else %}
-      <p>Anzeige der letzten {{ job_list_limit }} Jobs. Abgeschlossene Jobs/Logs werden nach {{ job_retention_days }} Tagen bereinigt.</p>
+      <p>{% if language == 'en' %}Showing the last {{ job_list_limit }} jobs. Completed protocol entries are retained for {{ log_retention_days }} days.{% else %}Anzeige der letzten {{ job_list_limit }} Jobs. Abgeschlossene Protokolle werden {{ log_retention_days }} Tage aufbewahrt.{% endif %}</p>
     {% endif %}
   </div>
   <div class="actions"><a class="button" href="{{ url_for('schedules_page') }}">Zeitpläne</a></div>
@@ -20,29 +20,69 @@
   </div>
   {% if status_filter == 'error' %}<div class="notice danger compact-notice">Es werden nur fehlgeschlagene Läufe angezeigt.</div>{% endif %}
   <p>Alle Startanforderungen laufen über eine globale Warteschlange. Aktuell dürfen {{ max_parallel_jobs }} Jobs parallel laufen; aktiv sind {{ active_jobs_count }}.</p>
-{% if jobs %}
-  <div class="table-scroll full-list-scroll">
-  <table class="compact-table">
-    <thead><tr><th>ID</th><th>Ziel</th><th>Typ</th><th>Status</th><th>Dry-Run</th><th>Start</th><th>Ende</th><th>Dauer</th><th>Exit</th></tr></thead>
-    <tbody>
-    {% for j in jobs %}
-      <tr>
-        <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
-        <td translate="no">{{ j.mirror_name }}</td>
-        <td>{{ 'Mirror-Zeitabgleich' if j.job_type == 'time_sync' else (j.job_type or 'mirror') }}</td>
-        <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
-        <td>{{ 'Ja' if j.dry_run else 'Nein' }}</td>
-        <td>{{ j.started_at }}</td>
-        <td>{{ j.finished_at or '-' }}</td>
-        <td>{{ j.duration_h or '-' }}</td>
-        <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+
+  {% if is_admin %}
+  <div class="log-cleanup-toolbar">
+    <form method="post" action="{{ url_for('jobs_cleanup_now') }}" onsubmit="return confirm('Automatische Aufbewahrungsfristen jetzt anwenden?');"><input type="hidden" name="_csrf_token" value="{{ csrf_token }}"><input type="hidden" name="status_filter" value="{{ status_filter }}">
+      <button type="submit">Aufbewahrung jetzt anwenden</button>
+    </form>
+    <small>Entfernt abgeschlossene Protokolle nach {{ log_retention_days }} Tagen vollständig aus Dateiablage und Datenbank.</small>
   </div>
+  {% endif %}
+
+{% if jobs %}
+  <form method="post" action="{{ url_for('jobs_delete_logs') }}" id="job-log-cleanup-form" onsubmit="return confirm('Ausgewählte Protokolle wirklich vollständig löschen? Die Einträge und zugehörigen Dateien werden entfernt.');">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="status_filter" value="{{ status_filter }}">
+    {% if is_admin %}
+    <div class="log-selection-actions">
+      <button class="danger" type="submit">Ausgewählte Protokolle vollständig löschen</button>
+      <small>Nur beendete Jobs mit vorhandener Protokolldatei können ausgewählt werden.</small>
+    </div>
+    {% endif %}
+    <div class="table-scroll full-list-scroll">
+    <table class="compact-table">
+      <thead><tr>{% if is_admin %}<th class="select-column"><input type="checkbox" id="select-all-job-logs" aria-label="Alle sichtbaren Protokolle auswählen"></th>{% endif %}<th>ID</th><th>Ziel</th><th>Typ</th><th>Status</th><th>Dry-Run</th><th>Start</th><th>Ende</th><th>Dauer</th><th>Exit</th><th>Protokoll</th></tr></thead>
+      <tbody>
+      {% for j in jobs %}
+        <tr>
+          {% if is_admin %}<td class="select-column"><input type="checkbox" name="job_ids" value="{{ j.id }}" class="job-log-checkbox" {% if not j.log_selectable %}disabled{% endif %} aria-label="Protokoll von Job {{ j.id }} auswählen"></td>{% endif %}
+          <td><a href="{{ url_for('job_detail', job_id=j.id) }}">#{{ j.id }}</a></td>
+          <td translate="no">{{ j.mirror_name }}</td>
+          <td>{{ 'Mirror-Zeitabgleich' if j.job_type == 'time_sync' else (j.job_type or 'mirror') }}</td>
+          <td><span class="badge {{ j.status }}">{{ j.status }}</span></td>
+          <td>{{ 'Ja' if j.dry_run else 'Nein' }}</td>
+          <td>{{ j.started_at }}</td>
+          <td>{{ j.finished_at or '-' }}</td>
+          <td>{{ j.duration_h or '-' }}</td>
+          <td>{{ j.exit_code if j.exit_code is not none else '-' }}</td>
+          <td>{% if j.log_available %}<a href="{{ url_for('job_log', job_id=j.id) }}" target="_blank">vorhanden</a>{% else %}<span class="badge warning">nicht verfügbar</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </form>
   {% else %}
   <p>{% if status_filter == 'error' %}Keine fehlgeschlagenen Läufe vorhanden.{% else %}Noch keine Jobs vorhanden.{% endif %}</p>
   {% endif %}
 </section>
+{% if is_admin and jobs %}
+<script>
+(function () {
+  const selectAll = document.getElementById('select-all-job-logs');
+  if (!selectAll) return;
+  const selectable = Array.from(document.querySelectorAll('.job-log-checkbox:not(:disabled)'));
+  selectAll.addEventListener('change', function () {
+    selectable.forEach(function (item) { item.checked = selectAll.checked; });
+  });
+  selectable.forEach(function (item) {
+    item.addEventListener('change', function () {
+      selectAll.checked = selectable.length > 0 && selectable.every(function (entry) { return entry.checked; });
+      selectAll.indeterminate = !selectAll.checked && selectable.some(function (entry) { return entry.checked; });
+    });
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

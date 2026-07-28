@@ -887,7 +887,8 @@ def test_release_footer_is_present_on_app_login_and_setup_templates(client, data
     assert page.status_code == 200
     html = page.get_data(as_text=True)
     assert f"v{dmm.APP_VERSION}" in html
-    assert "2026-07-27" in html or "27.07.2026" in html
+    release_date_de = dt.date.fromisoformat(dmm.APP_RELEASE_DATE).strftime("%d.%m.%Y")
+    assert dmm.APP_RELEASE_DATE in html or release_date_de in html
 
     with client.session_transaction() as session:
         session.clear()
@@ -895,7 +896,7 @@ def test_release_footer_is_present_on_app_login_and_setup_templates(client, data
     assert login.status_code == 200
     login_html = login.get_data(as_text=True)
     assert f"v{dmm.APP_VERSION}" in login_html
-    assert "2026-07-27" in login_html or "27.07.2026" in login_html
+    assert dmm.APP_RELEASE_DATE in login_html or release_date_de in login_html
 
 
 def test_ping_runtime_dependencies_are_declared():
@@ -1025,3 +1026,130 @@ def test_run_job_thread_passes_dry_run_to_notification(tmp_path, monkeypatch):
     finally:
         with dmm.db() as con:
             con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+
+
+def test_log_retention_removes_complete_protocol_entry(monkeypatch, tmp_path):
+    log_path = dmm.APP_LOG_DIR / "retention-complete.log"
+    log_path.write_text("old log", encoding="utf-8")
+    old_time = (dmm.local_now() - dt.timedelta(days=40)).isoformat(sep=" ", timespec="seconds")
+    with dmm.db() as con:
+        cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, status, dry_run, command, command_json, log_path, started_at, finished_at, exit_code, source)
+            VALUES (NULL, 'retention-complete', 'success', 0, '', '[]', ?, ?, ?, 0, 'test')
+            """,
+            (str(log_path), old_time, old_time),
+        )
+        job_id = int(cur.lastrowid)
+    monkeypatch.setattr(dmm, "log_retention_days", lambda: 30)
+    try:
+        result = dmm.cleanup_old_jobs_and_logs()
+        assert result["deleted_logs"] == 1
+        assert result["deleted_jobs"] == 1
+        assert not log_path.exists()
+        with dmm.db() as con:
+            row = con.execute("SELECT id FROM jobs WHERE id=?", (job_id,)).fetchone()
+        assert row is None
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        log_path.unlink(missing_ok=True)
+
+
+def test_targeted_log_cleanup_removes_job_record_and_skips_active(tmp_path):
+    finished_log = dmm.APP_LOG_DIR / "targeted-finished.log"
+    active_log = dmm.APP_LOG_DIR / "targeted-active.log"
+    finished_log.write_text("finished", encoding="utf-8")
+    active_log.write_text("active", encoding="utf-8")
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        finished_cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, status, dry_run, command, command_json, log_path, started_at, finished_at, exit_code, source)
+            VALUES (NULL, 'targeted-finished', 'success', 0, '', '[]', ?, ?, ?, 0, 'test')
+            """,
+            (str(finished_log), now, now),
+        )
+        active_cur = con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, status, dry_run, command, command_json, log_path, started_at, source)
+            VALUES (NULL, 'targeted-active', 'running', 0, '', '[]', ?, ?, 'test')
+            """,
+            (str(active_log), now),
+        )
+        finished_id = int(finished_cur.lastrowid)
+        active_id = int(active_cur.lastrowid)
+    try:
+        result = dmm.delete_job_log_files([finished_id, active_id])
+        assert result["deleted_logs"] == 1
+        assert result["deleted_jobs"] == 1
+        assert result["skipped_active"] == 1
+        assert not finished_log.exists()
+        assert active_log.exists()
+        with dmm.db() as con:
+            finished_row = con.execute("SELECT id FROM jobs WHERE id=?", (finished_id,)).fetchone()
+            active_row = con.execute("SELECT id FROM jobs WHERE id=?", (active_id,)).fetchone()
+        assert finished_row is None
+        assert active_row is not None
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id IN (?, ?)", (finished_id, active_id))
+        finished_log.unlink(missing_ok=True)
+        active_log.unlink(missing_ok=True)
+
+
+def test_complete_protocol_deletion_keeps_job_ids_monotonic(tmp_path):
+    first_log = dmm.APP_LOG_DIR / "monotonic-first.log"
+    second_log = dmm.APP_LOG_DIR / "monotonic-second.log"
+    first_log.write_text("first", encoding="utf-8")
+    now = dmm.now_iso()
+    with dmm.db() as con:
+        first_id = int(con.execute(
+            """
+            INSERT INTO jobs(mirror_id, mirror_name, status, dry_run, command, command_json, log_path, started_at, finished_at, exit_code, source)
+            VALUES (NULL, 'monotonic-first', 'error', 0, '', '[]', ?, ?, ?, 1, 'test')
+            """,
+            (str(first_log), now, now),
+        ).lastrowid)
+    try:
+        result = dmm.delete_job_log_files([first_id])
+        assert result["deleted_jobs"] == 1
+        second_log.write_text("second", encoding="utf-8")
+        with dmm.db() as con:
+            second_id = int(con.execute(
+                """
+                INSERT INTO jobs(mirror_id, mirror_name, status, dry_run, command, command_json, log_path, started_at, finished_at, exit_code, source)
+                VALUES (NULL, 'monotonic-second', 'success', 0, '', '[]', ?, ?, ?, 0, 'test')
+                """,
+                (str(second_log), now, now),
+            ).lastrowid)
+        assert second_id > first_id
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE mirror_name IN ('monotonic-first','monotonic-second')")
+        first_log.unlink(missing_ok=True)
+        second_log.unlink(missing_ok=True)
+
+
+def test_jobs_page_exposes_targeted_log_cleanup(client, database_cleanup):
+    admin = make_user("log-cleanup-admin")
+    authenticate(client, admin)
+    response = client.get("/jobs")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "/jobs/logs/delete" in html
+    assert "vollständig löschen" in html or "completely" in html.lower()
+    assert "Protokoll" in html or "log" in html.lower()
+
+
+def test_new_log_retention_inherits_existing_job_retention(monkeypatch):
+    original = dmm.load_settings()
+    try:
+        changed = dict(original)
+        changed.pop("log_retention_days", None)
+        changed["job_retention_days"] = 77
+        dmm.save_settings(changed)
+        assert dmm.log_retention_days() == 77
+        assert int(dmm.load_settings()["log_retention_days"]) == 77
+    finally:
+        dmm.save_settings(original)
