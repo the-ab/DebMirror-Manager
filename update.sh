@@ -214,6 +214,15 @@ create_backups() {
     chmod 600 "$backup_base/.env"
   fi
   [ -f "docker-compose.yml" ] && cp docker-compose.yml "$backup_base/docker-compose.yml"
+  if [ -d "docker-compose" ]; then
+    mkdir -p "$backup_base/docker-compose"
+    [ -f "docker-compose/compose.yaml" ] && cp "docker-compose/compose.yaml" "$backup_base/docker-compose/compose.yaml"
+    [ -f "docker-compose/.env.example" ] && cp "docker-compose/.env.example" "$backup_base/docker-compose/.env.example"
+    if [ -f "docker-compose/.env" ]; then
+      cp "docker-compose/.env" "$backup_base/docker-compose/.env"
+      chmod 600 "$backup_base/docker-compose/.env"
+    fi
+  fi
   [ -f "VERSION" ] && cp VERSION "$backup_base/VERSION"
   for name in LICENSE SECURITY.md CONTRIBUTING.md THIRD-PARTY-NOTICES.md .gitignore .dockerignore requirements.lock requirements-dev.txt pytest.ini; do
     [ -f "$name" ] && cp "$name" "$backup_base/$name"
@@ -395,8 +404,13 @@ if len(candidates) != 1:
     raise SystemExit('Im ZIP wurde nicht genau ein gültiger debmirror-manager Projektordner gefunden.')
 source_root = candidates[0]
 
+preserved_image_env = None
+image_env_path = target_root / 'docker-compose' / '.env'
+if image_env_path.is_file():
+    preserved_image_env = (image_env_path.read_bytes(), stat.S_IMODE(image_env_path.stat().st_mode) or 0o600)
+
 items_to_copy = [
-    '.env.example', '.gitignore', '.dockerignore', 'Dockerfile', 'docker-compose.yml', 'requirements.txt', 'requirements.lock', 'requirements-dev.txt', 'pytest.ini',
+    '.env.example', '.gitignore', '.dockerignore', 'Dockerfile', 'docker-compose.yml', 'docker-compose', 'requirements.txt', 'requirements.lock', 'requirements-dev.txt', 'pytest.ini',
     'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md', 'README.de.md',
     'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.md', 'VERSION', 'app', 'nginx', 'tests', 'scripts'
 ]
@@ -414,6 +428,12 @@ for name in items_to_copy:
         shutil.copytree(src, dst)
     else:
         shutil.copy2(src, dst)
+
+if preserved_image_env is not None:
+    data, mode = preserved_image_env
+    image_env_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    image_env_path.write_bytes(data)
+    image_env_path.chmod(mode)
 
 # GitHub automation is intentionally not part of this project.
 github_dir = target_root / '.github'

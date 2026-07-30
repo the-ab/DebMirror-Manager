@@ -1,5 +1,19 @@
 # Release Notes
 
+## v1.0.2
+
+- Neuen eigenständigen Ordner `docker-compose/` für Installationen über das veröffentlichte GHCR-Image ergänzt.
+- `docker-compose/compose.yaml` verwendet `ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}` und benötigt keinen lokalen Build-Kontext, kein Dockerfile und keine Projektquellen.
+- `docker-compose/.env.example` enthält getrennte Einstellungen für Image-Tag, WebUI, optionale nginx-Mirror-Auslieferung, persistente Hostpfade, Sicherheitsparameter, Scheduler, Aufbewahrung, Größenberechnung und Speicherplatz-Sperre.
+- Die Image-Installation unterstützt sowohl `ghcr.io/the-ab/debmirror-manager:latest` als auch den festen Versions-Tag `ghcr.io/the-ab/debmirror-manager:v1.0.2`.
+- Bei Neuinstallationen wird `APP_SECRET_KEY` automatisch sicher erzeugt und persistent unter `data/app-secret.key` gespeichert; der erste Administrator wird weiterhin über `/setup` angelegt.
+- Für die Übernahme bestehender Installationen wurden Hinweise zu `DATA_PATH`, `MIRROR_PATH`, altem `APP_SECRET_KEY` und dem notwendigen Stoppen des bisherigen Stacks ergänzt.
+- README DE/EN trennt jetzt klar zwischen lokalem Release-ZIP-Build und Image-Installation sowie den jeweiligen Updatewegen.
+- Der Projekt-Updater übernimmt den neuen Ordner bei zukünftigen Updates und bewahrt eine vorhandene `docker-compose/.env` beim Ersetzen der Vorlagen.
+- Für das direkte Update von v1.0.1 ist die einmalige Vorab-Extraktion der beiden Dateien dokumentiert, weil der alte v1.0.1-Updater neue Top-Level-Verzeichnisse noch nicht kopieren konnte.
+- Repository-Audit und Regressionstest prüfen den eigenständigen Compose-Satz, die GHCR-Referenzen und das Fehlen eines lokalen `build:`-Abschnitts.
+- VERSION auf 1.0.2 gesetzt.
+
 ## v1.0.1
 
 - Protokolllöschung korrigiert: Ein ausgewähltes abgeschlossenes Protokoll wird jetzt vollständig entfernt, einschließlich Protokolldatei und zugehörigem Datensatz in `jobs`.

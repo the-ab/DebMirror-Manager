@@ -45,6 +45,30 @@ def test_repository_publication_files_exist():
         assert f"Aktuelle Version: **{version}**" in (project_root / "README.de.md").read_text(encoding="utf-8")
 
 
+def test_standalone_ghcr_compose_bundle():
+    project_root = Path(__file__).resolve().parents[1]
+    version_file = project_root / "VERSION"
+    if not version_file.is_file():
+        pytest.skip("reduced repository snapshot has no release bundle")
+    version = version_file.read_text(encoding="utf-8").strip()
+    compose_path = project_root / "docker-compose" / "compose.yaml"
+    env_path = project_root / "docker-compose" / ".env.example"
+    assert compose_path.is_file()
+    assert env_path.is_file()
+    compose_text = compose_path.read_text(encoding="utf-8")
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}" in compose_text
+    assert not re.search(r"(?m)^\s*build\s*:", compose_text)
+    assert "./nginx/" not in compose_text
+    assert "../" not in compose_text
+    assert "DMM_IMAGE_TAG=latest" in env_text
+    assert f"v{version}" in env_text
+    update_text = (project_root / "update.sh").read_text(encoding="utf-8")
+    assert "'docker-compose'" in update_text
+    assert "preserved_image_env" in update_text
+
+
+
 def test_application_container_uses_pinned_trixie_base():
     project_root = Path(__file__).resolve().parents[1]
     dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")

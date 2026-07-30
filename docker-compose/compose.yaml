@@ -1,0 +1,225 @@
+name: debmirror-manager
+
+services:
+  debmirror-manager:
+    image: ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}
+    pull_policy: always
+    container_name: debmirror-manager
+    init: true
+    restart: unless-stopped
+
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        secret_file="/app/data/app-secret.key"
+        temporary_secret_file="$${secret_file}.tmp"
+
+        umask 077
+        mkdir -p \
+          /app/data \
+          /app/logs \
+          /app/keyrings \
+          /app/backups \
+          /import-scripts \
+          /user-scripts \
+          /mirror
+
+        if [ -s "$${secret_file}" ]; then
+          APP_SECRET_KEY="$$(cat "$${secret_file}")"
+        elif [ -n "$${APP_SECRET_KEY:-}" ]; then
+          case "$${APP_SECRET_KEY}" in
+            dev-change-me|please-change-this-secret|please-change-me)
+              echo "[debmirror-manager] APP_SECRET_KEY contains an insecure placeholder." >&2
+              exit 1
+              ;;
+          esac
+
+          secret_length="$$(printf '%s' "$${APP_SECRET_KEY}" | wc -c | tr -d ' ')"
+          if [ "$${secret_length}" -lt 32 ]; then
+            echo "[debmirror-manager] APP_SECRET_KEY must contain at least 32 characters." >&2
+            exit 1
+          fi
+
+          printf '%s\n' "$${APP_SECRET_KEY}" > "$${temporary_secret_file}"
+          chmod 600 "$${temporary_secret_file}"
+          mv -f "$${temporary_secret_file}" "$${secret_file}"
+          echo "[debmirror-manager] Existing APP_SECRET_KEY stored persistently."
+        else
+          APP_SECRET_KEY="$$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          printf '%s\n' "$${APP_SECRET_KEY}" > "$${temporary_secret_file}"
+          chmod 600 "$${temporary_secret_file}"
+          mv -f "$${temporary_secret_file}" "$${secret_file}"
+          echo "[debmirror-manager] New persistent APP_SECRET_KEY generated."
+        fi
+
+        chmod 600 "$${secret_file}"
+        export APP_SECRET_KEY
+
+        exec gunicorn \
+          --config /app/app/gunicorn.conf.py \
+          app.main:app
+
+    environment:
+      APP_PORT: "8080"
+      APP_TIMEZONE: "${APP_TIMEZONE:-Europe/Berlin}"
+      TZ: "${APP_TIMEZONE:-Europe/Berlin}"
+
+      APP_USERNAME: "${APP_USERNAME:-}"
+      APP_PASSWORD: "${APP_PASSWORD:-}"
+      APP_PASSWORD_HASH: "${APP_PASSWORD_HASH:-}"
+      APP_SECRET_KEY: "${APP_SECRET_KEY:-}"
+
+      APP_HTTPS_ONLY: "${APP_HTTPS_ONLY:-0}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-0}"
+      TRUSTED_HOSTS: "${TRUSTED_HOSTS:-}"
+      SESSION_LIFETIME_HOURS: "${SESSION_LIFETIME_HOURS:-12}"
+      MIN_PASSWORD_LENGTH: "${MIN_PASSWORD_LENGTH:-12}"
+      LOGIN_MAX_ATTEMPTS: "${LOGIN_MAX_ATTEMPTS:-5}"
+      LOGIN_WINDOW_SECONDS: "${LOGIN_WINDOW_SECONDS:-900}"
+      LOGIN_LOCK_SECONDS: "${LOGIN_LOCK_SECONDS:-900}"
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-134217728}"
+
+      OUTBOUND_PRIVATE_HOST_ALLOWLIST: "${OUTBOUND_PRIVATE_HOST_ALLOWLIST:-}"
+
+      RESTORE_MAX_ENTRIES: "${RESTORE_MAX_ENTRIES:-10000}"
+      RESTORE_MAX_UNCOMPRESSED_BYTES: "${RESTORE_MAX_UNCOMPRESSED_BYTES:-536870912}"
+      RESTORE_MAX_FILE_BYTES: "${RESTORE_MAX_FILE_BYTES:-268435456}"
+      RESTORE_MAX_COMPRESSION_RATIO: "${RESTORE_MAX_COMPRESSION_RATIO:-200}"
+
+      APP_DATA_DIR: "/app/data"
+      APP_LOG_DIR: "/app/logs"
+      APP_KEYRING_DIR: "/app/keyrings"
+      APP_BACKUP_DIR: "/app/backups"
+      IMPORT_SCRIPT_DIR: "/import-scripts"
+      USER_SCRIPT_DIR: "/user-scripts"
+      MIRROR_BASE: "/mirror"
+      IMPORT_HOST_MIRROR_PATHS: "${IMPORT_HOST_MIRROR_PATHS:-/srv/mirror}"
+
+      WSGI_THREADS: "${WSGI_THREADS:-8}"
+      WSGI_GRACEFUL_TIMEOUT: "${WSGI_GRACEFUL_TIMEOUT:-30}"
+      WSGI_KEEPALIVE: "${WSGI_KEEPALIVE:-5}"
+      WSGI_LOG_LEVEL: "${WSGI_LOG_LEVEL:-info}"
+      WSGI_ACCESS_LOG: "${WSGI_ACCESS_LOG:-0}"
+      WSGI_LIMIT_REQUEST_LINE: "${WSGI_LIMIT_REQUEST_LINE:-4094}"
+      WSGI_LIMIT_REQUEST_FIELDS: "${WSGI_LIMIT_REQUEST_FIELDS:-100}"
+      WSGI_LIMIT_REQUEST_FIELD_SIZE: "${WSGI_LIMIT_REQUEST_FIELD_SIZE:-8190}"
+
+      SCHEDULER_SCAN_SECONDS: "${SCHEDULER_SCAN_SECONDS:-60}"
+      MAX_PARALLEL_JOBS: "${MAX_PARALLEL_JOBS:-1}"
+      JOB_RETENTION_DAYS: "${JOB_RETENTION_DAYS:-31}"
+      LOG_RETENTION_DAYS: "${LOG_RETENTION_DAYS:-31}"
+      JOB_LIST_LIMIT: "${JOB_LIST_LIMIT:-100}"
+      DASHBOARD_RECENT_JOBS_LIMIT: "${DASHBOARD_RECENT_JOBS_LIMIT:-10}"
+      DASHBOARD_EVENTS_LIMIT: "${DASHBOARD_EVENTS_LIMIT:-10}"
+      JOB_STOP_GRACE_SECONDS: "${JOB_STOP_GRACE_SECONDS:-20}"
+
+      MIRROR_TIME_SYNC_WORKERS: "${MIRROR_TIME_SYNC_WORKERS:-4}"
+      MIRROR_TIME_SYNC_TIMEOUT_SECONDS: "${MIRROR_TIME_SYNC_TIMEOUT_SECONDS:-15}"
+      MIRROR_TIME_SYNC_RECENT_TOLERANCE_SECONDS: "${MIRROR_TIME_SYNC_RECENT_TOLERANCE_SECONDS:-5}"
+
+      SIZE_CACHE_TTL_SECONDS: "${SIZE_CACHE_TTL_SECONDS:-21600}"
+      SIZE_CALC_TIMEOUT_SECONDS: "${SIZE_CALC_TIMEOUT_SECONDS:-1800}"
+      SIZE_CALC_MAX_PARALLEL: "${SIZE_CALC_MAX_PARALLEL:-2}"
+      AUTO_SIZE_RECALC_ENABLED: "${AUTO_SIZE_RECALC_ENABLED:-1}"
+      AUTO_SIZE_IDLE_MINUTES: "${AUTO_SIZE_IDLE_MINUTES:-120}"
+
+      STORAGE_GUARD_ENABLED: "${STORAGE_GUARD_ENABLED:-1}"
+      STORAGE_GUARD_THRESHOLD_PERCENT: "${STORAGE_GUARD_THRESHOLD_PERCENT:-95}"
+
+    ports:
+      - "${WEBUI_BIND_ADDRESS:-0.0.0.0}:${WEBUI_PORT:-8111}:8080"
+
+    volumes:
+      - "${DATA_PATH:-/docker_data/debmirror-manager}/data:/app/data"
+      - "${DATA_PATH:-/docker_data/debmirror-manager}/logs:/app/logs"
+      - "${DATA_PATH:-/docker_data/debmirror-manager}/keyrings:/app/keyrings"
+      - "${DATA_PATH:-/docker_data/debmirror-manager}/import-scripts:/import-scripts"
+      - "${DATA_PATH:-/docker_data/debmirror-manager}/user-scripts:/user-scripts"
+      - "${DATA_PATH:-/docker_data/debmirror-manager}/backup:/app/backups"
+      - "${MIRROR_PATH:-/srv/mirror}:/mirror"
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - NET_RAW
+
+    pids_limit: 512
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS -o /dev/null http://127.0.0.1:8080/login || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  mirror-nginx:
+    image: nginx:1.30.0-alpine@sha256:0272e4604ed93c1792f03695a033a6e8546840f86e0de20a884bb17d2c924883
+    pull_policy: missing
+    container_name: debmirror-nginx
+    restart: unless-stopped
+
+    profiles:
+      - mirror-http
+
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        cat > /etc/nginx/conf.d/default.conf <<'NGINX_CONFIGURATION'
+        server {
+            listen 80;
+            server_name _;
+            root /usr/share/nginx/html;
+            autoindex on;
+            autoindex_exact_size off;
+            autoindex_localtime on;
+
+            location / {
+                try_files $$uri $$uri/ =404;
+            }
+        }
+        NGINX_CONFIGURATION
+
+        exec nginx -g 'daemon off;'
+
+    ports:
+      - "${MIRROR_HTTP_BIND_ADDRESS:-0.0.0.0}:${MIRROR_HTTP_PORT:-8110}:80"
+
+    volumes:
+      - "${MIRROR_PATH:-/srv/mirror}:/usr/share/nginx/html:ro"
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+
+    pids_limit: 128
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1/ || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

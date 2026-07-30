@@ -2,9 +2,9 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **1.0.1**
+Aktuelle Version: **1.0.2**
 
-Neu in v1.0.1: Protokolle werden bei manueller oder automatischer Bereinigung vollständig aus Dateiablage und Datenbank entfernt.
+Neu in v1.0.2: zusätzlicher installationsfertiger Compose-Satz für das veröffentlichte GHCR-Image, ohne lokalen Projekt-Build.
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -30,6 +30,7 @@ Sicherheits- und Beitragsrichtlinien stehen in `SECURITY.md` und `CONTRIBUTING.m
 ```text
 updates/                                      Update-ZIPs im Projektordner
 backup/                                       update.sh-Backups im Projektordner
+docker-compose/                               eigenständige Image-Installation mit compose.yaml und .env.example
 /docker_data/debmirror-manager/data           SQLite-Datenbank, settings.json und notification-secrets.key
 /docker_data/debmirror-manager/logs           WebUI- und Job-Logs
 /docker_data/debmirror-manager/keyrings       GPG-Keyrings, Master-Keyring, Archiv, Keyserver-Quellen und Profil-Keyrings
@@ -43,14 +44,54 @@ Im Container wird das lokale Mirror-Verzeichnis als `/mirror` eingebunden. Zielp
 
 ## Installation
 
+DebMirror Manager kann entweder lokal aus dem Release-ZIP gebaut oder direkt als veröffentlichtes Container-Image gestartet werden.
+
+### Variante A: Lokaler Build aus dem Release-ZIP
+
 ```bash
-unzip debmirror-manager-v1.0.1.zip
+unzip debmirror-manager-v1.0.2.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
 ```
 
-`install.sh` fragt die relevanten Werte ab, darunter persistenter Datenpfad, lokales Mirror-Verzeichnis, WebUI-Port, optionaler nginx-Mirror-HTTP-Container, Update-/Backup-Verzeichnisse, Job-Warteschlange, Retention, Dashboard-Limits, Größenberechnung, Speicherplatz-Sperre, Zeitzone und Admin-Zugang. Bei erneutem Aufruf liest `install.sh` vorhandene `.env`-Werte und schlägt sie als Defaults vor.
+`install.sh` fragt die relevanten Werte ab, darunter persistenter Datenpfad, lokales Mirror-Verzeichnis, WebUI-Port, optionaler nginx-Mirror-HTTP-Container, Update-/Backup-Verzeichnisse, Job-Warteschlange, Aufbewahrung, Dashboard-Limits, Größenberechnung, Speicherplatz-Sperre, Zeitzone und Admin-Zugang. Bei erneutem Aufruf liest `install.sh` vorhandene `.env`-Werte und schlägt sie als Defaults vor.
+
+### Variante B: Fertiges GHCR-Image ohne Projektdateien
+
+Das veröffentlichte Image steht unter folgenden Namen bereit:
+
+```text
+ghcr.io/the-ab/debmirror-manager:latest
+ghcr.io/the-ab/debmirror-manager:v1.0.2
+```
+
+`latest` folgt dem jeweils zuletzt veröffentlichten Image. Für kontrollierte Installationen und reproduzierbare Updates sollte ein konkreter Versions-Tag wie `v1.0.2` verwendet werden.
+
+Der Projektordner `docker-compose/` enthält mit `docker-compose/compose.yaml` und `docker-compose/.env.example` einen eigenständigen Compose-Satz:
+
+```text
+docker-compose/
+├── compose.yaml
+└── .env.example
+```
+
+Diese `compose.yaml` verwendet ausschließlich veröffentlichte Images und benötigt weder `Dockerfile` noch Anwendungsquellcode oder andere Projektdateien. Installation:
+
+```bash
+cd debmirror-manager/docker-compose
+cp .env.example .env
+chmod 600 .env
+nano .env
+docker compose pull
+docker compose up -d
+```
+
+In `.env` werden mindestens `DATA_PATH`, `MIRROR_PATH`, WebUI-Port und der gewünschte `DMM_IMAGE_TAG` geprüft. `DMM_IMAGE_TAG=latest` verwendet immer das neueste Image; `DMM_IMAGE_TAG=v1.0.2` bindet die Installation fest an diese Version. Der optionale nginx-Mirror-Webserver ist über `COMPOSE_PROFILES=mirror-http` aktiviert. Für den Betrieb ohne nginx wird `COMPOSE_PROFILES=` leer gesetzt.
+
+Bei einer Neuinstallation erzeugt der Container automatisch einen sicheren persistenten `APP_SECRET_KEY` unter `DATA_PATH/data/app-secret.key`. Anschließend wird der erste Administrator unter `http://SERVER-IP:8111/setup` eingerichtet; Zugangsdaten müssen daher nicht im Klartext in `.env` hinterlegt werden.
+
+Bei der Übernahme einer bestehenden Installation müssen `DATA_PATH` und `MIRROR_PATH` auf die vorhandenen Verzeichnisse zeigen. Der bisherige Stack ist vorher zu stoppen. Falls der alte `APP_SECRET_KEY` erhalten werden soll, muss er **vor dem ersten Start** der Image-Installation in `.env` eingetragen werden. Nach dem ersten Start hat die persistente Datei `data/app-secret.key` Vorrang.
 
 ### Container-Betriebssystem
 
@@ -70,9 +111,25 @@ WSGI_LOG_LEVEL=info
 
 Live-Logs verwenden Server-Sent Events. Heartbeats halten auch ausgabearme, lange Jobs offen; ein normales Verlassen oder Neuladen der Jobseite wird nicht als Anwendungsfehler protokolliert.
 
-Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom neuen Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
+Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die veröffentlichte Image-Variante verwendet dagegen `ghcr.io/the-ab/debmirror-manager:latest` beziehungsweise einen Versions-Tag wie `ghcr.io/the-ab/debmirror-manager:v1.0.2`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
 
 ## Update
+
+### Lokal gebaute Installation
+
+**Einmaliger Übergang von v1.0.1 auf v1.0.2:** Der in v1.0.1 enthaltene Updater kannte den neuen Top-Level-Ordner `docker-compose/` noch nicht. Damit der Ordner auch in einer bestehenden Projektinstallation angelegt wird, werden die beiden Dateien vor `./update.sh` einmalig aus dem neuen ZIP übernommen:
+
+```bash
+mkdir -p /pfad/zum/debmirror-manager/docker-compose
+unzip -p /pfad/zu/den/downloads/debmirror-manager-v1.0.2.zip \
+  debmirror-manager/docker-compose/compose.yaml \
+  > /pfad/zum/debmirror-manager/docker-compose/compose.yaml
+unzip -p /pfad/zu/den/downloads/debmirror-manager-v1.0.2.zip \
+  debmirror-manager/docker-compose/.env.example \
+  > /pfad/zum/debmirror-manager/docker-compose/.env.example
+```
+
+Ab v1.0.2 übernimmt `update.sh` den Ordner bei späteren Releases automatisch und bewahrt eine vorhandene `docker-compose/.env`.
 
 Zukünftige Updates werden in `updates/` kopiert:
 
@@ -88,6 +145,18 @@ cp /pfad/zur/debmirror-manager-vNEU.zip.sha256 updates/
 ```bash
 ./update.sh --rebuild
 ```
+
+### GHCR-Image-Installation
+
+Für die Installation aus `docker-compose/` wird kein Release-ZIP in `updates/` kopiert und `update.sh` nicht verwendet. Bei `DMM_IMAGE_TAG=latest` genügt:
+
+```bash
+cd /pfad/zum/docker-compose
+docker compose pull
+docker compose up -d
+```
+
+Bei fest gesetztem Versions-Tag wird zuerst `DMM_IMAGE_TAG` in `.env` auf die neue veröffentlichte Version geändert. `docker compose pull` lädt das Image, und `docker compose up -d` ersetzt den Container. Die persistente `.env`, das Datenverzeichnis und die Mirror-Daten bleiben erhalten.
 
 
 ## Sprache und Darstellung

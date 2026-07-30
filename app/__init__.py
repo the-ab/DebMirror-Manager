@@ -9,4 +9,4 @@ except OSError:
     APP_VERSION = "0.0.0"
 
 # ISO date of this packaged release; shown consistently in every page footer.
-APP_RELEASE_DATE = "2026-07-28"
+APP_RELEASE_DATE = "2026-07-30"

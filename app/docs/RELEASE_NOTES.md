@@ -1,5 +1,19 @@
 # Release Notes
 
+## v1.0.2
+
+- Added the standalone `docker-compose/` directory for installations using the published GHCR image.
+- `docker-compose/compose.yaml` uses `ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}` and requires no local build context, Dockerfile, or project source files.
+- `docker-compose/.env.example` provides separate settings for image tag, WebUI, optional nginx mirror serving, persistent host paths, security controls, scheduler, retention, size calculation, and storage guard.
+- The image installation supports both `ghcr.io/the-ab/debmirror-manager:latest` and the pinned release tag `ghcr.io/the-ab/debmirror-manager:v1.0.2`.
+- Fresh installations generate a secure persistent `APP_SECRET_KEY` under `data/app-secret.key`; the first administrator is still created through `/setup`.
+- Added migration guidance for existing `DATA_PATH`, `MIRROR_PATH`, the previous `APP_SECRET_KEY`, and stopping the previous stack before switching installation modes.
+- German and English READMEs now clearly separate the local release-ZIP build from the image installation and document their different update procedures.
+- The project updater carries the new directory into future releases and preserves an existing `docker-compose/.env` while replacing the templates.
+- Documented the one-time pre-extraction needed for a direct v1.0.1 upgrade because the older v1.0.1 updater could not copy newly introduced top-level directories.
+- Repository audit and regression tests validate the standalone Compose bundle, GHCR references, and absence of a local `build:` section.
+- VERSION set to 1.0.2.
+
 ## v1.0.1
 
 - Corrected protocol deletion: deleting a completed protocol now removes both its physical log file and the corresponding row in `jobs`.

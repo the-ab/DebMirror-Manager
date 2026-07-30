@@ -53,6 +53,40 @@ def audit_release_version(findings: list[str]) -> None:
             if marker not in text:
                 findings.append(f"version mismatch in {rel_name}: missing {marker!r}")
 
+    compose_path = ROOT / "docker-compose" / "compose.yaml"
+    image_env_path = ROOT / "docker-compose" / ".env.example"
+    if not compose_path.is_file():
+        findings.append("missing image-install compose file: docker-compose/compose.yaml")
+    else:
+        compose_text = compose_path.read_text(encoding="utf-8")
+        if "ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}" not in compose_text:
+            findings.append("image-install compose does not use the expected GHCR image reference")
+        if re.search(r"(?m)^\s*build\s*:", compose_text):
+            findings.append("image-install compose must not contain a local build section")
+        if "./nginx/" in compose_text or "../" in compose_text:
+            findings.append("image-install compose depends on project-relative files")
+    if not image_env_path.is_file():
+        findings.append("missing image-install environment template: docker-compose/.env.example")
+    else:
+        image_env_text = image_env_path.read_text(encoding="utf-8")
+        if "DMM_IMAGE_TAG=latest" not in image_env_text:
+            findings.append("image-install environment template lacks DMM_IMAGE_TAG=latest")
+        if f"v{version}" not in image_env_text:
+            findings.append("image-install environment template does not mention the current version tag")
+
+    for rel_name in ("README.md", "README.de.md"):
+        readme_path = ROOT / rel_name
+        if readme_path.is_file():
+            readme_text = readme_path.read_text(encoding="utf-8")
+            for marker in (
+                "ghcr.io/the-ab/debmirror-manager:latest",
+                f"ghcr.io/the-ab/debmirror-manager:v{version}",
+                "docker-compose/compose.yaml",
+                "docker-compose/.env.example",
+            ):
+                if marker not in readme_text:
+                    findings.append(f"missing image-install documentation in {rel_name}: {marker!r}")
+
     for rel_name in ("RELEASE_NOTES.md", "RELEASE_NOTES.de.md"):
         path = ROOT / rel_name
         if not path.is_file():
@@ -76,6 +110,10 @@ def audit_release_version(findings: list[str]) -> None:
             findings.append("update.sh help must use the version-neutral vX.Y.Z package example")
         if re.search(r"\$\{PROJECT_NAME\}-v\d+\.\d+\.\d+\.zip", update_text):
             findings.append("update.sh help contains a hard-coded release package version")
+        if "'docker-compose'" not in update_text:
+            findings.append("update.sh does not copy the standalone docker-compose directory")
+        if "preserved_image_env" not in update_text:
+            findings.append("update.sh does not preserve docker-compose/.env")
 
     docs_dir = ROOT / "app" / "docs"
     if docs_dir.is_dir():
