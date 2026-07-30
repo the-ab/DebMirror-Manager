@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.no-nginx.example
 install-config.env
 docker-compose.override.yml
 
