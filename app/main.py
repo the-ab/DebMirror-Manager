@@ -13507,8 +13507,8 @@ BUILTIN_HELP = {
     "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
 }
 BUILTIN_RELEASE_NOTES = {
-    "de": "# Release Notes\n\n## v1.0.2\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
-    "en": "# Release Notes\n\n## v1.0.2\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+    "de": "# Release Notes\n\n## v1.0.3\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v1.0.3\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
 }
 
 # ---------------------------------------------------------------------------

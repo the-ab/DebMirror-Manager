@@ -1,5 +1,18 @@
 # Release Notes
 
+## v1.0.3
+
+- Eigenständige Image-Installation ohne nginx ergänzt: `docker-compose/compose.no-nginx.yaml` verwendet ausschließlich das veröffentlichte GHCR-Image und enthält keinen nginx-Dienst oder lokalen Build-Kontext.
+- Neue Vorlage `docker-compose/.env.no-nginx.example` ergänzt und auf den aktuellen Versions-Tag `v1.0.3` abgestimmt.
+- Lokale Dokumentation `docker-compose/README.de.md` und `docker-compose/README.md` ergänzt. Beide Dateien erklären die Auswahl der Compose-Variante, Erstinstallation, Migration, Dateirechte, Start/Stop/Update/Logs und sämtliche 54 beziehungsweise 51 ENV-Variablen mit Standardwert und Zweck.
+- `.gitignore` und `.dockerignore` einschließlich der internen Repository-Kopien erlauben jetzt ausdrücklich `.env.no-nginx.example`, während echte `.env`- und `.env.no-nginx`-Dateien weiterhin ausgeschlossen bleiben.
+- `update.sh` sichert und bewahrt ab v1.0.3 sowohl `docker-compose/.env` als auch `docker-compose/.env.no-nginx`; Compose-Dateien, Vorlagen und lokale README-Dateien werden aktualisiert.
+- README DE/EN trennt die Installation mit optionalem nginx und die dedizierte No-nginx-Variante einschließlich eindeutiger Compose-Befehle über `--env-file` und `-f`.
+- Repository-Audit und Regressionstests prüfen beide Compose-Dateien, beide ENV-Vorlagen, beide lokalen README-Dateien, dokumentierte Variablen, Ignore-Ausnahmen und den Update-Schutz für beide echten ENV-Dateien.
+- Mobilansicht zusätzlich geprüft und für schmale Displays nachgebessert: Topbar-Aktionen, Definitionslisten, Dokumentations-Codeblöcke, Karten und horizontal scrollbare Tabellen bleiben innerhalb der Ansichtsbreite bedienbar.
+- Deutsche und englische Hauptdokumentation, interne WebUI-Kopien, Release-Notes-Fallback, Veröffentlichungsdatum und alle aktiven Versionsverweise auf v1.0.3 synchronisiert.
+- VERSION auf 1.0.3 gesetzt.
+
 ## v1.0.2
 
 - Neuen eigenständigen Ordner `docker-compose/` für Installationen über das veröffentlichte GHCR-Image ergänzt.

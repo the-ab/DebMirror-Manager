@@ -51,21 +51,49 @@ def test_standalone_ghcr_compose_bundle():
     if not version_file.is_file():
         pytest.skip("reduced repository snapshot has no release bundle")
     version = version_file.read_text(encoding="utf-8").strip()
-    compose_path = project_root / "docker-compose" / "compose.yaml"
-    env_path = project_root / "docker-compose" / ".env.example"
-    assert compose_path.is_file()
-    assert env_path.is_file()
-    compose_text = compose_path.read_text(encoding="utf-8")
-    env_text = env_path.read_text(encoding="utf-8")
-    assert "ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}" in compose_text
-    assert not re.search(r"(?m)^\s*build\s*:", compose_text)
-    assert "./nginx/" not in compose_text
-    assert "../" not in compose_text
-    assert "DMM_IMAGE_TAG=latest" in env_text
-    assert f"v{version}" in env_text
+    compose_dir = project_root / "docker-compose"
+    compose_paths = [compose_dir / "compose.yaml", compose_dir / "compose.no-nginx.yaml"]
+    env_paths = [compose_dir / ".env.example", compose_dir / ".env.no-nginx.example"]
+    readme_paths = [compose_dir / "README.md", compose_dir / "README.de.md"]
+    assert all(path.is_file() for path in compose_paths + env_paths + readme_paths)
+
+    for compose_path in compose_paths:
+        compose_text = compose_path.read_text(encoding="utf-8")
+        assert "ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}" in compose_text
+        assert not re.search(r"(?m)^\s*build\s*:", compose_text)
+        assert "./nginx/" not in compose_text
+        assert "../" not in compose_text
+    no_nginx_text = compose_paths[1].read_text(encoding="utf-8")
+    assert "mirror-nginx:" not in no_nginx_text
+    assert "COMPOSE_PROFILES" not in no_nginx_text
+
+    env_names = set()
+    for env_path in env_paths:
+        env_text = env_path.read_text(encoding="utf-8")
+        assert "DMM_IMAGE_TAG=latest" in env_text
+        assert f"v{version}" in env_text
+        env_names.update(
+            line.split("=", 1)[0].strip()
+            for line in env_text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        )
+    for readme_path in readme_paths:
+        readme_text = readme_path.read_text(encoding="utf-8")
+        for variable in env_names:
+            assert f"`{variable}`" in readme_text
+        assert "compose.no-nginx.yaml" in readme_text
+        assert ".env.no-nginx.example" in readme_text
+        assert "chmod 600" in readme_text
+
+    gitignore = (project_root / ".gitignore").read_text(encoding="utf-8")
+    dockerignore = (project_root / ".dockerignore").read_text(encoding="utf-8")
+    assert "!.env.no-nginx.example" in gitignore
+    assert "!.env.no-nginx.example" in dockerignore
+
     update_text = (project_root / "update.sh").read_text(encoding="utf-8")
     assert "'docker-compose'" in update_text
-    assert "preserved_image_env" in update_text
+    assert "preserved_image_envs" in update_text
+    assert "('.env', '.env.no-nginx')" in update_text
 
 
 

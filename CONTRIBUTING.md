@@ -39,6 +39,8 @@ A Docker build should also complete successfully:
 ```bash
 docker build --pull=false -t debmirror-manager:test .
 docker compose config --quiet
+docker compose --env-file docker-compose/.env.example -f docker-compose/compose.yaml config --quiet
+docker compose --env-file docker-compose/.env.no-nginx.example -f docker-compose/compose.no-nginx.yaml config --quiet
 ```
 
 ## Code and security expectations

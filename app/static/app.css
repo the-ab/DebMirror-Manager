@@ -1069,3 +1069,22 @@ button.locked-button:disabled {
 .select-column { width:2.25rem; text-align:center; }
 .select-column input { margin:0; }
 @media (max-width: 720px) { .log-cleanup-toolbar, .log-selection-actions { align-items:stretch; flex-direction:column; } .log-cleanup-toolbar button, .log-selection-actions button { width:100%; } }
+
+/* v1.0.3: mobile overflow and documentation audit */
+.table-scroll { max-width: 100%; -webkit-overflow-scrolling: touch; }
+.content-shell, .container, .card, .dashboard-block, .doc-page { min-width: 0; }
+.doc-page pre, .doc-page .code { max-width: 100%; overflow-x: auto; }
+.doc-page code { overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .container { padding: .75rem; }
+  .footer { padding: .75rem; overflow-wrap: anywhere; }
+  .app-topbar { padding: .65rem .75rem; }
+  .app-topbar .brand { white-space: normal; overflow-wrap: anywhere; }
+  .top-actions { width: 100%; justify-content: flex-start; }
+  .top-actions form, .top-actions .linkbtn { max-width: 100%; }
+  .card, .compact-card { padding: .7rem; }
+  dl, .example-card dl { grid-template-columns: minmax(0, 1fr); gap: .15rem; }
+  dt { margin-top: .45rem; }
+  dd, .summary-value, .summary-card p { min-width: 0; overflow-wrap: anywhere; }
+  .logbox { height: min(60vh, 540px); }
+}

@@ -1,5 +1,18 @@
 # Release Notes
 
+## v1.0.3
+
+- Added a standalone no-nginx image installation: `docker-compose/compose.no-nginx.yaml` uses only the published GHCR image and contains neither an nginx service nor a local build context.
+- Added `docker-compose/.env.no-nginx.example` and aligned its pinned-tag example with the current `v1.0.3` release.
+- Added local `docker-compose/README.md` and `docker-compose/README.de.md` documentation. Both files explain variant selection, initial setup, migration, permissions, start/stop/update/log commands, and all 54/51 ENV variables with defaults and purposes.
+- `.gitignore` and `.dockerignore`, including their internal repository copies, now explicitly allow `.env.no-nginx.example` while continuing to exclude real `.env` and `.env.no-nginx` files.
+- Starting with v1.0.3, `update.sh` backs up and preserves both `docker-compose/.env` and `docker-compose/.env.no-nginx`; Compose files, templates, and local README files are updated.
+- German and English main READMEs now separate the optional-nginx installation from the dedicated no-nginx variant and use unambiguous `--env-file` and `-f` commands.
+- Repository audit and regression tests validate both Compose files, both ENV templates, both local README files, documented variables, ignore exceptions, and updater protection for both real ENV files.
+- Rechecked and refined the mobile layout so topbar actions, definition lists, documentation code blocks, cards, and horizontally scrollable tables remain usable within narrow viewports.
+- Synchronized German/English main documentation, internal WebUI copies, built-in release-notes fallback, release date, and all active version references with v1.0.3.
+- VERSION set to 1.0.3.
+
 ## v1.0.2
 
 - Added the standalone `docker-compose/` directory for installations using the published GHCR image.

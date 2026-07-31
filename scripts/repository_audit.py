@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache"}
-ALLOWED_FILES = {".env.example", ".gitkeep"}
+ALLOWED_FILES = {".env.example", ".env.no-nginx.example", ".gitkeep"}
 FORBIDDEN_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".log", ".dmmbackup", ".pem", ".key", ".p12", ".pfx"}
 FORBIDDEN_NAMES = {".env", "install-config.env", "docker-compose.override.yml"}
 PATTERNS = {
@@ -53,26 +53,72 @@ def audit_release_version(findings: list[str]) -> None:
             if marker not in text:
                 findings.append(f"version mismatch in {rel_name}: missing {marker!r}")
 
-    compose_path = ROOT / "docker-compose" / "compose.yaml"
-    image_env_path = ROOT / "docker-compose" / ".env.example"
-    if not compose_path.is_file():
-        findings.append("missing image-install compose file: docker-compose/compose.yaml")
-    else:
+    compose_dir = ROOT / "docker-compose"
+    compose_files = {
+        "docker-compose/compose.yaml": compose_dir / "compose.yaml",
+        "docker-compose/compose.no-nginx.yaml": compose_dir / "compose.no-nginx.yaml",
+    }
+    env_files = {
+        "docker-compose/.env.example": compose_dir / ".env.example",
+        "docker-compose/.env.no-nginx.example": compose_dir / ".env.no-nginx.example",
+    }
+    local_readmes = {
+        "docker-compose/README.md": compose_dir / "README.md",
+        "docker-compose/README.de.md": compose_dir / "README.de.md",
+    }
+
+    for rel_name, compose_path in compose_files.items():
+        if not compose_path.is_file():
+            findings.append(f"missing image-install compose file: {rel_name}")
+            continue
         compose_text = compose_path.read_text(encoding="utf-8")
         if "ghcr.io/the-ab/debmirror-manager:${DMM_IMAGE_TAG:-latest}" not in compose_text:
-            findings.append("image-install compose does not use the expected GHCR image reference")
+            findings.append(f"image-install compose does not use the expected GHCR image reference: {rel_name}")
         if re.search(r"(?m)^\s*build\s*:", compose_text):
-            findings.append("image-install compose must not contain a local build section")
+            findings.append(f"image-install compose must not contain a local build section: {rel_name}")
         if "./nginx/" in compose_text or "../" in compose_text:
-            findings.append("image-install compose depends on project-relative files")
-    if not image_env_path.is_file():
-        findings.append("missing image-install environment template: docker-compose/.env.example")
-    else:
-        image_env_text = image_env_path.read_text(encoding="utf-8")
-        if "DMM_IMAGE_TAG=latest" not in image_env_text:
-            findings.append("image-install environment template lacks DMM_IMAGE_TAG=latest")
-        if f"v{version}" not in image_env_text:
-            findings.append("image-install environment template does not mention the current version tag")
+            findings.append(f"image-install compose depends on project-relative files: {rel_name}")
+    no_nginx_path = compose_files["docker-compose/compose.no-nginx.yaml"]
+    if no_nginx_path.is_file():
+        no_nginx_text = no_nginx_path.read_text(encoding="utf-8")
+        if "mirror-nginx:" in no_nginx_text or "COMPOSE_PROFILES" in no_nginx_text:
+            findings.append("no-nginx compose unexpectedly contains nginx service/profile configuration")
+
+    env_variables: dict[str, set[str]] = {}
+    for rel_name, env_path in env_files.items():
+        if not env_path.is_file():
+            findings.append(f"missing image-install environment template: {rel_name}")
+            continue
+        env_text = env_path.read_text(encoding="utf-8")
+        if "DMM_IMAGE_TAG=latest" not in env_text:
+            findings.append(f"image-install environment template lacks DMM_IMAGE_TAG=latest: {rel_name}")
+        if f"v{version}" not in env_text:
+            findings.append(f"image-install environment template does not mention current version tag: {rel_name}")
+        env_variables[rel_name] = {
+            line.split("=", 1)[0].strip()
+            for line in env_text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        }
+
+    for rel_name, readme_path in local_readmes.items():
+        if not readme_path.is_file():
+            findings.append(f"missing local image-install documentation: {rel_name}")
+            continue
+        readme_text = readme_path.read_text(encoding="utf-8")
+        for marker in (
+            "compose.yaml",
+            ".env.example",
+            "compose.no-nginx.yaml",
+            ".env.no-nginx.example",
+            "chmod 600",
+            "docker compose",
+        ):
+            if marker not in readme_text:
+                findings.append(f"missing local image-install documentation in {rel_name}: {marker!r}")
+        for env_name_set in env_variables.values():
+            for variable in sorted(env_name_set):
+                if f"`{variable}`" not in readme_text:
+                    findings.append(f"undocumented image-install variable in {rel_name}: {variable}")
 
     for rel_name in ("README.md", "README.de.md"):
         readme_path = ROOT / rel_name
@@ -83,6 +129,10 @@ def audit_release_version(findings: list[str]) -> None:
                 f"ghcr.io/the-ab/debmirror-manager:v{version}",
                 "docker-compose/compose.yaml",
                 "docker-compose/.env.example",
+                "docker-compose/compose.no-nginx.yaml",
+                "docker-compose/.env.no-nginx.example",
+                "docker-compose/README.md",
+                "docker-compose/README.de.md",
             ):
                 if marker not in readme_text:
                     findings.append(f"missing image-install documentation in {rel_name}: {marker!r}")
@@ -112,8 +162,11 @@ def audit_release_version(findings: list[str]) -> None:
             findings.append("update.sh help contains a hard-coded release package version")
         if "'docker-compose'" not in update_text:
             findings.append("update.sh does not copy the standalone docker-compose directory")
-        if "preserved_image_env" not in update_text:
-            findings.append("update.sh does not preserve docker-compose/.env")
+        if "preserved_image_envs" not in update_text:
+            findings.append("update.sh does not preserve image-install environment files")
+        for marker in ("'.env', '.env.no-nginx'", "compose.no-nginx.yaml", ".env.no-nginx.example", "README.de.md"):
+            if marker not in update_text:
+                findings.append(f"update.sh lacks no-nginx bundle handling: {marker!r}")
 
     docs_dir = ROOT / "app" / "docs"
     if docs_dir.is_dir():

@@ -216,12 +216,15 @@ create_backups() {
   [ -f "docker-compose.yml" ] && cp docker-compose.yml "$backup_base/docker-compose.yml"
   if [ -d "docker-compose" ]; then
     mkdir -p "$backup_base/docker-compose"
-    [ -f "docker-compose/compose.yaml" ] && cp "docker-compose/compose.yaml" "$backup_base/docker-compose/compose.yaml"
-    [ -f "docker-compose/.env.example" ] && cp "docker-compose/.env.example" "$backup_base/docker-compose/.env.example"
-    if [ -f "docker-compose/.env" ]; then
-      cp "docker-compose/.env" "$backup_base/docker-compose/.env"
-      chmod 600 "$backup_base/docker-compose/.env"
-    fi
+    for image_file in compose.yaml compose.no-nginx.yaml .env.example .env.no-nginx.example README.md README.de.md; do
+      [ -f "docker-compose/$image_file" ] && cp "docker-compose/$image_file" "$backup_base/docker-compose/$image_file"
+    done
+    for image_env in .env .env.no-nginx; do
+      if [ -f "docker-compose/$image_env" ]; then
+        cp "docker-compose/$image_env" "$backup_base/docker-compose/$image_env"
+        chmod 600 "$backup_base/docker-compose/$image_env"
+      fi
+    done
   fi
   [ -f "VERSION" ] && cp VERSION "$backup_base/VERSION"
   for name in LICENSE SECURITY.md CONTRIBUTING.md THIRD-PARTY-NOTICES.md .gitignore .dockerignore requirements.lock requirements-dev.txt pytest.ini; do
@@ -404,10 +407,14 @@ if len(candidates) != 1:
     raise SystemExit('Im ZIP wurde nicht genau ein gültiger debmirror-manager Projektordner gefunden.')
 source_root = candidates[0]
 
-preserved_image_env = None
-image_env_path = target_root / 'docker-compose' / '.env'
-if image_env_path.is_file():
-    preserved_image_env = (image_env_path.read_bytes(), stat.S_IMODE(image_env_path.stat().st_mode) or 0o600)
+preserved_image_envs = {}
+for image_env_name in ('.env', '.env.no-nginx'):
+    image_env_path = target_root / 'docker-compose' / image_env_name
+    if image_env_path.is_file():
+        preserved_image_envs[image_env_name] = (
+            image_env_path.read_bytes(),
+            stat.S_IMODE(image_env_path.stat().st_mode) or 0o600,
+        )
 
 items_to_copy = [
     '.env.example', '.gitignore', '.dockerignore', 'Dockerfile', 'docker-compose.yml', 'docker-compose', 'requirements.txt', 'requirements.lock', 'requirements-dev.txt', 'pytest.ini',
@@ -429,8 +436,8 @@ for name in items_to_copy:
     else:
         shutil.copy2(src, dst)
 
-if preserved_image_env is not None:
-    data, mode = preserved_image_env
+for image_env_name, (data, mode) in preserved_image_envs.items():
+    image_env_path = target_root / 'docker-compose' / image_env_name
     image_env_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     image_env_path.write_bytes(data)
     image_env_path.chmod(mode)
