@@ -58,3 +58,9 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+
+# Private project operations belong in Project-Operations-Private
+docs/HANDOVER*.md
+docs/PROJECT_STATUS*.md
+docs/RELEASE_CHECKLIST*.md
+docs/project/
