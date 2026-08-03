@@ -2,6 +2,15 @@
 
 Thank you for helping improve the project.
 
+## Documentation language convention
+
+Information and policy documents use English as the default file and German as the matching `*.de.md` file:
+
+- `DOCUMENT.md` — English
+- `DOCUMENT.de.md` — German
+
+Do not create `*.en.md` files. Whenever an information document is added or changed, update both language versions in the same pull request.
+
 ## Before opening a pull request
 
 1. Start from the latest version.
@@ -9,14 +18,14 @@ Thank you for helping improve the project.
 3. Preserve German and English behavior and documentation where a user-facing change is involved.
 4. Add or update automated tests for behavioral changes.
 5. Update both `RELEASE_NOTES.md` and `RELEASE_NOTES.de.md` for release-visible changes.
-6. Review third-party code or assets before adding them and update `THIRD-PARTY-NOTICES.md` when required.
+6. Review third-party code or assets before adding them and update both `THIRD-PARTY-NOTICES.md` and `THIRD-PARTY-NOTICES.de.md` when required.
 
 ## Local checks
 
 Use Python 3.13 and install the locked production dependencies plus the development tools:
 
 ```bash
-python3.12 -m venv .venv
+python3.13 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install --require-hashes -r requirements.lock
