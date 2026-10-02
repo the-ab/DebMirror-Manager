@@ -4,7 +4,7 @@ DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spie
 
 Aktuelle Version: **1.0.4**
 
-Kandidat v1.0.4: Qualitätsupdate für SQLite-Verbindungen, konkurrierende Einstellungszugriffe, Backup/Restore, Dokumentationsupdates und Abhängigkeiten. ZIP und GHCR-Tag dieser Version sind noch nicht öffentlich veröffentlicht.
+Release v1.0.4: Qualitätsupdate für SQLite-Verbindungen, konkurrierende Einstellungszugriffe, Backup/Restore, Dokumentationsupdates und Abhängigkeiten.
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -147,7 +147,7 @@ cp /pfad/zur/debmirror-manager-vNEU.zip.sha256 updates/
 
 `update.sh` prüft ZIP-Version und SHA-256, erstellt Sicherungen, ersetzt die Projektdateien und baut/startet die lokalen Container neu. Ab v1.0.3 werden im eigenständigen `docker-compose/`-Ordner sowohl eine vorhandene `.env` als auch `.env.no-nginx` gesichert und unverändert wiederhergestellt. Die Vorlagen, Compose-Dateien und lokalen README-Dateien werden dagegen auf den neuen Release-Stand aktualisiert.
 
-**Einmaliger ZIP-Übergang von v1.0.3 auf v1.0.4:** Der alte Updater kennt die neuen deutschen Richtliniendateien und `docs/` noch nicht. ZIP und SHA-Datei zunächst nach `updates/` kopieren, die Prüfsumme prüfen und dann den neuen Updater aus dem geprüften Paket verwenden. Die drei vorhandenen ENV-Dateien bleiben erhalten. Erst nach Veröffentlichung von v1.0.4 ausführen.
+**Einmaliger ZIP-Übergang von v1.0.3 auf v1.0.4:** Der alte Updater kennt die neuen deutschen Richtliniendateien und `docs/` noch nicht. ZIP und SHA-Datei zunächst nach `updates/` kopieren, die Prüfsumme prüfen und dann den neuen Updater aus dem geprüften Paket verwenden. Die drei vorhandenen ENV-Dateien bleiben erhalten.
 
 ```bash
 cd /pfad/zum/debmirror-manager

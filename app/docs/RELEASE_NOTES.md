@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.0.4 – Candidate, not yet published
+## v1.0.4
 
 - SQLite connections are reliably closed after commit or rollback; WebUI, scheduler and job access retain their existing transaction behavior.
 - Concurrent settings writes use independent temporary files and replace `settings.json` atomically, preventing collisions on a shared staging filename.
@@ -11,7 +11,7 @@
 - The one-time ZIP upgrade from v1.0.3 documents checksum validation and extraction of the new updater first, so new documentation paths are included.
 - The ZIP updater and update backups include German policy files and `docs/`. Embedded documentation copies are synchronized, and the log cleanup UI test now includes a completed job.
 - Updated `cryptography` to `50.0.2` with official package hashes. Regression tests cover the Fernet/AES-GCM backup paths used by the application.
-- English/German documentation, version display and built-in help are aligned with candidate 1.0.4. No database schema change or automated GitHub pipeline.
+- English/German documentation, version display and built-in help are aligned with release 1.0.4. No database schema change or automated GitHub pipeline.
 
 ## v1.0.3
 
