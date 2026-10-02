@@ -2,9 +2,9 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **1.0.3**
+Current version: **1.0.4**
 
-New in v1.0.3: a dedicated no-nginx Compose variant, complete DE/EN ENV documentation, and expanded update, version, translation, and mobile-layout audits.
+Release v1.0.4: quality update for SQLite connections, concurrent settings writes, backup/restore, documentation updates and dependencies.
 
 ## Project status, affiliation, and licensing
 
@@ -50,7 +50,7 @@ DebMirror Manager can either be built locally from the release ZIP or started di
 ### Option A: Local build from the release ZIP
 
 ```bash
-unzip debmirror-manager-v1.0.3.zip
+unzip debmirror-manager-v1.0.4.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -64,10 +64,10 @@ The published image is available as:
 
 ```text
 ghcr.io/the-ab/debmirror-manager:latest
-ghcr.io/the-ab/debmirror-manager:v1.0.3
+ghcr.io/the-ab/debmirror-manager:v1.0.4
 ```
 
-`latest` follows the most recently published image. Use a concrete tag such as `v1.0.3` for controlled installations and reproducible updates.
+`latest` follows the most recently published image. Use a concrete tag such as `v1.0.4` for controlled installations and reproducible updates.
 
 The `docker-compose/` directory provides two standalone variants and full documentation for every ENV variable:
 
@@ -133,7 +133,7 @@ HTTP access lines are disabled by default so frequent live-log requests do not f
 
 Live logs use Server-Sent Events. Heartbeats keep quiet, long-running jobs connected. Leaving or reloading a job page is treated as a normal client disconnect and does not create a traceback.
 
-The locally built image has the fixed name `debmirror-manager:latest`. The published image variant uses `ghcr.io/the-ab/debmirror-manager:latest` or a version tag such as `ghcr.io/the-ab/debmirror-manager:v1.0.3`. The former Compose-generated image name `debmirror-manager-debmirror-manager:latest` is no longer created and is removed by maintenance scripts when it is unused.
+The locally built image has the fixed name `debmirror-manager:latest`. The published image variant uses `ghcr.io/the-ab/debmirror-manager:latest` or a version tag such as `ghcr.io/the-ab/debmirror-manager:v1.0.4`. The former Compose-generated image name `debmirror-manager-debmirror-manager:latest` is no longer created and is removed by maintenance scripts when it is unused.
 
 ## Updating
 
@@ -149,6 +149,17 @@ cp /path/to/debmirror-manager-vNEW.zip.sha256 updates/
 ```
 
 `update.sh` validates the ZIP version and SHA-256 checksum, creates backups, replaces project files, and rebuilds/restarts the local containers. Starting with v1.0.3, both an existing `docker-compose/.env` and `.env.no-nginx` are backed up and restored unchanged. Templates, Compose files, and local README files are updated to the new release.
+
+**One-time ZIP upgrade from v1.0.3 to v1.0.4:** The old updater does not know the new German policy files or `docs/`. Copy the ZIP and checksum file into `updates/`, verify the checksum, and use the new updater from the verified package. All three existing ENV files are preserved.
+
+```bash
+cd /path/to/debmirror-manager
+(cd updates && sha256sum -c debmirror-manager-v1.0.4.zip.sha256)
+unzip -p updates/debmirror-manager-v1.0.4.zip debmirror-manager/update.sh > update-1.0.4.sh
+chmod 700 update-1.0.4.sh
+bash ./update-1.0.4.sh --file updates/debmirror-manager-v1.0.4.zip
+rm update-1.0.4.sh
+```
 
 **One-time note for v1.0.2 → v1.0.3:** `.env.no-nginx` was not yet an officially managed filename and the old v1.0.2 updater does not preserve it. If it already exists manually, save and restore it around the update:
 
@@ -182,7 +193,7 @@ docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml pull
 docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml up -d
 ```
 
-For a pinned image, first set `DMM_IMAGE_TAG=v1.0.3` or the desired newer version in the selected ENV file. Persistent data under `DATA_PATH` and mirror content under `MIRROR_PATH` remain intact during container updates.
+For a pinned image, first set `DMM_IMAGE_TAG=v1.0.4` or the desired newer version in the selected ENV file. Persistent data under `DATA_PATH` and mirror content under `MIRROR_PATH` remain intact during container updates.
 
 ## Language and appearance
 
@@ -463,6 +474,8 @@ user   read-only access
 Administrators can create and edit users, choose each user's language and appearance, change roles, enable or disable accounts, and reset their own credentials. The final active administrator cannot be deleted, disabled, or demoted.
 
 Sessions are bound to the exact user ID, user name, enabled state, and server-side session version. Password, role, state, and user-name changes revoke existing sessions immediately.
+
+When merging a full backup into an existing installation, encryption keys must match while existing encrypted credentials are retained. An incompatible merge is rejected before changes starting with v1.0.4. A full restore database failure rolls back the entire table import; filesystem changes and the database still do not form a single transaction. Restore with jobs stopped and without concurrent administrative changes.
 
 ## API
 

@@ -1,5 +1,18 @@
 # Release Notes
 
+## v1.0.4
+
+- SQLite connections are reliably closed after commit or rollback; WebUI, scheduler and job access retain their existing transaction behavior.
+- Concurrent settings writes use independent temporary files and replace `settings.json` atomically, preventing collisions on a shared staging filename.
+- Full backup filenames include a random suffix so backups with the same label created within one second do not overwrite each other.
+- Failed backup/restore operations remove temporary database snapshots, decrypted ZIP files and extraction directories.
+- Full restore database tables are imported in one transaction. Invalid tables, missing required columns, or invalid rows leave the existing data and encryption key unchanged. Backups without a database or configuration are rejected.
+- Merging a backup with a different encryption key is rejected when existing encrypted credentials would become unreadable.
+- The one-time ZIP upgrade from v1.0.3 documents checksum validation and extraction of the new updater first, so new documentation paths are included.
+- The ZIP updater and update backups include German policy files and `docs/`. Embedded documentation copies are synchronized, and the log cleanup UI test now includes a completed job.
+- Updated `cryptography` to `50.0.2` with official package hashes. Regression tests cover the Fernet/AES-GCM backup paths used by the application.
+- English/German documentation, version display and built-in help are aligned with release 1.0.4. No database schema change or automated GitHub pipeline.
+
 ## v1.0.3
 
 - Added a standalone no-nginx image installation: `docker-compose/compose.no-nginx.yaml` uses only the published GHCR image and contains neither an nginx service nor a local build context.

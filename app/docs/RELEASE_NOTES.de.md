@@ -1,5 +1,18 @@
 # Release Notes
 
+## v1.0.4
+
+- SQLite-Verbindungen werden nach Commit oder Rollback zuverlässig geschlossen; WebUI-, Scheduler- und Jobzugriffe behalten ihre bestehende Transaktionslogik.
+- Gleichzeitige Einstellungsänderungen verwenden getrennte temporäre Dateien und ersetzen `settings.json` atomar. Dadurch kollidieren Schreibzugriffe nicht mehr am gemeinsamen temporären Dateinamen.
+- Vollbackup-Dateinamen erhalten einen Zufallszusatz, damit Sicherungen mit gleichem Namen innerhalb einer Sekunde einander nicht überschreiben.
+- Fehlgeschlagene Backup-/Restore-Vorgänge entfernen ihre temporären Datenbanksnapshots, entschlüsselten ZIPs und Entpackverzeichnisse.
+- Datenbanktabellen eines Vollrestores werden gemeinsam in einer Transaktion importiert. Bei ungültigen Tabellen, fehlenden Pflichtspalten oder ungültigen Datensätzen bleiben die bisherigen Daten und der Verschlüsselungsschlüssel erhalten. Backups ohne Datenbank oder Konfiguration werden abgelehnt.
+- Das Zusammenführen eines Backups mit anderem Verschlüsselungsschlüssel wird bei vorhandenen verschlüsselten Zugangsdaten kontrolliert abgelehnt.
+- Für den einmaligen ZIP-Übergang von v1.0.3 ist die Prüfsummenprüfung und Vorab-Extraktion des neuen Updaters dokumentiert, damit auch neue Dokumentationspfade übernommen werden.
+- ZIP-Updater und Updatebackup übernehmen die deutschen Richtliniendateien sowie `docs/` vollständig. Eingebettete Dokumentationskopien synchronisiert und der UI-Test zur Protokollbereinigung mit einem vorhandenen abgeschlossenen Job abgesichert.
+- `cryptography` auf Version `50.0.2` mit offiziellen Paket-Hashes aktualisiert. Die verwendeten Fernet-/AES-GCM-Backupwege sind Gegenstand der Regressionstests.
+- Deutsch/Englisch, Versionsanzeige und WebUI-Dokumentation auf Release 1.0.4 abgestimmt. Kein neues Datenbankschema und keine automatische GitHub-Pipeline.
+
 ## v1.0.3
 
 - Eigenständige Image-Installation ohne nginx ergänzt: `docker-compose/compose.no-nginx.yaml` verwendet ausschließlich das veröffentlichte GHCR-Image und enthält keinen nginx-Dienst oder lokalen Build-Kontext.

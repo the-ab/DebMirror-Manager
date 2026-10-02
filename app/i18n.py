@@ -29,6 +29,12 @@ def normalize_appearance(value: str | None, default: str = "light") -> str:
 # produced after rendering, which also translates flash messages and dynamic
 # status labels without changing API values or job logs.
 EXACT_EN: Dict[str, str] = {
+    "Backup enthält keine Datenbank oder Konfiguration.": "The backup contains neither a database nor a configuration.",
+    "Backup mit anderem Verschlüsselungsschlüssel kann nicht mit vorhandenen verschlüsselten Zugangsdaten zusammengeführt werden.": "A backup with a different encryption key cannot be merged with existing encrypted credentials.",
+    "Backup-Datenbank enthält nicht alle benötigten Tabellen.": "The backup database does not contain all required tables.",
+    "Backup-Datenbank enthält nicht alle benötigten Spalten.": "The backup database does not contain all required columns.",
+    "Backup-Datenbank enthält keine kompatiblen Spalten.": "The backup database does not contain compatible columns.",
+    "Backup-Einstellungen müssen ein JSON-Objekt enthalten.": "Backup settings must contain a JSON object.",
     "Übersicht": "Overview",
     "Dashboard": "Dashboard",
     "Einstellungen": "Settings",
