@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 from collections import deque
 import concurrent.futures
+from contextlib import contextmanager, nullcontext
 import csv
 import datetime as dt
 import functools
@@ -36,7 +37,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 try:
     from zoneinfo import ZoneInfo
 except Exception:  # pragma: no cover
@@ -358,16 +359,21 @@ def is_scheduled_job_source(source: str) -> bool:
 # Database
 # ---------------------------------------------------------------------------
 
-def db() -> sqlite3.Connection:
+@contextmanager
+def db() -> Iterator[sqlite3.Connection]:
     # SQLite wird von WebUI, Scheduler und laufenden Job-Threads parallel genutzt.
     # Ein großzügiger Busy-Timeout verhindert "database is locked" bei kurzen
     # Schreibkollisionen, ohne die Anwendung unnötig komplex zu machen.
     con = sqlite3.connect(DB_PATH, timeout=60)
-    secure_chmod(DB_PATH, 0o600)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA busy_timeout=60000")
-    con.execute("PRAGMA foreign_keys=ON")
-    return con
+    try:
+        secure_chmod(DB_PATH, 0o600)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA busy_timeout=60000")
+        con.execute("PRAGMA foreign_keys=ON")
+        with con:
+            yield con
+    finally:
+        con.close()
 
 
 def init_db() -> None:
@@ -839,10 +845,20 @@ def load_settings() -> Dict[str, Any]:
 
 def save_settings(settings: Dict[str, Any]) -> None:
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = SETTINGS_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    secure_chmod(tmp, 0o600)
-    tmp.replace(SETTINGS_PATH)
+    payload = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    # Each writer owns its staging file. A shared settings.tmp can be renamed
+    # by another request while this request is still writing to it.
+    fd, name = tempfile.mkstemp(prefix="settings-", suffix=".tmp", dir=APP_DATA_DIR)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        secure_chmod(tmp, 0o600)
+        tmp.replace(SETTINGS_PATH)
+    finally:
+        tmp.unlink(missing_ok=True)
     try:
         SETTINGS_PATH.chmod(0o600)
     except OSError:
@@ -12139,7 +12155,7 @@ def safe_backup_name(label: str = "", *, encrypted: bool = True) -> str:
     stamp = local_now().strftime("%Y%m%d-%H%M%S")
     suffix = secure_filename(label.strip()) if label and label.strip() else "full"
     extension = ".dmmbackup" if encrypted else ".zip"
-    return f"debmirror-manager-backup-v{APP_VERSION}-{stamp}-{suffix}{extension}"
+    return f"debmirror-manager-backup-v{APP_VERSION}-{stamp}-{suffix}-{secrets.token_hex(6)}{extension}"
 
 
 def sqlite_snapshot(dest: Path) -> None:
@@ -12228,15 +12244,18 @@ def encrypt_backup_zip(zip_path: Path, output_path: Path, password: str, metadat
     key = _backup_password_key(password, salt)
     ciphertext = AESGCM(key).encrypt(nonce, zip_path.read_bytes(), header_bytes)
     tmp = output_path.with_suffix(output_path.suffix + ".tmp")
-    with tmp.open("wb") as fh:
-        fh.write(BACKUP_ENCRYPTED_MAGIC)
-        fh.write(header_bytes + b"\n")
-        fh.write(ciphertext)
-        fh.flush()
-        os.fsync(fh.fileno())
-    secure_chmod(tmp, 0o600)
-    tmp.replace(output_path)
-    secure_chmod(output_path, 0o600)
+    try:
+        with tmp.open("wb") as fh:
+            fh.write(BACKUP_ENCRYPTED_MAGIC)
+            fh.write(header_bytes + b"\n")
+            fh.write(ciphertext)
+            fh.flush()
+            os.fsync(fh.fileno())
+        secure_chmod(tmp, 0o600)
+        tmp.replace(output_path)
+        secure_chmod(output_path, 0o600)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def decrypt_backup_to_zip(path: Path, password: str) -> Path:
@@ -12263,12 +12282,15 @@ def decrypt_backup_to_zip(path: Path, password: str) -> Path:
     except Exception as exc:
         raise ValueError("Backup-Passwort ist falsch oder die Backup-Datei wurde verändert.") from exc
     tmp_zip = APP_DATA_DIR / f"restore-decrypted-{secrets.token_hex(8)}.zip"
-    tmp_zip.write_bytes(plaintext)
-    secure_chmod(tmp_zip, 0o600)
-    if not zipfile.is_zipfile(tmp_zip):
+    try:
+        tmp_zip.write_bytes(plaintext)
+        secure_chmod(tmp_zip, 0o600)
+        if not zipfile.is_zipfile(tmp_zip):
+            raise ValueError("Entschlüsselter Inhalt ist kein gültiges Vollbackup.")
+        return tmp_zip
+    except BaseException:
         tmp_zip.unlink(missing_ok=True)
-        raise ValueError("Entschlüsselter Inhalt ist kein gültiges Vollbackup.")
-    return tmp_zip
+        raise
 
 
 def create_full_backup(label: str = "manual", backup_password: str = "") -> Path:
@@ -12287,14 +12309,12 @@ def create_full_backup(label: str = "manual", backup_password: str = "") -> Path
     backup_path = APP_BACKUP_DIR / safe_backup_name(label, encrypted=True)
     tmp_zip = APP_DATA_DIR / f"backup-plain-{secrets.token_hex(6)}.zip"
     tmp_db = APP_DATA_DIR / f"backup-db-{secrets.token_hex(6)}.sqlite3"
-    sqlite_snapshot(tmp_db)
     permission_sources = [
         (APP_KEYRING_DIR, "keyrings"),
         (IMPORT_SCRIPT_DIR, "import-scripts"),
         (USER_SCRIPT_DIR, "user-scripts"),
         (SSH_DIR, "ssh"),
     ]
-    permissions = backup_permission_map(permission_sources)
     manifest = {
         "format": BACKUP_FORMAT,
         "app_version": APP_VERSION,
@@ -12304,6 +12324,8 @@ def create_full_backup(label: str = "manual", backup_password: str = "") -> Path
         "includes": ["database", "settings", "config_export", "keyrings", "import_scripts", "user_scripts", "ssh_keys", "ssh_known_hosts", "file_permissions"],
     }
     try:
+        sqlite_snapshot(tmp_db)
+        permissions = backup_permission_map(permission_sources)
         with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
             zf.writestr("permissions.json", json.dumps(permissions, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
@@ -12362,65 +12384,71 @@ def safe_extract_zip_to_tmp(uploaded_path: Path) -> Path:
     tmp.mkdir(parents=True, exist_ok=True)
     secure_chmod(tmp.parent, 0o700)
     secure_chmod(tmp, 0o700)
-    total_size = 0
-    with zipfile.ZipFile(uploaded_path) as zf:
-        infos = zf.infolist()
-        if len(infos) > RESTORE_MAX_ENTRIES:
-            raise ValueError(f"Backup enthält zu viele Einträge ({len(infos)} > {RESTORE_MAX_ENTRIES}).")
-        for info in infos:
-            name = info.filename
-            parts = Path(name).parts
-            if not name or name.startswith(("/", "\\")) or ".." in parts:
-                raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
-            mode = (info.external_attr >> 16) & 0xFFFF
-            file_type = mode & 0o170000
-            if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
-                raise ValueError(f"Sonderdateien oder Links sind im Backup nicht erlaubt: {name}")
-            if info.file_size > RESTORE_MAX_FILE_BYTES:
-                raise ValueError(f"Backup-Datei ist zu groß: {name} ({format_bytes(info.file_size)})")
-            total_size += int(info.file_size)
-            if total_size > RESTORE_MAX_UNCOMPRESSED_BYTES:
-                raise ValueError(f"Entpackte Backup-Größe überschreitet {format_bytes(RESTORE_MAX_UNCOMPRESSED_BYTES)}.")
-            if info.file_size and info.file_size / max(1, info.compress_size) > RESTORE_MAX_COMPRESSION_RATIO:
-                raise ValueError(f"Verdächtig hohes Kompressionsverhältnis im Backup: {name}")
-        for info in infos:
-            destination = (tmp / info.filename).resolve(strict=False)
-            if tmp.resolve(strict=False) != destination and tmp.resolve(strict=False) not in destination.parents:
-                raise ValueError(f"Unsicheres Extraktionsziel: {info.filename}")
-            if info.is_dir():
-                destination.mkdir(parents=True, exist_ok=True)
-                secure_chmod(destination, 0o700)
-                continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            secure_chmod(destination.parent, 0o700)
-            with zf.open(info, "r") as src, destination.open("xb") as dst:
-                shutil.copyfileobj(src, dst, length=1024 * 1024)
-            stored_mode = (info.external_attr >> 16) & 0o777
-            secure_chmod(destination, (stored_mode & 0o700) or 0o600)
-    return tmp
+    try:
+        total_size = 0
+        with zipfile.ZipFile(uploaded_path) as zf:
+            infos = zf.infolist()
+            if len(infos) > RESTORE_MAX_ENTRIES:
+                raise ValueError(f"Backup enthält zu viele Einträge ({len(infos)} > {RESTORE_MAX_ENTRIES}).")
+            for info in infos:
+                name = info.filename
+                parts = Path(name).parts
+                if not name or name.startswith(("/", "\\")) or ".." in parts:
+                    raise ValueError(f"Unsicherer ZIP-Pfad: {name}")
+                mode = (info.external_attr >> 16) & 0xFFFF
+                file_type = mode & 0o170000
+                if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                    raise ValueError(f"Sonderdateien oder Links sind im Backup nicht erlaubt: {name}")
+                if info.file_size > RESTORE_MAX_FILE_BYTES:
+                    raise ValueError(f"Backup-Datei ist zu groß: {name} ({format_bytes(info.file_size)})")
+                total_size += int(info.file_size)
+                if total_size > RESTORE_MAX_UNCOMPRESSED_BYTES:
+                    raise ValueError(f"Entpackte Backup-Größe überschreitet {format_bytes(RESTORE_MAX_UNCOMPRESSED_BYTES)}.")
+                if info.file_size and info.file_size / max(1, info.compress_size) > RESTORE_MAX_COMPRESSION_RATIO:
+                    raise ValueError(f"Verdächtig hohes Kompressionsverhältnis im Backup: {name}")
+            for info in infos:
+                destination = (tmp / info.filename).resolve(strict=False)
+                if tmp.resolve(strict=False) != destination and tmp.resolve(strict=False) not in destination.parents:
+                    raise ValueError(f"Unsicheres Extraktionsziel: {info.filename}")
+                if info.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                    secure_chmod(destination, 0o700)
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                secure_chmod(destination.parent, 0o700)
+                with zf.open(info, "r") as src, destination.open("xb") as dst:
+                    shutil.copyfileobj(src, dst, length=1024 * 1024)
+                stored_mode = (info.external_attr >> 16) & 0o777
+                secure_chmod(destination, (stored_mode & 0o700) or 0o600)
+        return tmp
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
 
 
-def copy_table_rows(src_db: Path, table: str, replace: bool = False) -> int:
+def copy_table_rows(src_db: Path, table: str, replace: bool = False, *, destination: Optional[sqlite3.Connection] = None) -> int:
     allowed_tables = {"mirrors", "healthchecks", "job_schedules", "users", "api_tokens"}
     if table not in allowed_tables:
         raise ValueError("Nicht erlaubte Backup-Tabelle.")
-    src = sqlite3.connect(src_db)
+    src = sqlite3.connect(src_db.resolve().as_uri() + "?mode=ro", uri=True)
     src.row_factory = sqlite3.Row
     try:
         src_cols_rows = src.execute(f"PRAGMA table_info({table})").fetchall()
         if not src_cols_rows:
-            return 0
+            raise ValueError("Backup-Datenbank enthält nicht alle benötigten Tabellen.")
         src_cols = [r["name"] for r in src_cols_rows]
         rows = [dict(r) for r in src.execute(f"SELECT * FROM {table}").fetchall()]
     finally:
         src.close()
-    if not rows:
-        return 0
-    with db() as con:
-        dst_cols = [r["name"] for r in con.execute(f"PRAGMA table_info({table})").fetchall()]
+    with (db() if destination is None else nullcontext(destination)) as con:
+        dst_schema = con.execute(f"PRAGMA table_info({table})").fetchall()
+        dst_cols = [r["name"] for r in dst_schema]
+        required_cols = {r["name"] for r in dst_schema if r["pk"] or (r["notnull"] and r["dflt_value"] is None)}
+        if not required_cols.issubset(src_cols):
+            raise ValueError("Backup-Datenbank enthält nicht alle benötigten Spalten.")
         cols = [c for c in src_cols if c in dst_cols]
         if not cols:
-            return 0
+            raise ValueError("Backup-Datenbank enthält keine kompatiblen Spalten.")
         if replace:
             con.execute(f"DELETE FROM {table}")
         placeholders = ",".join(["?"] * len(cols))
@@ -12436,18 +12464,25 @@ def copy_table_rows(src_db: Path, table: str, replace: bool = False) -> int:
 def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include_users: bool = True, include_api_tokens: bool = False, backup_password: str = "") -> Dict[str, int]:
     source_path = zip_path
     working_path = decrypt_backup_to_zip(source_path, backup_password)
-    tmp = safe_extract_zip_to_tmp(working_path)
+    tmp: Optional[Path] = None
     result = {"mirrors": 0, "healthchecks": 0, "schedules": 0, "users": 0, "api_tokens": 0, "keyrings": 0, "import_scripts": 0, "user_scripts": 0, "ssh_files": 0, "settings": 0, "secret_key": 0, "permissions": 0}
     try:
+        tmp = safe_extract_zip_to_tmp(working_path)
         manifest_path = tmp / "manifest.json"
         if not manifest_path.exists():
             raise ValueError("Das Backup enthält kein gültiges Manifest.")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("format") != BACKUP_FORMAT:
+        if not isinstance(manifest, dict) or manifest.get("format") != BACKUP_FORMAT:
             raise ValueError("Die Datei ist kein DebMirror-Manager-Vollbackup.")
-        # Restore the persistent encryption key before database/settings so
-        # encrypted notification and mirror credentials are readable as soon as
-        # their records are copied back into the application.
+        settings_file = tmp / "settings.json"
+        if settings_file.exists() and not isinstance(json.loads(settings_file.read_text(encoding="utf-8")), dict):
+            raise ValueError("Backup-Einstellungen müssen ein JSON-Objekt enthalten.")
+        db_snapshot = tmp / "database" / "debmirror-manager.sqlite3"
+        config_path = tmp / "config_export.json"
+        if not db_snapshot.is_file() and not config_path.is_file():
+            raise ValueError("Backup enthält keine Datenbank oder Konfiguration.")
+        # Validate the key before touching data; install it only after the
+        # database import succeeds so a rejected snapshot keeps the old key.
         restored_secret_key = tmp / "secrets" / "notification-secrets.key"
         if restored_secret_key.exists():
             key_bytes = restored_secret_key.read_bytes().strip()
@@ -12457,23 +12492,18 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                 Fernet(key_bytes)
             except Exception as exc:
                 raise ValueError("Benachrichtigungs-Schlüssel im Backup ist ungültig.") from exc
-            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-            tmp_key = NOTIFICATION_SECRET_KEY_PATH.with_suffix(".restore-tmp")
-            tmp_key.write_bytes(key_bytes + b"\n")
-            try:
-                tmp_key.chmod(0o600)
-            except OSError:
-                pass
-            tmp_key.replace(NOTIFICATION_SECRET_KEY_PATH)
-            try:
-                NOTIFICATION_SECRET_KEY_PATH.chmod(0o600)
-            except OSError:
-                pass
-            result["secret_key"] = 1
-        db_snapshot = tmp / "database" / "debmirror-manager.sqlite3"
-        if db_snapshot.exists():
-            if replace:
+            if not replace and NOTIFICATION_SECRET_KEY_PATH.exists() and NOTIFICATION_SECRET_KEY_PATH.read_bytes().strip() != key_bytes:
+                notify = load_settings().get("notify") or {}
+                has_notification_secrets = isinstance(notify, dict) and any(str(notify.get(field) or "").startswith(SECRET_PREFIX) for field in SECRET_FIELDS)
                 with db() as con:
+                    has_mirror_secrets = con.execute("SELECT 1 FROM mirrors WHERE remote_password_enc LIKE ? LIMIT 1", (SECRET_PREFIX + "%",)).fetchone() is not None
+                if has_notification_secrets or has_mirror_secrets:
+                    raise ValueError("Backup mit anderem Verschlüsselungsschlüssel kann nicht mit vorhandenen verschlüsselten Zugangsdaten zusammengeführt werden.")
+        if db_snapshot.exists():
+            # All restored tables and removals belong to one transaction.
+            # A bad row in any later table must roll back the earlier tables.
+            with db() as con:
+                if replace:
                     if include_api_tokens:
                         con.execute("DELETE FROM api_tokens")
                     if include_users:
@@ -12481,20 +12511,30 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
                     con.execute("DELETE FROM job_schedules")
                     con.execute("DELETE FROM healthchecks")
                     con.execute("DELETE FROM mirrors")
-            result["mirrors"] = copy_table_rows(db_snapshot, "mirrors", replace=False)
-            result["healthchecks"] = copy_table_rows(db_snapshot, "healthchecks", replace=False)
-            result["schedules"] = copy_table_rows(db_snapshot, "job_schedules", replace=False)
-            if include_users:
-                result["users"] = copy_table_rows(db_snapshot, "users", replace=False)
-            if include_api_tokens:
-                result["api_tokens"] = copy_table_rows(db_snapshot, "api_tokens", replace=False)
+                result["mirrors"] = copy_table_rows(db_snapshot, "mirrors", destination=con)
+                result["healthchecks"] = copy_table_rows(db_snapshot, "healthchecks", destination=con)
+                result["schedules"] = copy_table_rows(db_snapshot, "job_schedules", destination=con)
+                if include_users:
+                    result["users"] = copy_table_rows(db_snapshot, "users", destination=con)
+                if include_api_tokens:
+                    result["api_tokens"] = copy_table_rows(db_snapshot, "api_tokens", destination=con)
         else:
-            config_path = tmp / "config_export.json"
             if config_path.exists():
                 imported = import_config_data(json.loads(config_path.read_text(encoding="utf-8")), replace_existing=replace)
                 result["mirrors"] = imported.get("mirrors", 0)
                 result["healthchecks"] = imported.get("healthchecks", 0)
                 result["settings"] = imported.get("settings", 0)
+        if restored_secret_key.exists():
+            APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+            tmp_key = NOTIFICATION_SECRET_KEY_PATH.with_suffix(".restore-tmp")
+            try:
+                tmp_key.write_bytes(key_bytes + b"\n")
+                secure_chmod(tmp_key, 0o600)
+                tmp_key.replace(NOTIFICATION_SECRET_KEY_PATH)
+                secure_chmod(NOTIFICATION_SECRET_KEY_PATH, 0o600)
+            finally:
+                tmp_key.unlink(missing_ok=True)
+            result["secret_key"] = 1
         if (tmp / "settings.json").exists():
             shutil.copy2(tmp / "settings.json", SETTINGS_PATH)
             secure_chmod(SETTINGS_PATH, 0o600)
@@ -12572,7 +12612,8 @@ def restore_full_backup_from_path(zip_path: Path, replace: bool = False, include
         add_event("warning", f"Backup wiederhergestellt: {source_path.name}")
         return result
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
         if working_path != source_path:
             working_path.unlink(missing_ok=True)
 
@@ -13507,8 +13548,8 @@ BUILTIN_HELP = {
     "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
 }
 BUILTIN_RELEASE_NOTES = {
-    "de": "# Release Notes\n\n## v1.0.3\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
-    "en": "# Release Notes\n\n## v1.0.3\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+    "de": "# Release Notes\n\n## v1.0.4\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v1.0.4\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
 }
 
 # ---------------------------------------------------------------------------

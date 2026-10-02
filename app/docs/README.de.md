@@ -2,9 +2,9 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **1.0.3**
+Aktuelle Version: **1.0.4**
 
-Neu in v1.0.3: zusätzliche eigenständige Compose-Variante ohne nginx, ausführliche ENV-Dokumentation DE/EN sowie erweiterter Update-, Versions- und Mobilansichts-Audit.
+Kandidat v1.0.4: Qualitätsupdate für SQLite-Verbindungen, konkurrierende Einstellungszugriffe, Backup/Restore, Dokumentationsupdates und Abhängigkeiten. ZIP und GHCR-Tag dieser Version sind noch nicht öffentlich veröffentlicht.
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -49,7 +49,7 @@ DebMirror Manager kann entweder lokal aus dem Release-ZIP gebaut oder direkt als
 ### Variante A: Lokaler Build aus dem Release-ZIP
 
 ```bash
-unzip debmirror-manager-v1.0.3.zip
+unzip debmirror-manager-v1.0.4.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -63,10 +63,10 @@ Das veröffentlichte Image steht unter folgenden Namen bereit:
 
 ```text
 ghcr.io/the-ab/debmirror-manager:latest
-ghcr.io/the-ab/debmirror-manager:v1.0.3
+ghcr.io/the-ab/debmirror-manager:v1.0.4
 ```
 
-`latest` folgt dem jeweils zuletzt veröffentlichten Image. Für kontrollierte Installationen und reproduzierbare Updates sollte ein konkreter Versions-Tag wie `v1.0.3` verwendet werden.
+`latest` folgt dem jeweils zuletzt veröffentlichten Image. Für kontrollierte Installationen und reproduzierbare Updates sollte ein konkreter Versions-Tag wie `v1.0.4` verwendet werden.
 
 Der Ordner `docker-compose/` enthält zwei eigenständige Varianten sowie eine vollständige Beschreibung aller ENV-Variablen:
 
@@ -130,7 +130,7 @@ WSGI_LOG_LEVEL=info
 
 Live-Logs verwenden Server-Sent Events. Heartbeats halten auch ausgabearme, lange Jobs offen; ein normales Verlassen oder Neuladen der Jobseite wird nicht als Anwendungsfehler protokolliert.
 
-Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die veröffentlichte Image-Variante verwendet dagegen `ghcr.io/the-ab/debmirror-manager:latest` beziehungsweise einen Versions-Tag wie `ghcr.io/the-ab/debmirror-manager:v1.0.3`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
+Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die veröffentlichte Image-Variante verwendet dagegen `ghcr.io/the-ab/debmirror-manager:latest` beziehungsweise einen Versions-Tag wie `ghcr.io/the-ab/debmirror-manager:v1.0.4`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
 
 ## Update
 
@@ -146,6 +146,17 @@ cp /pfad/zur/debmirror-manager-vNEU.zip.sha256 updates/
 ```
 
 `update.sh` prüft ZIP-Version und SHA-256, erstellt Sicherungen, ersetzt die Projektdateien und baut/startet die lokalen Container neu. Ab v1.0.3 werden im eigenständigen `docker-compose/`-Ordner sowohl eine vorhandene `.env` als auch `.env.no-nginx` gesichert und unverändert wiederhergestellt. Die Vorlagen, Compose-Dateien und lokalen README-Dateien werden dagegen auf den neuen Release-Stand aktualisiert.
+
+**Einmaliger ZIP-Übergang von v1.0.3 auf v1.0.4:** Der alte Updater kennt die neuen deutschen Richtliniendateien und `docs/` noch nicht. ZIP und SHA-Datei zunächst nach `updates/` kopieren, die Prüfsumme prüfen und dann den neuen Updater aus dem geprüften Paket verwenden. Die drei vorhandenen ENV-Dateien bleiben erhalten. Erst nach Veröffentlichung von v1.0.4 ausführen.
+
+```bash
+cd /pfad/zum/debmirror-manager
+(cd updates && sha256sum -c debmirror-manager-v1.0.4.zip.sha256)
+unzip -p updates/debmirror-manager-v1.0.4.zip debmirror-manager/update.sh > update-1.0.4.sh
+chmod 700 update-1.0.4.sh
+bash ./update-1.0.4.sh --file updates/debmirror-manager-v1.0.4.zip
+rm update-1.0.4.sh
+```
 
 **Einmaliger Hinweis für den Übergang von v1.0.2 auf v1.0.3:** `.env.no-nginx` war noch kein offiziell verwalteter Dateiname und wird vom alten v1.0.2-Updater nicht bewahrt. Falls diese Datei bereits manuell existiert, vor dem Update sichern und danach zurückkopieren:
 
@@ -179,7 +190,7 @@ docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml pull
 docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml up -d
 ```
 
-Bei einem festen Tag wird zuerst `DMM_IMAGE_TAG=v1.0.3` beziehungsweise die gewünschte neuere Version in der verwendeten ENV-Datei eingetragen. Persistente Daten unter `DATA_PATH` und Mirror-Inhalte unter `MIRROR_PATH` bleiben beim Containerupdate erhalten.
+Bei einem festen Tag wird zuerst `DMM_IMAGE_TAG=v1.0.4` beziehungsweise die gewünschte neuere Version in der verwendeten ENV-Datei eingetragen. Persistente Daten unter `DATA_PATH` und Mirror-Inhalte unter `MIRROR_PATH` bleiben beim Containerupdate erhalten.
 
 ## Sprache und Darstellung
 
@@ -575,6 +586,9 @@ user   rein betrachtender Zugriff
 ```
 
 Normale Benutzer dürfen keine kritischen Änderungen durchführen und keine Jobs starten oder stoppen. Im Bereich **System -> Benutzerverwaltung** befinden sich zusätzlich der eigene Admin-Zugang, die Passwortänderung und der Hinweis zum Shell-Notfallskript. Sprache und Darstellung können beim Anlegen oder Bearbeiten jedes Benutzers individuell gesetzt werden.
+
+
+Beim Zusammenführen eines Vollbackups mit einer vorhandenen Installation müssen die Verschlüsselungsschlüssel zusammenpassen, solange vorhandene verschlüsselte Zugangsdaten erhalten bleiben. Ein inkompatibles Zusammenführen wird ab v1.0.4 vor der Änderung abgelehnt. Ein Datenbankfehler beim Vollrestore rollt den gesamten Tabellenimport zurück; Dateiablage und Datenbank bilden weiterhin keine gemeinsame Transaktion. Restore nur bei angehaltenen Jobs und ohne gleichzeitige Verwaltungsänderungen durchführen.
 
 ### API
 

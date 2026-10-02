@@ -1186,12 +1186,25 @@ def test_complete_protocol_deletion_keeps_job_ids_monotonic(tmp_path):
 def test_jobs_page_exposes_targeted_log_cleanup(client, database_cleanup):
     admin = make_user("log-cleanup-admin")
     authenticate(client, admin)
-    response = client.get("/jobs")
-    assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "/jobs/logs/delete" in html
-    assert "vollständig löschen" in html or "completely" in html.lower()
-    assert "Protokoll" in html or "log" in html.lower()
+    log_path = dmm.APP_LOG_DIR / "cleanup-ui-test.log"
+    log_path.write_text("completed test job", encoding="utf-8")
+    with dmm.db() as con:
+        cur = con.execute(
+            "INSERT INTO jobs(mirror_name,status,log_path,started_at,finished_at) VALUES ('cleanup-ui-test','success',?,?,?)",
+            (str(log_path), dmm.now_iso(), dmm.now_iso()),
+        )
+        job_id = int(cur.lastrowid)
+    try:
+        response = client.get("/jobs")
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "/jobs/logs/delete" in html
+        assert f'value="{job_id}"' in html
+        assert "vollständig löschen" in html or "completely" in html.lower()
+    finally:
+        with dmm.db() as con:
+            con.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        log_path.unlink(missing_ok=True)
 
 
 def test_new_log_retention_inherits_existing_job_retention(monkeypatch):

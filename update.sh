@@ -227,11 +227,12 @@ create_backups() {
     done
   fi
   [ -f "VERSION" ] && cp VERSION "$backup_base/VERSION"
-  for name in LICENSE SECURITY.md CONTRIBUTING.md THIRD-PARTY-NOTICES.md .gitignore .dockerignore requirements.lock requirements-dev.txt pytest.ini; do
+  for name in LICENSE SECURITY.md SECURITY.de.md CONTRIBUTING.md CONTRIBUTING.de.md THIRD-PARTY-NOTICES.md THIRD-PARTY-NOTICES.de.md .gitignore .dockerignore requirements.lock requirements-dev.txt pytest.ini; do
     [ -f "$name" ] && cp "$name" "$backup_base/$name"
   done
   [ -d tests ] && cp -a tests "$backup_base/tests"
   [ -d scripts ] && cp -a scripts "$backup_base/scripts"
+  [ -d docs ] && cp -a docs "$backup_base/docs"
   [ -d "app" ] && tar -czf "$backup_base/app-project-files.tar.gz" app
   [ -d "nginx" ] && tar -czf "$backup_base/nginx-config.tar.gz" nginx
   [ -f "README.md" ] && cp README.md "$backup_base/README.md"
@@ -419,7 +420,7 @@ for image_env_name in ('.env', '.env.no-nginx'):
 items_to_copy = [
     '.env.example', '.gitignore', '.dockerignore', 'Dockerfile', 'docker-compose.yml', 'docker-compose', 'requirements.txt', 'requirements.lock', 'requirements-dev.txt', 'pytest.ini',
     'install.sh', 'set-admin-password.sh', 'update.sh', 'README.md', 'README.de.md',
-    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'THIRD-PARTY-NOTICES.md', 'VERSION', 'app', 'nginx', 'tests', 'scripts'
+    'RELEASE_NOTES.md', 'RELEASE_NOTES.de.md', 'LICENSE', 'SECURITY.md', 'SECURITY.de.md', 'CONTRIBUTING.md', 'CONTRIBUTING.de.md', 'THIRD-PARTY-NOTICES.md', 'THIRD-PARTY-NOTICES.de.md', 'VERSION', 'app', 'nginx', 'tests', 'scripts', 'docs'
 ]
 for name in items_to_copy:
     src = source_root / name
