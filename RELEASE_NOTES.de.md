@@ -1,6 +1,6 @@
 # Release Notes
 
-## Noch nicht veröffentlicht
+## v1.0.5 (2026-10-10)
 
 - Werkzeug mit verifizierten PyPI-Hashes auf 3.1.9 aktualisiert. Damit ist der Abhängigkeitsbefund CVE-2026-102598 behoben (Windows/NTFS `safe_join`; dieser konkrete Fehler betrifft die Linux-Installation nicht).
 - Die Loginseite bindet das vorhandene SVG-Favicon auch vor der Anmeldung ein.

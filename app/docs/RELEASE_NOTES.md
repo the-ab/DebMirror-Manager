@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v1.0.5 (2026-10-10)
 
 - Updated Werkzeug to 3.1.9 with verified PyPI hashes, resolving the dependency audit finding CVE-2026-102598 (Windows/NTFS `safe_join`; the Linux deployment is not affected by that specific path).
 - The login page now uses the existing SVG favicon, including before authentication.
