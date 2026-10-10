@@ -59,7 +59,7 @@ docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml up -d
 - `DATA_PATH`: dauerhaftes und beschreibbares Hostverzeichnis für Verwaltungsdaten.
 - `MIRROR_PATH`: Hostverzeichnis der Mirror-Daten.
 - `WEBUI_BIND_ADDRESS` und `WEBUI_PORT`: gewünschte Erreichbarkeit der WebUI.
-- `DMM_IMAGE_TAG`: `latest` oder ein fester Tag wie `v1.0.4`.
+- `DMM_IMAGE_TAG`: `latest` oder ein fester Tag wie `v1.0.5`.
 - `APP_TIMEZONE`: korrekte IANA-Zeitzone.
 - Bei nginx zusätzlich `MIRROR_HTTP_BIND_ADDRESS` und `MIRROR_HTTP_PORT`.
 - Bei Migration einer bestehenden Installation `APP_SECRET_KEY` **vor dem ersten Start** übernehmen.
@@ -83,7 +83,7 @@ Die Projekt-`.gitignore` erlaubt nur die Vorlagen `.env.example` und `.env.no-ng
 
 | Variable | Standard | Einordnung | Bedeutung |
 |---|---:|---|---|
-| `DMM_IMAGE_TAG` | `latest` | empfohlen | Container-Image-Tag. `latest` folgt dem neuesten Release; `v1.0.4` bindet die Installation an diese Version. |
+| `DMM_IMAGE_TAG` | `latest` | empfohlen | Container-Image-Tag. `latest` folgt dem neuesten Release; `v1.0.5` bindet die Installation an diese Version. |
 | `COMPOSE_PROFILES` | `mirror-http` | nur Vollvariante | Aktiviert in `compose.yaml` den optionalen nginx-Dienst. Leer lassen, wenn `compose.yaml` ohne nginx gestartet werden soll. In der No-nginx-Variante nicht vorhanden. |
 | `WEBUI_BIND_ADDRESS` | `0.0.0.0` | prüfen/anpassen | Host-Adresse, an die der WebUI-Port gebunden wird. Für rein lokalen Zugriff z. B. `127.0.0.1`; für Netzwerkzugriff `0.0.0.0` oder eine konkrete Host-IP. |
 | `WEBUI_PORT` | `8111` | prüfen/anpassen | Extern erreichbarer TCP-Port der WebUI. |
