@@ -130,6 +130,7 @@ EXACT_EN: Dict[str, str] = {
     "Timeout Sekunden": "Timeout seconds",
     "Intervall Minuten": "Interval minutes",
     "Healthchecks für lokale Clients und Server": "Health checks for local clients and servers",
+    "Vorübergehende Verbindungsfehler werden bis zu dreimal geprüft, mit 1 und 2 Sekunden Pause. Der Timeout gilt je Versuch. Ein Alarm wird erst nach erfolgloser Bestätigung gesendet; Zertifikats- und Konfigurationsfehler werden sofort gemeldet.": "Temporary connection failures are checked up to three times, with pauses of 1 and 2 seconds. The timeout applies to each attempt. An alert is sent only after unsuccessful confirmation; certificate and configuration errors are reported immediately.",
     "Prüft Mirror-URLs per HTTP/HTTPS oder die Erreichbarkeit eines Servers per ICMP-Ping.": "Checks mirror URLs via HTTP/HTTPS or server reachability via ICMP ping.",
     "Prüft Mirror-URLs per HTTP/HTTPS oder FTP sowie die Erreichbarkeit eines Servers per ICMP-Ping.": "Checks mirror URLs via HTTP/HTTPS or FTP and server reachability via ICMP ping.",
     "FTP-Ziel (Host, IP oder URL)": "FTP target (host, IP, or URL)",

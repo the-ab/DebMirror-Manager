@@ -1,5 +1,11 @@
 # Release Notes
 
+## Noch nicht veröffentlicht
+
+- Werkzeug mit verifizierten PyPI-Hashes auf 3.1.9 aktualisiert. Damit ist der Abhängigkeitsbefund CVE-2026-102598 behoben (Windows/NTFS `safe_join`; dieser konkrete Fehler betrifft die Linux-Installation nicht).
+- Die Loginseite bindet das vorhandene SVG-Favicon auch vor der Anmeldung ein.
+- Healthchecks bestätigen vorübergehende Netzwerkfehler, Zeitüberschreitungen, verlorene Ping-Pakete und HTTP 502/503/504 mit bis zu drei Versuchen und kurzen Pausen. Zwischenzeitliche Fehlversuche lösen keine Fehler-/Recovery-Meldungen mehr aus; anhaltende Fehler bleiben sichtbar. TLS- und Zielprüfung bleiben aktiv, Timeout je Versuch und Versuchszahl der API sind dokumentiert.
+
 ## v1.0.4
 
 - SQLite-Verbindungen werden nach Commit oder Rollback zuverlässig geschlossen; WebUI-, Scheduler- und Jobzugriffe behalten ihre bestehende Transaktionslogik.

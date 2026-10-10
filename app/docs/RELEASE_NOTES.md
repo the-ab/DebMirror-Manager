@@ -1,5 +1,11 @@
 # Release Notes
 
+## Unreleased
+
+- Updated Werkzeug to 3.1.9 with verified PyPI hashes, resolving the dependency audit finding CVE-2026-102598 (Windows/NTFS `safe_join`; the Linux deployment is not affected by that specific path).
+- The login page now uses the existing SVG favicon, including before authentication.
+- Health checks confirm temporary network errors, timeouts, lost ping packets and HTTP 502/503/504 responses with up to three attempts and short pauses. Intermediate failures no longer trigger failure/recovery alerts; persistent failures remain visible. TLS and target validation remain active, and the per-attempt timeout and API attempt count are documented.
+
 ## v1.0.4
 
 - SQLite connections are reliably closed after commit or rollback; WebUI, scheduler and job access retain their existing transaction behavior.

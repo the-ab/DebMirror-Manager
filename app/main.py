@@ -12,6 +12,7 @@ import ftplib
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 import hashlib
+import errno
 import hmac
 import html
 import io
@@ -13147,6 +13148,7 @@ def _run_ftp_healthcheck(target: str, timeout_seconds: int, allow_private: bool)
             "status_code": status_code,
             "latency_ms": int((time.monotonic() - started) * 1000),
             "error": f"FTP-Zeitüberschreitung nach {timeout_seconds} Sekunden.",
+            "retryable": True,
             "target": display_target,
             "resolved_address": resolved_address,
         }
@@ -13156,6 +13158,7 @@ def _run_ftp_healthcheck(target: str, timeout_seconds: int, allow_private: bool)
             "status_code": status_code,
             "latency_ms": int((time.monotonic() - started) * 1000),
             "error": str(exc)[:500],
+            "retryable": _healthcheck_retryable_error(exc),
             "target": display_target,
             "resolved_address": resolved_address,
         }
@@ -13204,6 +13207,7 @@ def _run_ping_healthcheck(target: str, timeout_seconds: int, allow_private: bool
             "status_code": None,
             "latency_ms": int((time.monotonic() - started) * 1000),
             "error": f"Ping-Zeitüberschreitung nach {timeout_seconds} Sekunden.",
+            "retryable": True,
             "target": display_target,
             "resolved_address": resolved_address,
         }
@@ -13225,9 +13229,90 @@ def _run_ping_healthcheck(target: str, timeout_seconds: int, allow_private: bool
         "status_code": 0 if ok else int(result.returncode),
         "latency_ms": latency_ms,
         "error": error,
+        "retryable": not ok and (result.returncode == 1 or any(
+            message in output for message in ("Network is unreachable", "No route to host")
+        )),
         "target": display_target,
         "resolved_address": resolved_address,
     }
+
+
+HEALTHCHECK_MAX_ATTEMPTS = 3
+HEALTHCHECK_RETRY_DELAYS = (1, 2)
+
+
+def _healthcheck_retryable_error(exc: BaseException) -> bool:
+    """Retry transport failures without relaxing target or TLS validation."""
+    seen = set()
+    while id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, urllib.error.HTTPError):
+            return int(exc.code) in {502, 503, 504}
+        if isinstance(exc, ssl.SSLError):
+            return False
+        if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+            exc = exc.reason
+            continue
+        if isinstance(exc, socket.gaierror):
+            return exc.errno == socket.EAI_AGAIN
+        if isinstance(exc, (TimeoutError, ConnectionError)):
+            return True
+        if isinstance(exc, OSError):
+            return exc.errno in {
+                errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+                errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNREFUSED,
+                errno.ECONNABORTED, errno.EPIPE, errno.EAGAIN,
+            }
+        if exc.__cause__ is not None:
+            exc = exc.__cause__
+            continue
+        break
+    return False
+
+
+def _run_healthcheck_probe(check: Dict[str, Any], method: str, timeout_seconds: int) -> Dict[str, Any]:
+    """One read-only probe; retries and state changes belong to its caller."""
+    started = time.monotonic()
+    status_code = None
+    try:
+        if method == "PING":
+            return _run_ping_healthcheck(
+                str(check.get("url") or ""), timeout_seconds, bool(check.get("allow_private")),
+            )
+        if method == "FTP":
+            return _run_ftp_healthcheck(
+                str(check.get("url") or ""), timeout_seconds, bool(check.get("allow_private")),
+            )
+        expected_status = int(check.get("expected_status") or 200)
+        req = urllib.request.Request(
+            check["url"], method=method, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"},
+        )
+        try:
+            with safe_urlopen(
+                req, timeout=timeout_seconds, allowed_schemes=("http", "https"),
+                allow_private=bool(check.get("allow_private")),
+            ) as resp:
+                status_code = int(resp.status)
+        except urllib.error.HTTPError as exc:
+            status_code = int(exc.code)
+            exc.close()
+            if status_code != expected_status:
+                raise
+        ok = status_code == expected_status
+        return {
+            "ok": ok, "status_code": status_code,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": "" if ok else f"HTTP status {status_code}; expected {expected_status}.",
+            "retryable": not ok and status_code in {502, 503, 504},
+        }
+    except Exception as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            status_code = int(exc.code)
+        return {
+            "ok": False, "status_code": status_code,
+            "latency_ms": int((time.monotonic() - started) * 1000),
+            "error": str(exc)[:500], "retryable": _healthcheck_retryable_error(exc),
+        }
 
 
 def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
@@ -13235,54 +13320,17 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
     if method not in {"GET", "HEAD", "PING", "FTP"}:
         method = "GET"
     timeout_seconds = max(1, min(120, int(check.get("timeout_seconds") or 10)))
-    status_code = None
-    ok = False
-    err = ""
-    latency = 0
-    if method == "PING":
-        start = time.monotonic()
-        try:
-            ping_result = _run_ping_healthcheck(
-                str(check.get("url") or ""),
-                timeout_seconds,
-                bool(check.get("allow_private")),
-            )
-            status_code = ping_result.get("status_code")
-            ok = bool(ping_result.get("ok"))
-            err = str(ping_result.get("error") or "")
-            latency = int(ping_result.get("latency_ms") or 0)
-        except Exception as exc:
-            err = str(exc)
-            latency = int((time.monotonic() - start) * 1000)
-    elif method == "FTP":
-        start = time.monotonic()
-        try:
-            ftp_result = _run_ftp_healthcheck(
-                str(check.get("url") or ""),
-                timeout_seconds,
-                bool(check.get("allow_private")),
-            )
-            status_code = ftp_result.get("status_code")
-            ok = bool(ftp_result.get("ok"))
-            err = str(ftp_result.get("error") or "")
-            latency = int(ftp_result.get("latency_ms") or 0)
-        except Exception as exc:
-            err = str(exc)
-            latency = int((time.monotonic() - start) * 1000)
-    else:
-        start = time.monotonic()
-        try:
-            req = urllib.request.Request(check["url"], method=method, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
-            with safe_urlopen(req, timeout=timeout_seconds, allowed_schemes=("http", "https"), allow_private=bool(check.get("allow_private"))) as resp:
-                status_code = int(resp.status)
-                ok = status_code == int(check.get("expected_status") or 200)
-        except urllib.error.HTTPError as exc:
-            status_code = int(exc.code)
-            ok = status_code == int(check.get("expected_status") or 200)
-            err = "" if ok else str(exc)
-        except Exception as exc:
-            err = str(exc)
-        latency = int((time.monotonic() - start) * 1000)
+    for attempt in range(1, HEALTHCHECK_MAX_ATTEMPTS + 1):
+        probe = _run_healthcheck_probe(check, method, timeout_seconds)
+        if probe.get("ok") or not probe.get("retryable") or attempt == HEALTHCHECK_MAX_ATTEMPTS:
+            break
+        time.sleep(HEALTHCHECK_RETRY_DELAYS[attempt - 1])
+    status_code = probe.get("status_code")
+    ok = bool(probe.get("ok"))
+    err = str(probe.get("error") or "")
+    latency = int(probe.get("latency_ms") or 0)
+    if not ok and attempt > 1:
+        err = f"{err} [attempts: {attempt}]"
 
     state = "ok" if ok else "error"
     previous_state = str(check.get("last_notify_state") or "").strip().lower()
@@ -13328,7 +13376,7 @@ def run_healthcheck_once(check: Dict[str, Any]) -> Dict[str, Any]:
                     f"Zeit: {checked_at}"
                 )
             send_notification(f"DebMirror Healthcheck wieder erreichbar: {check['name']}", detail, kind="healthcheck")
-    return {"ok": ok, "status_code": status_code, "latency_ms": latency, "error": err, "method": method}
+    return {"ok": ok, "status_code": status_code, "latency_ms": latency, "error": err, "method": method, "attempts": attempt}
 
 
 def healthcheck_scan() -> None:
