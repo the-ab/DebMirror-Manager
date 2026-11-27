@@ -8,13 +8,13 @@ from contextlib import contextmanager, nullcontext
 import csv
 import datetime as dt
 import functools
-import ftplib
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 import hashlib
 import errno
 import hmac
 import html
+import http.client
 import io
 import ipaddress
 import json
@@ -1724,9 +1724,12 @@ def is_admin_user() -> bool:
 
 def safe_redirect_target(value: str, fallback: str) -> str:
     candidate = (value or "").strip()
-    if not candidate:
+    if not candidate or "\\" in candidate or any(ord(char) < 32 for char in candidate):
         return fallback
-    parsed = urllib.parse.urlsplit(candidate)
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+    except ValueError:
+        return fallback
     if parsed.scheme or parsed.netloc or not candidate.startswith("/") or candidate.startswith("//"):
         return fallback
     return candidate
@@ -1808,15 +1811,8 @@ def validate_ping_target(target: str, *, allow_private: bool = False) -> Tuple[s
     return value, str(selected)
 
 
-def validate_outbound_url(
-    url: str,
-    *,
-    allowed_schemes: Iterable[str] = ("https",),
-    allow_private: bool = False,
-    allow_credentials: bool = False,
-) -> str:
-    value = (url or "").strip()
-    parsed = urllib.parse.urlsplit(value)
+def _outbound_url_parts(url: str, allowed_schemes: Iterable[str], allow_credentials: bool) -> urllib.parse.SplitResult:
+    parsed = urllib.parse.urlsplit(url)
     allowed = {str(item).lower() for item in allowed_schemes}
     if parsed.scheme.lower() not in allowed:
         raise ValueError(f"Nicht erlaubtes URL-Protokoll: {parsed.scheme or '-'}")
@@ -1824,9 +1820,13 @@ def validate_outbound_url(
         raise ValueError("URL enthält keinen gültigen Hostnamen.")
     if (parsed.username is not None or parsed.password is not None) and not allow_credentials:
         raise ValueError("Zugangsdaten innerhalb einer URL sind nicht erlaubt.")
-    hostname = parsed.hostname.strip("[]").rstrip(".")
+    return parsed
+
+
+def _resolve_outbound_addresses(hostname: str, port: Optional[int], *, allow_private: bool) -> List[ipaddress._BaseAddress]:
+    hostname = hostname.rstrip(".")
     try:
-        infos = socket.getaddrinfo(hostname, parsed.port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise ValueError(f"Hostname konnte nicht aufgelöst werden: {hostname}") from exc
     addresses = []
@@ -1845,24 +1845,98 @@ def validate_outbound_url(
         if allow_private or _private_target_allowlisted(hostname, address):
             continue
         raise ValueError(f"Private, lokale oder reservierte Zieladresse ist nicht erlaubt: {hostname} ({address})")
+    return addresses
+
+
+def validate_outbound_url(
+    url: str,
+    *,
+    allowed_schemes: Iterable[str] = ("https",),
+    allow_private: bool = False,
+    allow_credentials: bool = False,
+) -> str:
+    value = (url or "").strip()
+    parsed = _outbound_url_parts(value, allowed_schemes, allow_credentials)
+    _resolve_outbound_addresses(parsed.hostname, parsed.port, allow_private=allow_private)
     return value
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def __init__(self, *, allowed_schemes: Iterable[str], allow_private: bool, allow_credentials: bool):
+    def __init__(self, *, allowed_schemes: Iterable[str]):
         super().__init__()
         self.allowed_schemes = tuple(allowed_schemes)
-        self.allow_private = allow_private
-        self.allow_credentials = allow_credentials
+
+    @staticmethod
+    def _origin(parsed):
+        ports = {"http": 80, "https": 443, "ftp": 21}
+        return parsed.scheme, parsed.hostname, parsed.port or ports.get(parsed.scheme)
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validated = validate_outbound_url(
-            urllib.parse.urljoin(req.full_url, newurl),
-            allowed_schemes=self.allowed_schemes,
-            allow_private=self.allow_private,
-            allow_credentials=self.allow_credentials,
-        )
-        return super().redirect_request(req, fp, code, msg, headers, validated)
+        parsed = _outbound_url_parts(newurl, self.allowed_schemes, allow_credentials=False)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and self._origin(urllib.parse.urlsplit(req.full_url)) != self._origin(parsed):
+            for header in ("Authorization", "Cookie", "Proxy-authorization"):
+                redirected.remove_header(header)
+        return redirected
+
+
+def _safe_outbound_opener(
+    allowed_schemes: Iterable[str], *, allow_private: bool, allow_credentials: bool,
+    context: Optional[ssl.SSLContext] = None,
+) -> urllib.request.OpenerDirector:
+    allowed_schemes = tuple(allowed_schemes)
+
+    def connection_factory(connection_type, request_obj):
+        parsed = _outbound_url_parts(request_obj.full_url, allowed_schemes, allow_credentials)
+
+        def create_connection(destination, timeout, source_address):
+            port = destination[1]
+            addresses = _resolve_outbound_addresses(parsed.hostname, port, allow_private=allow_private)
+            for index, address in enumerate(addresses):
+                try:
+                    return socket.create_connection((str(address), port), timeout, source_address)
+                except OSError:
+                    if index == len(addresses) - 1:
+                        raise
+
+        def build(host, **kwargs):
+            connection = connection_type(host, **kwargs)
+            # Keep the original hostname on the HTTP(S) connection for Host, SNI and certificate checks.
+            connection._create_connection = create_connection
+            return connection
+
+        return build
+
+    class PinnedHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(connection_factory(http.client.HTTPConnection, req), req)
+
+    class PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(connection_factory(http.client.HTTPSConnection, req), req, context=context)
+
+    class PinnedFTPHandler(urllib.request.FTPHandler):
+        def ftp_open(self, req):
+            parsed = _outbound_url_parts(req.full_url, allowed_schemes, allow_credentials)
+            addresses = _resolve_outbound_addresses(parsed.hostname, parsed.port or 21, allow_private=allow_private)
+            address = next((item for item in addresses if item.version == 4), None)
+            if address is None:
+                raise urllib.error.URLError("Der FTP-Dateiabruf benötigt eine IPv4-Zieladresse.")
+            userinfo, _, _ = parsed.netloc.rpartition("@")
+            netloc = f"{userinfo}@{address}" if userinfo else str(address)
+            if parsed.port is not None:
+                netloc += f":{parsed.port}"
+            pinned = urllib.request.Request(parsed._replace(netloc=netloc).geturl())
+            pinned.timeout = req.timeout
+            response = super().ftp_open(pinned)
+            response.url = req.full_url
+            return response
+
+    # An environment proxy resolves the hostname independently of the address check.
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), SafeRedirectHandler(allowed_schemes=allowed_schemes),
+        PinnedHTTPHandler(), PinnedHTTPSHandler(), PinnedFTPHandler(),
+    )
 
 
 def safe_urlopen(
@@ -1873,19 +1947,13 @@ def safe_urlopen(
     allow_private: bool = False,
     allow_credentials: bool = False,
 ):
-    url = target.full_url if isinstance(target, urllib.request.Request) else str(target)
-    validate_outbound_url(
-        url,
-        allowed_schemes=allowed_schemes,
-        allow_private=allow_private,
-        allow_credentials=allow_credentials,
-    )
-    opener = urllib.request.build_opener(
-        SafeRedirectHandler(
-            allowed_schemes=allowed_schemes,
-            allow_private=allow_private,
-            allow_credentials=allow_credentials,
-        )
+    if not isinstance(target, urllib.request.Request):
+        target = str(target).strip()
+    url = target.full_url if isinstance(target, urllib.request.Request) else target
+    allowed_schemes = tuple(allowed_schemes)
+    _outbound_url_parts(url, allowed_schemes, allow_credentials)
+    opener = _safe_outbound_opener(
+        allowed_schemes, allow_private=allow_private, allow_credentials=allow_credentials,
     )
     return opener.open(target, timeout=timeout)
 
@@ -1964,7 +2032,7 @@ def enforce_request_security():
     if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.path.startswith("/api/"):
         expected = str(session.get("_csrf_token") or "")
         supplied = str(request.form.get("_csrf_token") or request.headers.get("X-CSRF-Token") or "")
-        if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        if not expected or not supplied or not hmac.compare_digest(expected.encode(), supplied.encode()):
             abort(400, description="Ungültige oder fehlende CSRF-Sicherheitsprüfung. Bitte Seite neu laden und erneut versuchen.")
 
 
@@ -4222,30 +4290,11 @@ def mirror_timestamp_ssl_context(mirror: Dict[str, Any]) -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-class MirrorTimestampRedirectHandler(SafeRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected is None:
-            return None
-        old_url = urllib.parse.urlsplit(req.full_url)
-        new_url = urllib.parse.urlsplit(redirected.full_url)
-        host_changed = bool(old_url.hostname and new_url.hostname and old_url.hostname.lower() != new_url.hostname.lower())
-        insecure_downgrade = old_url.scheme.lower() == "https" and new_url.scheme.lower() == "http"
-        if host_changed or insecure_downgrade:
-            redirected.remove_header("Authorization")
-        return redirected
-
-
 def mirror_timestamp_opener(mirror: Dict[str, Any]):
-    handlers: List[Any] = [
-        MirrorTimestampRedirectHandler(
-            allowed_schemes=("http", "https"),
-            allow_private=True,
-            allow_credentials=False,
-        ),
-        urllib.request.HTTPSHandler(context=mirror_timestamp_ssl_context(mirror)),
-    ]
-    return urllib.request.build_opener(*handlers)
+    return _safe_outbound_opener(
+        ("http", "https"), allow_private=True, allow_credentials=False,
+        context=mirror_timestamp_ssl_context(mirror),
+    )
 
 
 def parse_http_last_modified(value: str) -> Optional[float]:
@@ -4287,12 +4336,6 @@ def fetch_remote_last_modified(
             request_headers["Range"] = "bytes=0-0"
         request_obj = urllib.request.Request(url, headers=request_headers, method=method)
         try:
-            validate_outbound_url(
-                url,
-                allowed_schemes=("http", "https"),
-                allow_private=True,
-                allow_credentials=False,
-            )
             with opener.open(request_obj, timeout=MIRROR_TIME_SYNC_TIMEOUT_SECONDS) as response:
                 timestamp = parse_http_last_modified(response.headers.get("Last-Modified", ""))
                 if timestamp is not None:
@@ -5955,7 +5998,7 @@ def preferences_page():
 def set_session_language():
     language = normalize_language(request.form.get("language"))
     session["language"] = language
-    target = safe_redirect_target(request.form.get("next", ""), request.referrer or url_for("login"))
+    target = safe_redirect_target(request.form.get("next", ""), url_for("login"))
     return redirect(target)
 
 
@@ -13596,8 +13639,8 @@ BUILTIN_HELP = {
     "en": "# DebMirror Manager\n\nThe detailed README.md documentation was not found. Check the project installation.\n",
 }
 BUILTIN_RELEASE_NOTES = {
-    "de": "# Release Notes\n\n## v1.0.5\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
-    "en": "# Release Notes\n\n## v1.0.5\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
+    "de": "# Release Notes\n\n## v1.0.6\n\n- Ersatz-Release-Notes. Normalerweise wird RELEASE_NOTES.de.md aus dem Projektordner gelesen.\n",
+    "en": "# Release Notes\n\n## v1.0.6\n\n- Fallback release notes. RELEASE_NOTES.md is normally loaded from the project directory.\n",
 }
 
 # ---------------------------------------------------------------------------

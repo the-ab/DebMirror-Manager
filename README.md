@@ -2,9 +2,9 @@
 
 DebMirror Manager is a Docker-based web interface for managing local APT repository mirrors. It focuses on `debmirror`, while custom `lftp`, `rsync`, vendor synchronization, and maintenance scripts can also be uploaded, scheduled, executed, and monitored as controlled jobs.
 
-Current version: **1.0.5**
+Current version: **1.0.6**
 
-Release v1.0.5: login favicon, confirmation of transient healthcheck failures and Werkzeug security update.
+Release v1.0.6 updates the container base and Gunicorn and hardens outbound requests.
 
 ## Project status, affiliation, and licensing
 
@@ -50,7 +50,7 @@ DebMirror Manager can either be built locally from the release ZIP or started di
 ### Option A: Local build from the release ZIP
 
 ```bash
-unzip debmirror-manager-v1.0.5.zip
+unzip debmirror-manager-v1.0.6.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -64,10 +64,10 @@ The published image is available as:
 
 ```text
 ghcr.io/the-ab/debmirror-manager:latest
-ghcr.io/the-ab/debmirror-manager:v1.0.5
+ghcr.io/the-ab/debmirror-manager:v1.0.6
 ```
 
-`latest` follows the most recently published image. Use a concrete tag such as `v1.0.5` for controlled installations and reproducible updates.
+`latest` follows the most recently published image. Use a concrete tag such as `v1.0.6` for controlled installations and reproducible updates.
 
 The `docker-compose/` directory provides two standalone variants and full documentation for every ENV variable:
 
@@ -115,7 +115,7 @@ Both Compose files use the same project and container names and must not run sim
 
 ### Container operating system
 
-The application image uses the Docker Official Image `python:3.13.14-slim-trixie` and therefore Debian 13 (Trixie) as its operating-system base. The image is pinned to a multi-platform digest. During each image build, available Trixie package updates are installed before `debmirror`, GnuPG, Rsync, OpenSSH, ping and the other runtime packages are added. The optional mirror web server remains a separate nginx Alpine container.
+The application image uses the Docker Official Image `python:3.13.18-slim-trixie` and therefore Debian 13 (Trixie) as its operating-system base. The image is pinned to a multi-platform digest. During each image build, available Trixie package updates are installed before `debmirror`, GnuPG, Rsync, OpenSSH, ping and the other runtime packages are added. The optional mirror web server remains a separate nginx Alpine container.
 
 ### Web server and container logs
 
@@ -133,7 +133,7 @@ HTTP access lines are disabled by default so frequent live-log requests do not f
 
 Live logs use Server-Sent Events. Heartbeats keep quiet, long-running jobs connected. Leaving or reloading a job page is treated as a normal client disconnect and does not create a traceback.
 
-The locally built image has the fixed name `debmirror-manager:latest`. The published image variant uses `ghcr.io/the-ab/debmirror-manager:latest` or a version tag such as `ghcr.io/the-ab/debmirror-manager:v1.0.5`. The former Compose-generated image name `debmirror-manager-debmirror-manager:latest` is no longer created and is removed by maintenance scripts when it is unused.
+The locally built image has the fixed name `debmirror-manager:latest`. The published image variant uses `ghcr.io/the-ab/debmirror-manager:latest` or a version tag such as `ghcr.io/the-ab/debmirror-manager:v1.0.6`. The former Compose-generated image name `debmirror-manager-debmirror-manager:latest` is no longer created and is removed by maintenance scripts when it is unused.
 
 ## Updating
 
@@ -150,11 +150,11 @@ cp /path/to/debmirror-manager-vNEW.zip.sha256 updates/
 
 `update.sh` validates the ZIP version and SHA-256 checksum, creates backups, replaces project files, and rebuilds/restarts the local containers. Starting with v1.0.3, both an existing `docker-compose/.env` and `.env.no-nginx` are backed up and restored unchanged. Templates, Compose files, and local README files are updated to the new release.
 
-**ZIP update from v1.0.4 to v1.0.5:** Copy the ZIP and checksum into `updates/`, verify the checksum, and run the existing updater. Existing data and all three ENV files are preserved.
+**ZIP update from v1.0.5 to v1.0.6:** Copy the ZIP and checksum into `updates/`, verify the checksum, and run the existing updater. Existing data and all three ENV files are preserved.
 
 ```sh
-(cd updates && sha256sum -c debmirror-manager-v1.0.5.zip.sha256)
-bash ./update.sh --file updates/debmirror-manager-v1.0.5.zip
+(cd updates && sha256sum -c debmirror-manager-v1.0.6.zip.sha256)
+bash ./update.sh --file updates/debmirror-manager-v1.0.6.zip
 ```
 
 **One-time ZIP upgrade from v1.0.3 to v1.0.4:** The old updater does not know the new German policy files or `docs/`. Copy the ZIP and checksum file into `updates/`, verify the checksum, and use the new updater from the verified package. All three existing ENV files are preserved.
@@ -200,7 +200,7 @@ docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml pull
 docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml up -d
 ```
 
-For a pinned image, first set `DMM_IMAGE_TAG=v1.0.5` or the desired newer version in the selected ENV file. Persistent data under `DATA_PATH` and mirror content under `MIRROR_PATH` remain intact during container updates.
+For a pinned image, first set `DMM_IMAGE_TAG=v1.0.6` or the desired newer version in the selected ENV file. Persistent data under `DATA_PATH` and mirror content under `MIRROR_PATH` remain intact during container updates.
 
 ## Language and appearance
 

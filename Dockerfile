@@ -1,4 +1,4 @@
-FROM python:3.13.14-slim-trixie@sha256:2b7445fb71ca9cb15e9aab053fe8cb3162796f8e1d92ada12a49c766a811bc1e
+FROM python:3.13.18-slim-trixie@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -36,7 +36,10 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 COPY app/repository/requirements.lock /app/requirements.lock
-RUN pip install --no-cache-dir --require-hashes -r /app/requirements.lock
+# pip is only needed to install the locked dependencies during the build.
+RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.lock \
+    && python -m pip uninstall --yes pip \
+    && rm -f /usr/local/lib/python3.13/ensurepip/_bundled/pip-*.whl
 
 COPY app /app/app
 COPY README.md RELEASE_NOTES.md VERSION /app/

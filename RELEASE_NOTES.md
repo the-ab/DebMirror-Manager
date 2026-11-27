@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.0.6 (2026-11-27)
+
+- Updated the pinned Debian 13 container base to Python 3.13.18 and rebuilt with current Trixie packages. The optional mirror server uses nginx 1.30.8 Alpine Slim.
+- Use pip to install locked dependencies at build time and remove it from the runtime filesystem.
+- Updated Gunicorn to 27.0.1 for upstream HTTP parsing and connection handling improvements.
+- Outbound HTTP(S) requests and FTP file lookups connect to a validated address. HTTP host headers and HTTPS certificate checks still use the original host. These requests connect directly and do not read proxy environment variables.
+- Redirects keep authorization and cookies within the original origin, including its port. Browser return paths and invalid CSRF tokens now receive stricter validation.
+
 ## v1.0.5 (2026-10-10)
 
 - Updated Werkzeug to 3.1.9 with verified PyPI hashes, resolving the dependency audit finding CVE-2026-102598 (Windows/NTFS `safe_join`; the Linux deployment is not affected by that specific path).

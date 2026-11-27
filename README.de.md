@@ -2,9 +2,9 @@
 
 DebMirror Manager ist eine Docker-basierte WebUI für lokale APT-Repository-Spiegel. Der Schwerpunkt liegt auf `debmirror`; zusätzlich können eigene Benutzerskripte wie `lftp`-, `rsync`- oder Hersteller-Sync-Skripte als Jobs ausgeführt, geplant und überwacht werden.
 
-Aktuelle Version: **1.0.5**
+Aktuelle Version: **1.0.6**
 
-Release v1.0.5: Login-Favicon, Bestätigung vorübergehender Healthcheck-Fehler und Werkzeug-Sicherheitsupdate.
+Release v1.0.6 aktualisiert die Container-Basis und Gunicorn und schützt ausgehende Anfragen.
 
 ## Projektstatus, Unabhängigkeit und Lizenz
 
@@ -49,7 +49,7 @@ DebMirror Manager kann entweder lokal aus dem Release-ZIP gebaut oder direkt als
 ### Variante A: Lokaler Build aus dem Release-ZIP
 
 ```bash
-unzip debmirror-manager-v1.0.5.zip
+unzip debmirror-manager-v1.0.6.zip
 cd debmirror-manager
 chmod +x install.sh update.sh set-admin-password.sh
 ./install.sh
@@ -63,10 +63,10 @@ Das veröffentlichte Image steht unter folgenden Namen bereit:
 
 ```text
 ghcr.io/the-ab/debmirror-manager:latest
-ghcr.io/the-ab/debmirror-manager:v1.0.5
+ghcr.io/the-ab/debmirror-manager:v1.0.6
 ```
 
-`latest` folgt dem jeweils zuletzt veröffentlichten Image. Für kontrollierte Installationen und reproduzierbare Updates sollte ein konkreter Versions-Tag wie `v1.0.5` verwendet werden.
+`latest` folgt dem jeweils zuletzt veröffentlichten Image. Für kontrollierte Installationen und reproduzierbare Updates sollte ein konkreter Versions-Tag wie `v1.0.6` verwendet werden.
 
 Der Ordner `docker-compose/` enthält zwei eigenständige Varianten sowie eine vollständige Beschreibung aller ENV-Variablen:
 
@@ -114,7 +114,7 @@ Beide Compose-Dateien verwenden denselben Projektnamen und Container. Sie dürfe
 
 ### Container-Betriebssystem
 
-Das Anwendungsimage verwendet das offizielle Docker-Image `python:3.13.14-slim-trixie` und damit Debian 13 (Trixie) als Betriebssystembasis. Das Image ist über einen Multi-Plattform-Digest festgelegt. Bei jedem Image-Build werden verfügbare Trixie-Paketaktualisierungen installiert, bevor `debmirror`, GnuPG, Rsync, OpenSSH, Ping und die weiteren Laufzeitpakete hinzukommen. Der optionale Mirror-Webserver bleibt ein separater nginx-Alpine-Container.
+Das Anwendungsimage verwendet das offizielle Docker-Image `python:3.13.18-slim-trixie` und damit Debian 13 (Trixie) als Betriebssystembasis. Das Image ist über einen Multi-Plattform-Digest festgelegt. Bei jedem Image-Build werden verfügbare Trixie-Paketaktualisierungen installiert, bevor `debmirror`, GnuPG, Rsync, OpenSSH, Ping und die weiteren Laufzeitpakete hinzukommen. Der optionale Mirror-Webserver bleibt ein separater nginx-Alpine-Container.
 
 ### Webserver und Container-Logs
 
@@ -130,7 +130,7 @@ WSGI_LOG_LEVEL=info
 
 Live-Logs verwenden Server-Sent Events. Heartbeats halten auch ausgabearme, lange Jobs offen; ein normales Verlassen oder Neuladen der Jobseite wird nicht als Anwendungsfehler protokolliert.
 
-Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die veröffentlichte Image-Variante verwendet dagegen `ghcr.io/the-ab/debmirror-manager:latest` beziehungsweise einen Versions-Tag wie `ghcr.io/the-ab/debmirror-manager:v1.0.5`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
+Das lokal gebaute WebUI-Image besitzt fest den eindeutigen Namen `debmirror-manager:latest`. Die veröffentlichte Image-Variante verwendet dagegen `ghcr.io/the-ab/debmirror-manager:latest` beziehungsweise einen Versions-Tag wie `ghcr.io/the-ab/debmirror-manager:v1.0.6`. Die frühere automatisch erzeugte Doppelbezeichnung `debmirror-manager-debmirror-manager:latest` wird vom Wartungsskript bei späteren Rebuilds oder Updates entfernt, sofern sie nicht mehr von einem alten Container verwendet wird. Beim erstmaligen Wechsel von einem älteren Updater kann das ungenutzte Alt-Image noch vorhanden bleiben; es kann dann einmalig mit `docker image rm debmirror-manager-debmirror-manager:latest` entfernt werden.
 
 ## Update
 
@@ -147,11 +147,11 @@ cp /pfad/zur/debmirror-manager-vNEU.zip.sha256 updates/
 
 `update.sh` prüft ZIP-Version und SHA-256, erstellt Sicherungen, ersetzt die Projektdateien und baut/startet die lokalen Container neu. Ab v1.0.3 werden im eigenständigen `docker-compose/`-Ordner sowohl eine vorhandene `.env` als auch `.env.no-nginx` gesichert und unverändert wiederhergestellt. Die Vorlagen, Compose-Dateien und lokalen README-Dateien werden dagegen auf den neuen Release-Stand aktualisiert.
 
-**ZIP-Update von v1.0.4 auf v1.0.5:** ZIP und SHA-Datei nach `updates/` kopieren, die Prüfsumme prüfen und den vorhandenen Updater ausführen. Vorhandene Daten und alle drei ENV-Dateien bleiben erhalten.
+**ZIP-Update von v1.0.5 auf v1.0.6:** ZIP und SHA-Datei nach `updates/` kopieren, die Prüfsumme prüfen und den vorhandenen Updater ausführen. Vorhandene Daten und alle drei ENV-Dateien bleiben erhalten.
 
 ```sh
-(cd updates && sha256sum -c debmirror-manager-v1.0.5.zip.sha256)
-bash ./update.sh --file updates/debmirror-manager-v1.0.5.zip
+(cd updates && sha256sum -c debmirror-manager-v1.0.6.zip.sha256)
+bash ./update.sh --file updates/debmirror-manager-v1.0.6.zip
 ```
 
 **Einmaliger ZIP-Übergang von v1.0.3 auf v1.0.4:** Der alte Updater kennt die neuen deutschen Richtliniendateien und `docs/` noch nicht. ZIP und SHA-Datei zunächst nach `updates/` kopieren, die Prüfsumme prüfen und dann den neuen Updater aus dem geprüften Paket verwenden. Die drei vorhandenen ENV-Dateien bleiben erhalten.
@@ -197,7 +197,7 @@ docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml pull
 docker compose --env-file .env.no-nginx -f compose.no-nginx.yaml up -d
 ```
 
-Bei einem festen Tag wird zuerst `DMM_IMAGE_TAG=v1.0.5` beziehungsweise die gewünschte neuere Version in der verwendeten ENV-Datei eingetragen. Persistente Daten unter `DATA_PATH` und Mirror-Inhalte unter `MIRROR_PATH` bleiben beim Containerupdate erhalten.
+Bei einem festen Tag wird zuerst `DMM_IMAGE_TAG=v1.0.6` beziehungsweise die gewünschte neuere Version in der verwendeten ENV-Datei eingetragen. Persistente Daten unter `DATA_PATH` und Mirror-Inhalte unter `MIRROR_PATH` bleiben beim Containerupdate erhalten.
 
 ## Sprache und Darstellung
 

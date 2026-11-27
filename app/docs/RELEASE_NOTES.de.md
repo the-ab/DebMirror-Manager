@@ -1,5 +1,13 @@
 # Release Notes
 
+## v1.0.6 (2026-11-27)
+
+- Container-Basis auf Debian 13 mit Python 3.13.18 aktualisiert und mit aktuellen Trixie-Paketen neu gebaut. Der optionale Mirror-Webserver verwendet nginx 1.30.8 Alpine Slim.
+- pip installiert die festgelegten Abhängigkeiten beim Build und wird anschließend aus dem Laufzeitdateisystem entfernt.
+- Gunicorn auf 27.0.1 aktualisiert. Die Version verbessert die Verarbeitung von HTTP-Anfragen und Verbindungen.
+- Ausgehende HTTP(S)-Anfragen und FTP-Dateiabfragen verbinden sich mit einer geprüften Adresse. HTTP-Host-Header und HTTPS-Zertifikatsprüfung verwenden weiterhin den ursprünglichen Hostnamen. Diese Anfragen verbinden sich direkt und werten keine Proxy-Umgebungsvariablen aus.
+- Weiterleitungen geben Zugangsdaten und Cookies nur innerhalb desselben Ursprungs einschließlich Port weiter. Browser-Rücksprungziele und ungültige CSRF-Token werden strenger geprüft.
+
 ## v1.0.5 (2026-10-10)
 
 - Werkzeug mit verifizierten PyPI-Hashes auf 3.1.9 aktualisiert. Damit ist der Abhängigkeitsbefund CVE-2026-102598 behoben (Windows/NTFS `safe_join`; dieser konkrete Fehler betrifft die Linux-Installation nicht).

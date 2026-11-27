@@ -5,10 +5,12 @@ import os
 import datetime as dt
 import email.utils
 import http.server
+import socket
 import threading
 import stat
 import sys
 import re
+import urllib.request
 
 import pytest
 
@@ -101,7 +103,7 @@ def test_application_container_uses_pinned_trixie_base():
     project_root = Path(__file__).resolve().parents[1]
     dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
     first_line = dockerfile.splitlines()[0]
-    assert first_line.startswith("FROM python:3.13.14-slim-trixie@sha256:")
+    assert first_line.startswith("FROM python:3.13.18-slim-trixie@sha256:")
     assert "bookworm" not in first_line.lower()
     assert "apt-get upgrade -y" in dockerfile
 
@@ -135,6 +137,13 @@ def test_state_changing_web_request_requires_csrf(client, database_cleanup):
     assert response.status_code == 400
 
 
+def test_csrf_rejects_non_ascii_form_token(client, database_cleanup):
+    admin = make_user("csrf-encoding-admin")
+    authenticate(client, admin)
+    response = client.post("/theme/toggle", data={"_csrf_token": "ungültig"})
+    assert response.status_code == 400
+
+
 def test_user_preferences_are_account_specific(client, database_cleanup):
     admin = make_user("prefs-admin")
     token = authenticate(client, admin)
@@ -158,6 +167,51 @@ def test_open_redirects_are_rejected():
 def test_private_outbound_targets_are_blocked():
     with pytest.raises(ValueError):
         dmm.validate_outbound_url("http://127.0.0.1/internal", allowed_schemes=("http", "https"))
+
+
+def test_outbound_http_dials_validated_address_and_keeps_host(monkeypatch):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            payload = self.headers["Host"].encode("ascii")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    resolve = socket.getaddrinfo
+    queries = []
+
+    def resolve_test_host(host, port, *args, **kwargs):
+        queries.append(host)
+        return resolve("127.0.0.1" if host == "fixture.invalid" else host, port, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_test_host)
+    monkeypatch.setenv("http_proxy", "http://proxy.invalid:3128")
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        port = server.server_port
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with dmm.safe_urlopen(f"http://fixture.invalid:{port}/", timeout=2, allowed_schemes=("http",), allow_private=True) as response:
+                assert response.read() == f"fixture.invalid:{port}".encode("ascii")
+        finally:
+            server.shutdown()
+            thread.join()
+    assert queries == ["fixture.invalid", "127.0.0.1"]
+
+
+@pytest.mark.parametrize(("destination", "keeps_auth"), [
+    ("https://mirror.invalid:443/next", True),
+    ("https://mirror.invalid:8443/next", False),
+    ("http://mirror.invalid/next", False),
+    ("https://other.invalid/next", False),
+])
+def test_outbound_redirect_limits_auth_to_original_origin(destination, keeps_auth):
+    handler = dmm.SafeRedirectHandler(allowed_schemes=("http", "https"))
+    request = urllib.request.Request("https://mirror.invalid/", headers={"Authorization": "fixture", "Cookie": "fixture"})
+    redirected = handler.redirect_request(request, None, 302, "Found", {}, destination)
+    assert redirected.has_header("Authorization") is keeps_auth
+    assert redirected.has_header("Cookie") is keeps_auth
 
 
 def test_read_only_api_token_cannot_start_jobs(client, database_cleanup):
