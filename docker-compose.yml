@@ -41,7 +41,7 @@ services:
   mirror-nginx:
     profiles:
       - mirror-http
-    image: nginx:1.30.0-alpine@sha256:0272e4604ed93c1792f03695a033a6e8546840f86e0de20a884bb17d2c924883
+    image: nginx:1.30.8-alpine-slim@sha256:e9eaa7298465eab06d618c51556fdcf3fb5061f9ff40bd28ee898fbd7ee7f900
     container_name: debmirror-nginx
     ports:
       - "${MIRROR_HTTP_BIND_ADDRESS:-0.0.0.0}:${MIRROR_HTTP_PORT:-8110}:80"
